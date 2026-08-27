@@ -1892,6 +1892,11 @@ pub struct TrapDispatcher {
     /// `cscSetGamma` control call. These affect presentation only; the device
     /// and Color Manager CLUTs retain the guest's uncorrected 16-bit values.
     pub(crate) display_gamma: crate::process_context::SharedProcessDisplayGamma,
+    /// Guest-memory GammaTbl handed back by the video driver's cscGetGamma
+    /// Status call, allocated once and refreshed in place on each request.
+    /// Process-owned like its siblings above: it points into the process's
+    /// own memory, so it must travel with the process state.
+    pub device_gamma_table_ptr: SharedProcessValue<u32>,
     /// Color Manager CLUT for 8bpp mode. Updated only by high-level SetEntries ($AA3F)
     /// and ActivatePalette — NOT by low-level video driver palette fades.
     /// Used by QuickDraw shape drawing (PaintRect, etc.) for RGB→index mapping,
@@ -3688,6 +3693,7 @@ impl TrapDispatcher {
             },
             device_clut: SharedProcessValue::from_value(Self::standard_mac_8bpp_clut()),
             display_gamma: crate::process_context::SharedProcessDisplayGamma::default(),
+            device_gamma_table_ptr: SharedProcessValue::from_value(0),
             color_manager_clut: SharedProcessValue::from_value(Self::standard_mac_8bpp_clut()),
             inverse_table_cache: Vec::new(),
             clut_protected: [false; 256],

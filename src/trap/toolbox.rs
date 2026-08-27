@@ -3732,7 +3732,24 @@ impl super::TrapDispatcher {
                 Self::scriptutil_pixels_to_width_like(width_raw, remaining),
             );
         }
-        bus.write_word(sp + 32, result);
+        // StyledLineBreakCode is a Pascal enumerated type with three values
+        // (smBreakWord, smBreakChar, smBreakOverflow), so it is byte-sized —
+        // Inside Macintosh: Text (1993) declares it as
+        // `StyledLineBreakCode = {BreakWord, BreakChar, BreakOverflow}`.
+        //
+        // A byte-sized Pascal result still occupies a two-byte, word-aligned
+        // slot, and the value goes in the HIGH byte: callers read it back with
+        // `MOVE.B (SP)+,D0`, which takes the byte at the slot's own address and
+        // advances A7 by two. Writing the value as a word puts it in the low
+        // byte, where such a caller reads the zero half instead and sees
+        // smBreakWord no matter what was returned.
+        //
+        // Cythera's intro narration loops on exactly that: it lays the
+        // paragraph out a line at a time and leaves the loop only when this
+        // returns smBreakOverflow (2) for the empty run past the end of the
+        // text. Reading 0 forever, it never leaves, and the intro text never
+        // appears.
+        bus.write_word(sp + 32, result << 8);
         cpu.write_reg(Register::D0, u32::from(result));
         cpu.write_reg(Register::A7, sp + 32);
         Ok(())

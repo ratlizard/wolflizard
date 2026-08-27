@@ -16985,7 +16985,9 @@
         assert!(result.is_some());
         assert!(result.unwrap().is_ok());
 
-        assert_eq!(bus.read_word(sp + 32), 2); // smBreakOverflow
+        // StyledLineBreakCode is byte-sized, returned in the high byte of
+        // its two-byte slot — which is the byte a `MOVE.B (SP)+` caller reads.
+        assert_eq!(bus.read_byte(sp + 32), 2); // smBreakOverflow
         assert_eq!(bus.read_long(offset_ptr), text.len() as u32);
         assert_eq!(bus.read_long(width_ptr), 20u32 << 16);
         assert_eq!(cpu.read_reg(Register::A7), sp + 32);
@@ -17061,7 +17063,7 @@
         assert!(result.is_some());
         assert!(result.unwrap().is_ok());
 
-        assert_eq!(bus.read_word(sp + 32), 1); // smBreakChar
+        assert_eq!(bus.read_byte(sp + 32), 1); // smBreakChar
         assert_eq!(bus.read_long(offset_ptr), 3);
         assert_eq!(bus.read_long(width_ptr), 0);
         assert_eq!(cpu.read_reg(Register::A7), sp + 32);

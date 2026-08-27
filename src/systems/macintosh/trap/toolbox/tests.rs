@@ -18191,7 +18191,7 @@ fn scriptutil_styledlinebreak_full_style_run_fits_returns_overflow_and_decrement
     assert!(result.is_some());
     assert!(result.unwrap().is_ok());
 
-    assert_eq!(bus.read_word(sp + 32), 2); // smBreakOverflow
+    assert_eq!(bus.read_byte(sp + 32), 2); // smBreakOverflow
     assert_eq!(bus.read_long(offset_ptr), text.len() as u32);
     assert_eq!(bus.read_long(width_ptr), 20u32 << 16);
     assert_eq!(cpu.read_reg(Register::A7), sp + 32);
@@ -18267,7 +18267,7 @@ fn scriptutil_styledlinebreak_first_long_word_breaks_on_character_boundary() {
     assert!(result.is_some());
     assert!(result.unwrap().is_ok());
 
-    assert_eq!(bus.read_word(sp + 32), 1); // smBreakChar
+    assert_eq!(bus.read_byte(sp + 32), 1); // smBreakChar
     assert_eq!(bus.read_long(offset_ptr), 3);
     assert_eq!(bus.read_long(width_ptr), 0);
     assert_eq!(cpu.read_reg(Register::A7), sp + 32);

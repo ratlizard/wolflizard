@@ -4946,15 +4946,15 @@ impl super::TrapDispatcher {
             0x28 => (4, 0),  // LDispose
             0x2C => (6, 0),  // LDoDraw
             0x30 => (8, 0),  // LDraw
-            0x34 => (8, 4),  // LFind
+            0x34 => (16, 0), // LFind: VAR offset, VAR len, theCell, lHandle
             0x38 => (16, 0), // LGetCell
             0x3C => (10, 2), // LGetSelect
             0x40 => (4, 4),  // LLastClick
             0x44 => (26, 4), // LNew
-            0x48 => (10, 2), // LNextCell
+            0x48 => (12, 2), // LNextCell: hNext, vNext, VAR theCell, lHandle
             0x4C => (12, 0), // LRect
             0x50 => (8, 0),  // LScroll
-            0x54 => (16, 2), // LSearch
+            0x54 => (18, 2), // LSearch: dataPtr, dataLen, searchProc, VAR theCell, lHandle
             0x58 => (14, 0), // LSetCell
             0x5C => (10, 0), // LSetSelect
             0x60 => (8, 0),  // LSize
@@ -11877,6 +11877,44 @@ impl super::TrapDispatcher {
                     // Copies the contents of a cell into the caller's buffer.
                     // PROCEDURE LGetCell(dataPtr: Ptr; VAR dataLen: INTEGER; theCell: Cell; lHandle: ListHandle);
                     // Inside Macintosh Volume IV, IV-272
+                    // LFind ($0034)
+                    // PROCEDURE LFind(VAR offset, len: INTEGER; theCell: Cell;
+                    //                 lHandle: ListHandle);
+                    // Inside Macintosh Volume IV (1986), p. IV-273: the offset
+                    // and length of the cell's data within the cells handle;
+                    // an empty cell gives len 0. Sixteen argument bytes and no
+                    // result, so the frame pops 18 with the selector word.
+                    //
+                    // The fallback table had this as an eight-byte frame with a
+                    // four-byte result. A caller that saves a register across
+                    // the call and restores it with `(SP)+` then reads its own
+                    // locals back instead: Cythera's TTextOut::CurWidth got its
+                    // `this` pointer replaced by a zero offset, and every line
+                    // its message log printed went to a list at address 4.
+                    0x34 => {
+                        let list_handle = bus.read_long(sp + 2);
+                        let cell = Self::read_stack_point(bus, sp + 6);
+                        let len_ptr = bus.read_long(sp + 10);
+                        let offset_ptr = bus.read_long(sp + 14);
+                        let (offset, len) = self
+                            .list_states
+                            .get(&list_handle)
+                            .cloned()
+                            .and_then(|state| {
+                                self.sync_list_cell_data_handle(bus, list_handle, &state)
+                                    .get(&(cell.0, cell.1))
+                                    .copied()
+                            })
+                            .unwrap_or((0, 0));
+                        if offset_ptr != 0 {
+                            bus.write_word(offset_ptr, offset as u16);
+                        }
+                        if len_ptr != 0 {
+                            bus.write_word(len_ptr, len as u16);
+                        }
+                        cpu.write_reg(Register::A7, sp + 18);
+                        Ok(())
+                    }
                     0x38 => {
                         let list_handle = bus.read_long(sp + 2);
                         let cell = Self::read_stack_point(bus, sp + 6);

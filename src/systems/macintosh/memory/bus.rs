@@ -4112,7 +4112,8 @@ impl MemoryBus for MacMemoryBus {
         let translated = self.range_translates_contiguously(address, len);
         let translated_address = translated.unwrap_or(address);
         let end = (translated_address as u64).saturating_add(len as u64);
-        if translated.is_some() && end <= self.ram_size as u64 {
+        // Block reads must reach SYSTEMLESS_TRACE_MEM_READ_RANGE as well.
+        if translated.is_some() && end <= self.ram_size as u64 && mem_read_trace_range().is_none() {
             if let Some(slice) = self.ram.slice_at(translated_address as usize, len) {
                 return slice.to_vec();
             }
@@ -4140,7 +4141,8 @@ impl MemoryBus for MacMemoryBus {
         let translated = self.range_translates_contiguously(address, len);
         let translated_address = translated.unwrap_or(address);
         let end = (translated_address as u64).saturating_add(len as u64);
-        if translated.is_some() && end <= self.ram_size as u64 {
+        // Block reads must reach SYSTEMLESS_TRACE_MEM_READ_RANGE as well.
+        if translated.is_some() && end <= self.ram_size as u64 && mem_read_trace_range().is_none() {
             if let Some(slice) = self.ram.slice_at(translated_address as usize, len) {
                 dst.copy_from_slice(slice);
                 if self.access_watch.is_some() {
@@ -4174,13 +4176,17 @@ impl MemoryBus for MacMemoryBus {
         if let Some(translated) = translated {
             self.note_bulk_store(translated, data.len() as u32);
         }
+        // SYSTEMLESS_TRACE_MEM_WRITE_RANGE must see block copies too, or a
+        // BlockMove into the watched range is invisible while a MOVE is not.
         #[cfg(debug_assertions)]
         let fast = !WATCHPOINT_ARMED.load(Ordering::Relaxed)
             && fb_write_trace_range().is_none()
+            && mem_write_trace_range().is_none()
             && self.write_probe_original.is_none()
             && !self.presentation_observes(address, data.len());
         #[cfg(not(debug_assertions))]
         let fast = fb_write_trace_range().is_none()
+            && mem_write_trace_range().is_none()
             && self.write_probe_original.is_none()
             && !self.presentation_observes(address, data.len());
         let translated_address = translated.unwrap_or(address);

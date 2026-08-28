@@ -25,6 +25,9 @@ fn deliver(runner: &mut FixtureRunner, mouse: &mut HostMouseReleaseLatch, action
         }
         InputAction::KeyDown { key, ch } => runner.push_key_down(key, ch),
         InputAction::KeyUp { key, ch } => runner.push_key_up(key, ch),
+        InputAction::Patch { addr, bytes } => {
+            systemless::memory::MemoryBus::write_bytes(runner.bus_mut(), addr, &bytes);
+        }
     }
 }
 
@@ -169,8 +172,8 @@ pub(super) fn run(
             super::wait_for_debug_resume(server, &mut runner);
         }
         while let Some(event) = script.get(next_event).filter(|e| e.at <= elapsed as usize) {
-            deliver(&mut runner, &mut mouse, event.action);
             eprintln!("[HEADLESS-TIME] input tick={} {:?}", event.at, event.action);
+            deliver(&mut runner, &mut mouse, event.action.clone());
             next_event += 1;
         }
         // Fractional samples carry between frames; do not round away a small

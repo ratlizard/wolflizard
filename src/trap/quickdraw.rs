@@ -25205,10 +25205,60 @@ impl super::TrapDispatcher {
             self.ensure_dialog_background_saved_for_screen_port(bus, port);
         }
 
+        // A rectangle is clipped above by the bounding boxes of visRgn and
+        // clipRgn, which is exact only while both are rectangles. A window
+        // with another window in front of it has a visRgn with a hole in it,
+        // and the hole is invisible to a bounding box: the box of "the screen
+        // minus a window in the middle" is still the whole screen.
+        //
+        // Cythera is the case that shows it. Its main window covers the
+        // screen and sits behind the 640x480 window holding the menu artwork,
+        // and on leaving the start screen it fills its own port with the
+        // desktop tile. On a real Mac that paints nothing, because its visRgn
+        // is entirely occluded; here it erased the artwork and left the
+        // character-creation dialog standing on bare tile.
+        //
+        // Inside Macintosh Volume I, I-296 (CalcVis) and I-149: drawing is
+        // clipped to visRgn ∩ clipRgn, which are regions and not rectangles.
+        let vis_rgn_handle = bus.read_long(port.wrapping_add(24));
+        let clip_rgn_handle = bus.read_long(port.wrapping_add(28));
+        let vis_cache = if Self::region_is_complex(bus, vis_rgn_handle) {
+            Self::build_region_membership_cache(bus, vis_rgn_handle, top, bottom)
+        } else {
+            None
+        };
+        let clip_cache = if Self::region_is_complex(bus, clip_rgn_handle) {
+            Self::build_region_membership_cache(bus, clip_rgn_handle, top, bottom)
+        } else {
+            None
+        };
+
         for y in top..bottom {
             let dy = (y - bounds_top) as u32;
             let tile_y = i32::from(y).rem_euclid(src_height) as u32;
             for x in left..right {
+                if vis_cache.is_some()
+                    && !Self::region_contains_point_cached(
+                        bus,
+                        vis_rgn_handle,
+                        vis_cache.as_ref(),
+                        y,
+                        x,
+                    )
+                {
+                    continue;
+                }
+                if clip_cache.is_some()
+                    && !Self::region_contains_point_cached(
+                        bus,
+                        clip_rgn_handle,
+                        clip_cache.as_ref(),
+                        y,
+                        x,
+                    )
+                {
+                    continue;
+                }
                 let dx = (x - bounds_left) as u32;
                 if dx >= dst_row_bytes {
                     continue;

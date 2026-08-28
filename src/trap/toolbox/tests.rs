@@ -11150,6 +11150,49 @@
     }
 
     #[test]
+    fn menu_dispatch_menu_event_and_command_id_pop_their_frames() {
+        // MenuEvent on a plain key-down (no Command modifier): zero result,
+        // four bytes popped.
+        let (mut disp, mut cpu, mut bus) = setup();
+        let base = cpu.read_reg(Register::A7);
+        let event = bus.alloc(16);
+        bus.write_word(event, 3); // keyDown
+        bus.write_long(event + 2, 0x0B42); // key 11, 'B'
+        bus.write_word(event + 14, 0); // no modifiers
+        let slot = base.wrapping_sub(4);
+        bus.write_long(slot, 0xDEAD_BEEF);
+        let sp = slot.wrapping_sub(4);
+        bus.write_long(sp, event);
+        cpu.write_reg(Register::A7, sp);
+        cpu.write_reg(Register::D0, 0x020C);
+        let result = disp.dispatch_toolbox(true, 0x025, &mut cpu, &mut bus);
+        assert!(result.is_some(), "MenuEvent should be handled");
+        assert!(result.unwrap().is_ok());
+        assert_eq!(cpu.read_reg(Register::A7), slot);
+        assert_eq!(bus.read_long(slot), 0, "no menu item for an unmodified key");
+
+        // GetMenuItemCommandID: ten bytes popped, noErr, zero command ID.
+        let (mut disp, mut cpu, mut bus) = setup();
+        let base = cpu.read_reg(Register::A7);
+        let out_id = bus.alloc(4);
+        bus.write_long(out_id, 0xDEAD_BEEF);
+        let slot = base.wrapping_sub(2);
+        bus.write_word(slot, 0x5A5A);
+        let sp = slot.wrapping_sub(10);
+        bus.write_long(sp, out_id); // VAR outCommandID (last argument)
+        bus.write_word(sp + 4, 2); // item
+        bus.write_long(sp + 6, 0x0040_0000); // menu handle
+        cpu.write_reg(Register::A7, sp);
+        cpu.write_reg(Register::D0, 0x0503);
+        let result = disp.dispatch_toolbox(true, 0x025, &mut cpu, &mut bus);
+        assert!(result.is_some(), "GetMenuItemCommandID should be handled");
+        assert!(result.unwrap().is_ok());
+        assert_eq!(cpu.read_reg(Register::A7), slot);
+        assert_eq!(bus.read_word(slot), 0, "noErr");
+        assert_eq!(bus.read_long(out_id), 0, "no command ID recorded");
+    }
+
+    #[test]
     fn image_compression_thumbnail_and_preview_pop_their_pascal_frames() {
         // (selector, argument bytes) for MakeThumbnailFromPixMap,
         // MakeFilePreview and AddFilePreview.

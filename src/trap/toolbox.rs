@@ -17471,6 +17471,78 @@ impl super::TrapDispatcher {
                 Ok(())
             }
 
+            // MenuDispatch ($A825) — the Appearance-era Menu Manager
+            // extensions. Selector in the low word of D0, its high byte the
+            // number of argument words (Universal Interfaces Menus.h,
+            // `THREEWORDINLINE(0x303C, sel, 0xA825)`):
+            //
+            //   $020C MenuEvent(inEvent: EventRecordPtr): UInt32          4
+            //   $0503 GetMenuItemCommandID(menu, item,
+            //                              VAR outCommandID): OSErr       10
+            //
+            // MenuEvent is MenuKey for an event record: the menu and item
+            // whose command-key equivalent matches a key-down carrying the
+            // Command modifier, packed as MenuKey packs them, or zero. It is
+            // answered by the MenuKey arm on the event's character, which
+            // keeps one search and one highlight path. GetMenuItemCommandID
+            // answers noErr with a zero ID: Systemless records no command IDs,
+            // and zero is the documented "no command ID" value, on which a
+            // caller falls back to menu and item.
+            //
+            // An application that finds the Appearance Manager present calls
+            // MenuEvent for every key-down before handling it itself, so
+            // skipping this trap loses every keystroke and leaves four bytes
+            // on the stack each time; Cythera's TApp::HandleKeyDown does
+            // exactly that. Selectors not decoded fall through to the
+            // unimplemented log.
+            //
+            // Regression coverage:
+            //   src/trap/toolbox.rs::tests::menu_dispatch_menu_event_and_command_id_pop_their_frames
+            (true, 0x025) => {
+                let selector = cpu.read_reg(Register::D0) & 0xFFFF;
+                let sp = cpu.read_reg(Register::A7);
+                match selector {
+                    0x020C => {
+                        const KEY_DOWN: u16 = 3;
+                        const AUTO_KEY: u16 = 5;
+                        const CMD_KEY: u16 = 0x0100;
+                        let event_ptr = bus.read_long(sp);
+                        let (what, ch, modifiers) = if event_ptr != 0 {
+                            (
+                                bus.read_word(event_ptr),
+                                (bus.read_long(event_ptr + 2) & 0xFF) as u16,
+                                bus.read_word(event_ptr + 14),
+                            )
+                        } else {
+                            (0, 0, 0)
+                        };
+                        if (what == KEY_DOWN || what == AUTO_KEY) && modifiers & CMD_KEY != 0 {
+                            // MenuKey's frame is [char.w][result.l]; the
+                            // pointer's low word has been read and can carry
+                            // the character, and the result slot is shared.
+                            bus.write_word(sp + 2, ch);
+                            cpu.write_reg(Register::A7, sp + 2);
+                            return self.dispatch_menu(true, 0x13E, cpu, bus);
+                        }
+                        bus.write_long(sp + 4, 0);
+                        cpu.write_reg(Register::A7, sp + 4);
+                        cpu.write_reg(Register::D0, 0);
+                        Ok(())
+                    }
+                    0x0503 => {
+                        let out_command_id = bus.read_long(sp);
+                        if out_command_id != 0 {
+                            bus.write_long(out_command_id, 0);
+                        }
+                        bus.write_word(sp + 10, 0);
+                        cpu.write_reg(Register::A7, sp + 10);
+                        cpu.write_reg(Register::D0, 0);
+                        Ok(())
+                    }
+                    _ => return None,
+                }
+            }
+
             // AppearanceDispatch ($AA74) — Appearance Manager.
             //
             // Selector in the low word of D0 (`THREEWORDINLINE(0x303C,

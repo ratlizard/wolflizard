@@ -3546,6 +3546,15 @@ fn run_headless(
     let mut debug_server = bind_headless_debug_server(debug_socket, session.runner_mut());
 
     let chunk = 100_000;
+    // How often the headless run writes a frame. A long run -- the multi-billion
+    // instruction ones needed to reach gameplay -- otherwise spends about half
+    // its wall clock encoding PNGs and leaves gigabytes in /tmp, so the interval
+    // is tunable and 0 turns intermediate frames off entirely. The final frame
+    // is written either way, since a run with no visible output is unreadable.
+    let screenshot_every: usize = std::env::var("SYSTEMLESS_HEADLESS_SCREENSHOT_EVERY")
+        .ok()
+        .and_then(|value| value.parse().ok())
+        .unwrap_or(500_000);
     let mut total: usize = 0;
     let mut last_screenshot = 0usize;
     let mut next_event = 0usize;
@@ -3601,7 +3610,11 @@ fn run_headless(
         let advance = session.advance(InstructionBudget(steps_to_run));
         total += advance.instructions;
 
-        let screenshot_num = total / 500_000;
+        let screenshot_num = if screenshot_every == 0 {
+            0
+        } else {
+            total / screenshot_every
+        };
         if screenshot_num > last_screenshot {
             last_screenshot = screenshot_num;
             // Measurement-only switch: timing A/Bs suppress the periodic

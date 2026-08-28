@@ -11271,6 +11271,80 @@
     }
 
     #[test]
+    fn image_compression_thumbnail_and_preview_pop_their_pascal_frames() {
+        // (selector, argument bytes) for MakeThumbnailFromPixMap,
+        // MakeFilePreview and AddFilePreview.
+        for (selector, arg_bytes) in [(0x2Cu32, 18u32), (0x45, 6), (0x46, 10)] {
+            let (mut disp, mut cpu, mut bus) = setup();
+            let base = cpu.read_reg(Register::A7);
+            // Caller reserves the OSErr slot, then pushes the arguments.
+            let slot = base.wrapping_sub(2);
+            bus.write_word(slot, 0x5A5A);
+            let sp = slot.wrapping_sub(arg_bytes);
+            for offset in (0..arg_bytes).step_by(2) {
+                bus.write_word(sp + offset, 0xBEEF);
+            }
+            cpu.write_reg(Register::A7, sp);
+            cpu.write_reg(Register::D0, selector);
+            cpu.write_reg(Register::A2, 0x0011_2233);
+            cpu.write_reg(Register::A3, 0x4455_6677);
+
+            let result = disp.dispatch_toolbox(true, 0x2A3, &mut cpu, &mut bus);
+            assert!(result.is_some(), "ICM selector ${selector:02X} should be handled");
+            assert!(result.unwrap().is_ok());
+            assert_eq!(cpu.read_reg(Register::A7), slot, "selector ${selector:02X} pops its frame");
+            assert_eq!(bus.read_word(slot) as i16, -8962, "codecUnimpErr in the result slot");
+            assert_eq!(cpu.read_reg(Register::D0) as i16, -8962);
+            assert_eq!(cpu.read_reg(Register::A2), 0x0011_2233);
+            assert_eq!(cpu.read_reg(Register::A3), 0x4455_6677);
+        }
+    }
+
+    #[test]
+    fn image_compression_get_file_preview_delegates_to_pack3() {
+        let (mut disp, mut cpu, mut bus) = setup();
+        let base = cpu.read_reg(Register::A7);
+        // StandardGetFilePreview(fileFilter, numTypes, typeList, reply):
+        // 14 argument bytes, no result. Reply is a StandardFileReply whose
+        // first byte is sfGood.
+        let reply = bus.alloc(64);
+        bus.write_byte(reply, 0xFF);
+        let sp = base.wrapping_sub(14);
+        bus.write_long(sp, reply); // VAR reply (last argument, at SP)
+        bus.write_long(sp + 4, 0); // typeList
+        bus.write_word(sp + 8, (-1i16) as u16); // numTypes
+        bus.write_long(sp + 10, 0); // fileFilter
+        cpu.write_reg(Register::A7, sp);
+        cpu.write_reg(Register::D0, 0x43);
+
+        let result = disp.dispatch_toolbox(true, 0x2A3, &mut cpu, &mut bus);
+        assert!(result.is_some(), "StandardGetFilePreview should be handled");
+        assert!(result.unwrap().is_ok());
+        assert_eq!(cpu.read_reg(Register::A7), base, "the 14-byte frame is popped");
+        assert_eq!(bus.read_byte(reply), 0, "headless get-file answers cancel (sfGood false)");
+    }
+
+    #[test]
+    fn appearance_dispatch_pops_its_frame_and_writes_osstatus() {
+        for (selector, arg_bytes) in [(0x0004u32, 8u32), (0x0015, 0)] {
+            let (mut disp, mut cpu, mut bus) = setup();
+            let base = cpu.read_reg(Register::A7);
+            let slot = base.wrapping_sub(4);
+            bus.write_long(slot, 0xDEAD_BEEF);
+            let sp = slot.wrapping_sub(arg_bytes);
+            cpu.write_reg(Register::A7, sp);
+            cpu.write_reg(Register::D0, selector);
+
+            let result = disp.dispatch_toolbox(true, 0x274, &mut cpu, &mut bus);
+            assert!(result.is_some(), "Appearance selector ${selector:04X} should be handled");
+            assert!(result.unwrap().is_ok());
+            assert_eq!(cpu.read_reg(Register::A7), slot, "selector ${selector:04X} pops its frame");
+            assert_eq!(bus.read_long(slot), 0, "noErr OSStatus in the result slot");
+            assert_eq!(cpu.read_reg(Register::D0), 0);
+        }
+    }
+
+    #[test]
     fn threaddispatch_unsupported_selector_returns_param_err() {
         let (mut disp, mut cpu, mut bus) = setup();
         let sp = cpu.read_reg(Register::A7);

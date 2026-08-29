@@ -9407,6 +9407,78 @@
     }
 
     #[test]
+    fn fillcrect_full_bounds_raw_pixpat_on_a_screen_window_honors_its_visible_region() {
+        // A window on the screen (zero-origin bounds) fills its whole port
+        // while BeginUpdate has narrowed its visRgn to the update area. Only
+        // that area may be painted; the rest belongs to the windows in front.
+        let (mut d, mut cpu, mut bus) = setup();
+        let row_bytes = 64u32;
+        let screen_base = bus.alloc(row_bytes * 64);
+        bus.fill_zeros(screen_base, row_bytes * 64);
+        d.screen_mode = (screen_base, row_bytes, 64, 64, 8);
+        d.device_clut = [[0, 0, 0]; 256];
+        d.device_clut[7] = [0x1111, 0x0000, 0x0000];
+        d.device_clut[8] = [0x0000, 0x2222, 0x0000];
+        d.device_clut[9] = [0x0000, 0x0000, 0x3333];
+        let port = bus.alloc(128);
+        let pixmap_handle = bus.alloc(4);
+        let pixmap = bus.alloc(50);
+        bus.write_long(pixmap_handle, pixmap);
+        bus.write_long(port + 2, pixmap_handle);
+        bus.write_word(port + 6, 0xC000);
+        bus.write_long(pixmap, screen_base);
+        bus.write_word(pixmap + 4, 0x8000 | row_bytes as u16);
+        bus.write_word(pixmap + 6, 0);
+        bus.write_word(pixmap + 8, 0);
+        bus.write_word(pixmap + 10, 64);
+        bus.write_word(pixmap + 12, 64);
+        bus.write_word(pixmap + 32, 8);
+        let vis = bus.alloc(10);
+        bus.write_word(vis, 10);
+        bus.write_word(vis + 2, 10);
+        bus.write_word(vis + 4, 10);
+        bus.write_word(vis + 6, 20);
+        bus.write_word(vis + 8, 20);
+        let vis_handle = bus.alloc(4);
+        bus.write_long(vis_handle, vis);
+        bus.write_long(port + 24, vis_handle);
+        let clip = bus.alloc(10);
+        bus.write_word(clip, 10);
+        bus.write_word(clip + 2, 0);
+        bus.write_word(clip + 4, 0);
+        bus.write_word(clip + 6, 64);
+        bus.write_word(clip + 8, 64);
+        let clip_handle = bus.alloc(4);
+        bus.write_long(clip_handle, clip);
+        bus.write_long(port + 28, clip_handle);
+        d.current_port = port;
+        let globals_ptr = bus.read_long(cpu.read_reg(Register::A5));
+        bus.write_long(globals_ptr, port);
+        let pp_handle = make_raw_color_pixpat_handle(&mut bus);
+        let rect_ptr = bus.alloc(8);
+        write_rect(&mut bus, rect_ptr, 0, 0, 64, 64);
+        bus.write_long(TEST_SP, pp_handle);
+        bus.write_long(TEST_SP + 4, rect_ptr);
+        let result = d.dispatch_quickdraw(true, 0x20E, &mut cpu, &mut bus);
+        assert!(result.unwrap().is_ok());
+        assert_ne!(
+            read_surface_pixel(&bus, screen_base, row_bytes, 12, 12),
+            0,
+            "the update area is painted"
+        );
+        assert_eq!(
+            read_surface_pixel(&bus, screen_base, row_bytes, 0, 0),
+            0,
+            "outside the visible region nothing is painted"
+        );
+        assert_eq!(
+            read_surface_pixel(&bus, screen_base, row_bytes, 40, 40),
+            0,
+            "outside the visible region nothing is painted"
+        );
+    }
+
+    #[test]
     fn fillcrect_full_bounds_raw_pixpat_repaints_offset_backing_store() {
         let (mut d, mut cpu, mut bus) = setup();
         let row_bytes = 64u32;

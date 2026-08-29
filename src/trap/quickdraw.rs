@@ -25100,10 +25100,21 @@ impl super::TrapDispatcher {
         let dst_width = i32::from(bounds_right) - i32::from(bounds_left);
         let rect_height = i32::from(r.bottom) - i32::from(r.top);
         let rect_width = i32::from(r.right) - i32::from(r.left);
+        // A full-bounds fill may ignore the port's regions only on an offset
+        // backing store, where a stale clip left over from an earlier port
+        // configuration would otherwise pin the fill to a corner (the test
+        // below this one). A zero-origin port is a window on the screen, and
+        // its visRgn is the Window Manager's: windows in front of it are
+        // holes, and BeginUpdate narrows it to the update region. Cythera's
+        // backdrop window fills its whole port on every update; skipping
+        // the clip there painted its desktop tile over the control bar and
+        // the character window that had just been opened in front of it.
+        // Inside Macintosh Volume I, I-149 and I-291.
         let fills_destination_bounds = r.top <= bounds_top
             && r.left <= bounds_left
             && r.bottom >= bounds_bottom
-            && r.right >= bounds_right;
+            && r.right >= bounds_right
+            && (bounds_top != 0 || bounds_left != 0);
         let fills_hidden_menu_screen_bounds = self.menu_bar_hidden
             && is_screen_port
             && port == self.front_window

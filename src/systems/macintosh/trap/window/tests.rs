@@ -4752,6 +4752,58 @@ fn findwindow_reports_ingoaway_for_active_document_behind_floating_utility() {
 }
 
 #[test]
+fn find_window_gives_no_drag_strip_to_frameless_windows() {
+    // A plainDBox window (procID 2) or an application WDEF has no title
+    // bar. A point just above such a window's content, inside the window
+    // behind it, belongs to that window's content, not to a drag region
+    // the frameless window never had. Cythera's control bar is layered
+    // over its map window this way, and every click in the bar was being
+    // reported as inDrag on the window above it.
+    let (mut disp, mut cpu, mut bus) = setup();
+    bus.write_word(crate::memory::globals::addr::MBAR_HEIGHT, 0);
+    let screen_base = bus.alloc(800 * 600);
+    bus.write_long(0x0824, screen_base);
+    disp.set_screen_mode_for_test(screen_base, 800, 800, 600, 8);
+
+    let main_window = bus.alloc(256);
+    disp.init_cgraf_window(
+        &mut bus, &mut cpu, main_window, screen_base, 0, 0, 600, 800, "", 0, true, false,
+        false, 0,
+    );
+    let frameless = bus.alloc(256);
+    disp.init_cgraf_window(
+        &mut bus, &mut cpu, frameless, screen_base, 300, 100, 500, 700, "", 2, true, false,
+        false, 0,
+    );
+    assert_eq!(disp.window_list, vec![frameless, main_window]);
+
+    let find = |disp: &mut super::super::TrapDispatcher, cpu: &mut super::super::test_helpers::MockCpu, bus: &mut crate::memory::MacMemoryBus, v: i16, h: i16| {
+        let wnd_ptr_ptr: u32 = bus.alloc(4);
+        let sp = TEST_SP - 10;
+        cpu.write_reg(Register::A7, sp);
+        bus.write_long(sp, wnd_ptr_ptr);
+        bus.write_word(sp + 4, v as u16);
+        bus.write_word(sp + 6, h as u16);
+        bus.write_word(sp + 8, 0);
+        dispatch(disp, 0x12C, cpu, bus).unwrap().unwrap();
+        (bus.read_word(cpu.read_reg(Register::A7)), bus.read_long(wnd_ptr_ptr))
+    };
+
+    // Ten pixels above the frameless window: the main window's content.
+    assert_eq!(find(&mut disp, &mut cpu, &mut bus, 290, 400), (3, main_window));
+    // Inside it: its own content.
+    assert_eq!(find(&mut disp, &mut cpu, &mut bus, 400, 400), (3, frameless));
+
+    // A titled document window in the same place keeps its drag strip.
+    let titled = bus.alloc(256);
+    disp.init_cgraf_window(
+        &mut bus, &mut cpu, titled, screen_base, 300, 100, 500, 700, "", 0, true, false,
+        false, 0,
+    );
+    assert_eq!(find(&mut disp, &mut cpu, &mut bus, 290, 400), (4, titled));
+}
+
+#[test]
 fn find_window_walks_front_to_back_and_uses_port_bounds_for_global_hits() {
     let (mut disp, mut cpu, mut bus) = setup();
     bus.write_word(crate::memory::globals::addr::MBAR_HEIGHT, 0);

@@ -2296,6 +2296,21 @@ impl super::TrapDispatcher {
             // titled windows. FindWindow receives a global point and reports
             // a WindowPtr without activating it. Inside Macintosh Volume I,
             // I-287; MTE 1992 p. 4-91.
+            //
+            // Only the standard document definitions have that strip. A
+            // plainDBox/altDBox window or an application WDEF whose frame is
+            // whatever it draws has no title bar, and its structure region is
+            // (at least for hit-testing) its content rect; the strip belongs
+            // to the WDEF's wHit reply, which for those is never wInDrag
+            // above the content. Granting every window a phantom strip lets a
+            // frameless window that starts just below a point steal a click
+            // from the window that actually contains it, reported as inDrag.
+            // Inside Macintosh Volume I, I-269 (window definition IDs) and
+            // I-299 (the hit message).
+            let proc_id = self.window_proc_ids.get(&window_ptr).copied().unwrap_or(0);
+            if !Self::window_is_document_proc(proc_id) {
+                continue;
+            }
             let title_top = top.saturating_sub(20).max(mbar_h);
             if pt_v >= title_top && pt_v < top && pt_h >= left && pt_h <= right {
                 return (4, window_ptr);
@@ -4731,6 +4746,18 @@ impl super::TrapDispatcher {
                         "[INPUT] FindWindow point=({}, {}) -> part={} window=${:08X}",
                         pt_v, pt_h, part, window_ptr
                     );
+                    for (index, &candidate) in self.window_list.windows().iter().enumerate() {
+                        let rect = self.window_global_port_rect(bus, candidate);
+                        eprintln!(
+                            "[INPUT]   list[{}] window=${:08X} procID={} visible={} rect={:?} refCon=${:08X}",
+                            index,
+                            candidate,
+                            self.window_proc_ids.get(&candidate).copied().unwrap_or(0),
+                            self.window_visible(bus, candidate),
+                            rect,
+                            bus.read_long(candidate + Self::WINDOW_REFCON_OFFSET),
+                        );
+                    }
                 }
                 if trace_dragwindow_enabled() {
                     eprintln!(

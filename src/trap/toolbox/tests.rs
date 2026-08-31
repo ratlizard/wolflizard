@@ -7973,6 +7973,71 @@
         assert_eq!(data_bounds_bottom, 3);
     }
 
+    // Pack0 / List Manager ($A9E7) — LAddColumn $0004 and LDelColumn $0020
+    // IM:IV 1986 p. IV-270 to IV-271: LAddColumn returns the first column
+    // added and increases dataBounds.right; LDelColumn removes columns and
+    // decreases it. Both reached the catch-all fallback before, which pops
+    // the frame and does nothing, so a guest that added a column got a list
+    // that stayed the width it started at.
+    #[test]
+    fn pack0_laddcolumn_and_ldelcolumn_move_databounds_right() {
+        let (mut disp, mut cpu, mut bus) = setup();
+        let sp = TEST_SP;
+        let view_rect_ptr = 0x351000u32;
+        let data_bounds_ptr = 0x351100u32;
+
+        bus.write_word(view_rect_ptr, 0);
+        bus.write_word(view_rect_ptr + 2, 0);
+        bus.write_word(view_rect_ptr + 4, 40);
+        bus.write_word(view_rect_ptr + 6, 80);
+        bus.write_word(data_bounds_ptr, 0);
+        bus.write_word(data_bounds_ptr + 2, 0);
+        bus.write_word(data_bounds_ptr + 4, 2);
+        bus.write_word(data_bounds_ptr + 6, 1);
+
+        bus.write_word(sp, 0x0044); // LNew
+        bus.write_word(sp + 2, 0);
+        bus.write_word(sp + 4, 0);
+        bus.write_word(sp + 6, 0);
+        bus.write_word(sp + 8, 0);
+        bus.write_long(sp + 10, 0x210000);
+        bus.write_word(sp + 14, 0);
+        bus.write_word(sp + 16, 10);
+        bus.write_word(sp + 18, 40);
+        bus.write_long(sp + 20, data_bounds_ptr);
+        bus.write_long(sp + 24, view_rect_ptr);
+        bus.write_long(sp + 28, 0);
+        let create = disp.dispatch_toolbox(true, 0x1E7, &mut cpu, &mut bus);
+        assert!(create.unwrap().is_ok());
+        let list_handle = bus.read_long(sp + 28);
+        let list_ptr = bus.read_long(list_handle);
+        // dataBounds is at +72; right is the fourth word of that Rect.
+        let data_bounds_right = |bus: &MacMemoryBus| bus.read_word(list_ptr + 78) as i16;
+        assert_eq!(data_bounds_right(&bus), 1);
+
+        cpu.write_reg(Register::A7, sp);
+        bus.write_word(sp, 0x0004); // LAddColumn
+        bus.write_long(sp + 2, list_handle);
+        bus.write_word(sp + 6, 1); // colNum
+        bus.write_word(sp + 8, 2); // count
+        bus.write_word(sp + 10, 0xBEEF); // INTEGER result slot
+        let add = disp.dispatch_toolbox(true, 0x1E7, &mut cpu, &mut bus);
+        assert!(add.unwrap().is_ok());
+        assert_eq!(bus.read_word(sp + 10), 1, "returns the first column added");
+        assert_eq!(cpu.read_reg(Register::A7), sp + 10);
+        assert_eq!(data_bounds_right(&bus), 3, "two columns added");
+
+        cpu.write_reg(Register::A7, sp);
+        bus.write_word(sp, 0x0020); // LDelColumn
+        bus.write_long(sp + 2, list_handle);
+        bus.write_word(sp + 6, 1); // colNum
+        bus.write_word(sp + 8, 2); // count
+        let del = disp.dispatch_toolbox(true, 0x1E7, &mut cpu, &mut bus);
+        assert!(del.unwrap().is_ok());
+        assert_eq!(cpu.read_reg(Register::A7), sp + 10, "procedure, no result slot");
+        assert_eq!(data_bounds_right(&bus), 1, "back to the width it started at");
+    }
+
     // Pack0 / List Manager ($A9E7) — LFind selector $0034
     // IM:IV 1986 p. IV-273: offset and length of a cell's data; 18-byte frame.
     #[test]

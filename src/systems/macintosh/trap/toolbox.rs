@@ -12793,6 +12793,67 @@ impl super::TrapDispatcher {
                         Ok(())
                     }
 
+                    // LDelColumn (selector 32 / $20)
+                    // Deletes columns from the list.
+                    // PROCEDURE LDelColumn(count, colNum: INTEGER;
+                    //                      lHandle: ListHandle);
+                    // Inside Macintosh Volume IV, IV-271
+                    // Pascal calling: sel(2) + lHandle(4) + colNum(2) +
+                    // count(2) = 10; no result slot.
+                    0x20 => {
+                        let list_handle = bus.read_long(sp + 2);
+                        let col = bus.read_word(sp + 6) as i16;
+                        let count = bus.read_word(sp + 8) as i16;
+
+                        self.list_states.with_record_mut(list_handle, |state| {
+                            if count > 0 && col < state.data_bounds.3 {
+                                state.cells.retain(|&(_, cell_col), _| {
+                                    cell_col < col || cell_col >= col + count
+                                });
+                                let moved = state
+                                    .cells
+                                    .drain()
+                                    .map(|((cell_row, cell_col), data)| {
+                                        let new_col = if cell_col >= col + count {
+                                            cell_col - count
+                                        } else {
+                                            cell_col
+                                        };
+                                        ((cell_row, new_col), data)
+                                    })
+                                    .collect();
+                                state.cells = moved;
+                                state.selected = state
+                                    .selected
+                                    .iter()
+                                    .filter_map(|&(cell_row, cell_col)| {
+                                        if cell_col >= col && cell_col < col + count {
+                                            None
+                                        } else {
+                                            let new_col = if cell_col >= col + count {
+                                                cell_col - count
+                                            } else {
+                                                cell_col
+                                            };
+                                            Some((cell_row, new_col))
+                                        }
+                                    })
+                                    .collect();
+                                state.data_bounds.3 =
+                                    (state.data_bounds.3 - count).max(state.data_bounds.1);
+                                state.visible = Self::compute_list_visible_rect(
+                                    state.view_rect,
+                                    state.data_bounds,
+                                    state.cell_size,
+                                );
+                                Self::sync_list_state_to_guest(bus, list_handle, state);
+                            }
+                        });
+
+                        cpu.write_reg(Register::A7, sp + 10);
+                        Ok(())
+                    }
+
                     // LDelRow (selector 36 / $24)
                     // Deletes rows from the list.
                     // PROCEDURE LDelRow(count, rowNum: INTEGER; lHandle: ListHandle);

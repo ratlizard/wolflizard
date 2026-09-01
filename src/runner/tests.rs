@@ -17709,6 +17709,55 @@
     }
 
     #[test]
+    fn hle_work_surcharges_are_converted_for_a_scripted_cadence() {
+        // A full-screen 8-bit CopyBits: 640x480 at one unit per pixel, plus
+        // the fixed per-call term. `quickdraw_blit_tick_cost` sizes that
+        // against the reference machine profile, where it is about one tick.
+        let full_screen_blit = crate::trap::dispatch::TrapDispatcher::quickdraw_blit_tick_cost(
+            640, 480, 8, 8, false,
+        ) as i32;
+        let reference = default_realtime_instructions_per_tick(false);
+
+        let mut runner = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());
+
+        // The library default is the scripted cadence, which is not a machine
+        // speed: charged unmodified there, one such blit would cost 25 ticks --
+        // longer than a frame -- and defeat any TickCount-deadline frame
+        // limiter the guest has. It is converted instead.
+        let scripted_cadence = crate::machine_profile::DEFAULT_HOST_EXECUTION_POLICY
+            .scripted_instructions_per_tick;
+        assert_eq!(runner.instructions_per_tick(), scripted_cadence);
+        let scripted = runner.hle_work_units_for_cadence(full_screen_blit);
+        assert!(
+            scripted < full_screen_blit / 30,
+            "scripted cadence should charge a fraction of the reference cost, got {scripted} of {full_screen_blit}"
+        );
+        assert!(
+            scripted < scripted_cadence as i32,
+            "a full-screen blit must cost less than one tick, got {scripted}"
+        );
+
+        // Work is never free: a surcharge too small to scale still costs one
+        // unit, so an application cannot get unlimited HLE work per tick.
+        assert_eq!(runner.hle_work_units_for_cadence(1), 1);
+        assert_eq!(runner.hle_work_units_for_cadence(0), 0);
+
+        // The desktop and browser runners set the reference cadence, and a
+        // PowerPC profile sets a faster one still. Neither is touched, so
+        // wall-clock-paced pacing is exactly as it was.
+        runner.set_instructions_per_tick(reference);
+        assert_eq!(
+            runner.hle_work_units_for_cadence(full_screen_blit),
+            full_screen_blit
+        );
+        runner.set_instructions_per_tick(default_realtime_instructions_per_tick(true));
+        assert_eq!(
+            runner.hle_work_units_for_cadence(full_screen_blit),
+            full_screen_blit
+        );
+    }
+
+    #[test]
     fn tick_progress_persists_across_multiple_run_slices() {
         let mut runner = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());
         let program_start = 0x0001_0000;

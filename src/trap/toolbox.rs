@@ -5075,6 +5075,66 @@ impl super::TrapDispatcher {
         }
     }
 
+    /// The command ID an Appearance-era application assigned to a menu item.
+    ///
+    /// Command IDs are not stored in the `MENU` resource. An application built
+    /// against the Appearance Manager ships an `xmnu` resource beside each
+    /// `MENU` of the same id, and the Menu Manager is expected to read the
+    /// command IDs out of it; `SetMenuItemCommandID` is only for menus built
+    /// at run time, and an application that ships `xmnu` never calls it.
+    ///
+    /// The resource is a version word, an item count, and then one entry per
+    /// item in order. The entry's leading word says whether the item carries a
+    /// command: zero for one that does not -- a separator -- and that word is
+    /// the whole entry; otherwise the entry is 30 bytes and its command ID is
+    /// the long at +2. Cythera's `xmnu` 129 parses to exactly its 252 bytes
+    /// this way, giving Save = 5 and Quit = 10.
+    ///
+    /// Returning zero for everything, as this did before, is not the harmless
+    /// default it looks like. Zero is the documented "no command ID", and a
+    /// caller is free to treat it as "not handled" rather than falling back to
+    /// menu and item -- Cythera does exactly that, so every item of its File
+    /// menu was silently dropped, Save and Quit included.
+    fn menu_item_command_id(
+        &mut self,
+        bus: &mut MacMemoryBus,
+        menu_handle: u32,
+        item: i16,
+    ) -> u32 {
+        const ENTRY_BYTES: u32 = 30;
+        const MAX_ITEMS: u16 = 255;
+
+        if menu_handle == 0 || item < 1 {
+            return 0;
+        }
+        let menu_ptr = bus.read_long(menu_handle);
+        if menu_ptr == 0 {
+            return 0;
+        }
+        let menu_id = bus.read_word(menu_ptr) as i16;
+        let Some((_, res_ptr)) = self.find_or_load_resource_any(bus, *b"xmnu", menu_id) else {
+            return 0;
+        };
+        if res_ptr == 0 {
+            return 0;
+        }
+
+        let count = bus.read_word(res_ptr + 2).min(MAX_ITEMS);
+        let mut offset = res_ptr + 4;
+        for index in 1..=count {
+            let carries_command = bus.read_word(offset) != 0;
+            if !carries_command {
+                offset += 2;
+                continue;
+            }
+            if index as i16 == item {
+                return bus.read_long(offset + 2);
+            }
+            offset += ENTRY_BYTES;
+        }
+        0
+    }
+
     fn pack0_fallback<C: CpuOps>(
         &mut self,
         cpu: &mut C,
@@ -18013,9 +18073,18 @@ impl super::TrapDispatcher {
                         Ok(())
                     }
                     0x0503 => {
+                        // GetMenuItemCommandID(menu: MenuHandle;
+                        //     item: MenuItemIndex; VAR outCommandID:
+                        //     MenuCommand): OSStatus
+                        //
+                        // Pascal frame: SP+0 = VAR outCommandID (4),
+                        // SP+4 = item (2), SP+6 = menu (4), result at SP+10.
                         let out_command_id = bus.read_long(sp);
+                        let item = bus.read_word(sp + 4) as i16;
+                        let menu_handle = bus.read_long(sp + 6);
+                        let command_id = self.menu_item_command_id(bus, menu_handle, item);
                         if out_command_id != 0 {
-                            bus.write_long(out_command_id, 0);
+                            bus.write_long(out_command_id, command_id);
                         }
                         bus.write_word(sp + 10, 0);
                         cpu.write_reg(Register::A7, sp + 10);

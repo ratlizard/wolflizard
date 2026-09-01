@@ -393,26 +393,62 @@ impl super::TrapDispatcher {
         self.flushed_update_events.push_back(event.clone());
     }
 
+    /// The launch Apple event this application is still owed, if any.
+    ///
+    /// The Finder sends required launch Apple events only to applications
+    /// whose 'SIZE' resource declares isHighLevelEventAware. Applications
+    /// without that resource or flag default to false.
+    /// Macintosh Toolbox Essentials 1992, pp. 2-30 to 2-32 and 5-90.
+    ///
+    /// This reports without recording anything, so a caller that only
+    /// inspects the event stream can answer truthfully without consuming
+    /// the one chance to deliver it. See `enqueue_open_application_event_if_needed`.
+    fn pending_open_application_event(
+        &self,
+        event_mask: u16,
+    ) -> Option<super::dispatch::QueuedEvent> {
+        if (event_mask & Self::HIGH_LEVEL_EVENT_MASK) == 0
+            || !self.apple_event_launch_state.is_high_level_event_aware()
+            || self
+                .apple_event_launch_state
+                .is_open_application_event_sent()
+        {
+            return None;
+        }
+        Some(self.open_application_event())
+    }
+
+    /// The synthetic `kAEOpenApplication` the Finder would have sent, as it
+    /// appears in the event queue.
+    fn open_application_event(&self) -> super::dispatch::QueuedEvent {
+        super::dispatch::QueuedEvent {
+            what: Self::K_HIGH_LEVEL_EVENT,
+            message: Self::K_CORE_EVENT_CLASS,
+            when: self.current_tick(),
+            where_v: (Self::K_AE_OPEN_APPLICATION >> 16) as i16,
+            where_h: (Self::K_AE_OPEN_APPLICATION & 0xFFFF) as i16,
+            modifiers: 0,
+        }
+    }
+
+    /// Queue the launch Apple event, once, for delivery.
+    ///
+    /// Only a caller that can actually hand the event to the application may
+    /// do this. The queue reached from an inspection-only path is not always
+    /// the process-owned queue the delivery path drains, and claiming the
+    /// event spends the process-wide one shot: claiming from the wrong side
+    /// loses the event permanently, because the claim prevents a second
+    /// attempt. That is how a peek-first application came to sit on its
+    /// splash screen for ever.
     fn enqueue_open_application_event_if_needed(&mut self, event_mask: u16) {
-        // The Finder sends required launch Apple events only to applications
-        // whose 'SIZE' resource declares isHighLevelEventAware. Applications
-        // without that resource or flag default to false.
-        // Macintosh Toolbox Essentials 1992, pp. 2-30 to 2-32 and 5-90.
         if (event_mask & Self::HIGH_LEVEL_EVENT_MASK) == 0
             || !self.apple_event_launch_state.claim_open_application_event()
         {
             return;
         }
 
-        let tick = self.current_tick();
-        self.event_queue.push_front(super::dispatch::QueuedEvent {
-            what: Self::K_HIGH_LEVEL_EVENT,
-            message: Self::K_CORE_EVENT_CLASS,
-            when: tick,
-            where_v: (Self::K_AE_OPEN_APPLICATION >> 16) as i16,
-            where_h: (Self::K_AE_OPEN_APPLICATION & 0xFFFF) as i16,
-            modifiers: 0,
-        });
+        let event = self.open_application_event();
+        self.event_queue.push_front(event);
     }
 
     fn tick_has_reached(now: u32, due: u32) -> bool {
@@ -509,7 +545,9 @@ impl super::TrapDispatcher {
         bus: &MacMemoryBus,
         event_mask: u16,
     ) -> Option<super::dispatch::QueuedEvent> {
-        self.enqueue_open_application_event_if_needed(event_mask);
+        // Report the launch Apple event without queueing it: this path only
+        // inspects the stream, and queueing here would latch the one delivery
+        // attempt against a queue the delivery path does not drain.
         self.enqueue_auto_key_if_due(
             bus.read_word(crate::memory::globals::addr::SYS_EVT_MASK),
             event_mask,
@@ -548,6 +586,10 @@ impl super::TrapDispatcher {
             ),
             (queued, update) => queued.or(update),
         }
+        // Nothing queued: the application is still owed its launch event, and
+        // EventAvail must say so even though only the delivery path may queue
+        // it. Macintosh Toolbox Essentials 1992, pp. 2-30 to 2-32.
+        .or_else(|| self.pending_open_application_event(event_mask))
     }
 
     fn peek_event(

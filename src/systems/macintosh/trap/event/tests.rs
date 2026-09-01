@@ -264,6 +264,46 @@ fn keys_use_classic_keymap_bit_order() {
 }
 
 #[test]
+fn peeking_the_launch_apple_event_does_not_consume_the_one_delivery_attempt() {
+    // EventAvail must report the pending launch Apple event without
+    // queueing it or latching `sent_open_app_event`. Queueing from an
+    // inspection-only path is not merely redundant: that path does not
+    // always hold the queue the delivery path drains, so the latch spends
+    // the single delivery attempt on a queue nobody reads and the
+    // application never receives kAEOpenApplication at all.
+    // Macintosh Toolbox Essentials 1992, pp. 2-30 to 2-32.
+    let (mut disp, mut cpu, mut bus) = setup();
+    disp.application_high_level_event_aware = true;
+    disp.sent_open_app_event = false;
+    disp.event_queue.clear();
+
+    let peeked = disp.peek_toolbox_event(&bus, 0xFFFF);
+    assert_eq!(
+        peeked.map(|event| event.what),
+        Some(23u16),
+        "EventAvail must report the launch event"
+    );
+    assert!(
+        !disp.sent_open_app_event,
+        "peeking must not spend the delivery attempt"
+    );
+    assert!(
+        disp.event_queue.is_empty(),
+        "peeking must not queue the launch event"
+    );
+
+    let (what, message, _, _, _, _, has_event) =
+        disp.dequeue_toolbox_event(&mut cpu, &mut bus, 0xFFFF);
+    assert!(has_event, "WaitNextEvent must deliver the launch event");
+    assert_eq!(what, 23u16);
+    assert_eq!(message, 0x6165_7674u32);
+    assert!(
+        disp.sent_open_app_event,
+        "delivery spends the attempt exactly once"
+    );
+}
+
+#[test]
 fn repeated_host_keydown_does_not_duplicate_keydown_or_restart_autokey() {
     // Browsers emit repeated keydown callbacks for a held key. Classic
     // Event Manager emits one keyDown followed by timed autoKey records.

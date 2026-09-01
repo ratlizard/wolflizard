@@ -3667,6 +3667,21 @@ impl super::TrapDispatcher {
             Self::ALIAS_EXTRA_PARENT_DIR_NAME,
             &encode_mac_roman_lossy(&parent_name),
         );
+        // Also record the full path, so the record carries what ResolveAlias's
+        // own path branch looks for. Until 1 September 2026 no record built
+        // here carried one, while ResolveAlias resolved *only* through this
+        // extra -- so no alias a guest created could ever be resolved again.
+        // The parent-dir-ID fallback in the $0003 arm is the primary fix (it
+        // also repairs records already sitting on disk); this line just makes
+        // new records honest.
+        if let Some(key) = target_key.as_ref() {
+            let full_path = format!("{}:{}", Self::boot_volume_name(), key.replace('/', ":"));
+            Self::append_alias_extra(
+                &mut record,
+                Self::ALIAS_EXTRA_FULL_PATH,
+                &encode_mac_roman_lossy(&full_path),
+            );
+        }
         Self::append_alias_extra(&mut record, Self::ALIAS_EXTRA_END, &[]);
 
         let size = record.len().min(u16::MAX as usize) as u16;
@@ -14569,7 +14584,7 @@ impl super::TrapDispatcher {
                                 )
                             })
                             .flatten();
-                        let found = full_path.and_then(|path_bytes| {
+                        let mut found = full_path.and_then(|path_bytes| {
                             let full_path = decode_mac_roman(&path_bytes);
                             let relative_path = full_path
                                 .split_once(':')
@@ -14577,7 +14592,20 @@ impl super::TrapDispatcher {
                                 .unwrap_or(full_path.as_str());
                             let normalized = Self::normalize_hfs_path(relative_path);
                             self.ensure_vfs_catalog();
-                            Self::find_case_insensitive_relative_key(self.vfs.keys(), &normalized)
+                            // Exact match FIRST. find_case_insensitive_relative_key
+                            // is a partial matcher -- it requires a key to end_with
+                            // "/" + target, so a key EQUAL to the target can never
+                            // match it. Measured before the fix: a record carrying
+                            // the complete correct path returned fnfErr while one
+                            // carrying a truncated path resolved. find_vfs_file
+                            // does exact-then-partial over the data forks.
+                            self.find_vfs_file(&normalized)
+                                .or_else(|| {
+                                    self.vfs_rsrc
+                                        .keys()
+                                        .find(|key| key.eq_ignore_ascii_case(&normalized))
+                                        .cloned()
+                                })
                                 .or_else(|| {
                                     Self::find_case_insensitive_relative_key(
                                         self.vfs_rsrc.keys(),
@@ -14585,6 +14613,57 @@ impl super::TrapDispatcher {
                                     )
                                 })
                         });
+
+                        // The full-path extra is a hint, not the record. Inside
+                        // Macintosh: Files (1992), pp. 4-4..4-5: the Alias
+                        // Manager's fast search uses the parent directory ID and
+                        // the target name held in the record's own fixed fields
+                        // (+46 and +50, written by build_alias_record above),
+                        // and only falls back to searching by path. Records
+                        // built here carried no full-path extra at all until the
+                        // fix above, so this branch is what resolves every alias
+                        // already sitting in a preferences file on disk --
+                        // including Cythera's CurPlayer record, whose absence of
+                        // a kind-2 extra kept the Onward button reading "No
+                        // Player Selected" while the preference itself loaded
+                        // perfectly.
+                        if found.is_none() && alias_data_ptr != 0 {
+                            let parent_dir_id = bus.read_long(alias_data_ptr + 46);
+                            let name_length =
+                                (bus.read_byte(alias_data_ptr + 50) as usize).min(63);
+                            let target_name = decode_mac_roman(
+                                &bus.read_bytes(alias_data_ptr + 51, name_length),
+                            );
+                            if !target_name.is_empty() {
+                                self.ensure_vfs_catalog();
+                                for candidate_dir_id in self.hfs_lookup_directory_ids(
+                                    Self::boot_volume_ref_num(),
+                                    parent_dir_id,
+                                ) {
+                                    found = self
+                                        .find_vfs_file_in_directory(candidate_dir_id, &target_name)
+                                        .or_else(|| {
+                                            self.find_vfs_rsrc_file_in_directory(
+                                                candidate_dir_id,
+                                                &target_name,
+                                            )
+                                        })
+                                        .or_else(|| {
+                                            self.find_vfs_directory_in_directory(
+                                                candidate_dir_id,
+                                                &target_name,
+                                            )
+                                            // The volume root reports an empty
+                                            // key; keep that sentinel out of
+                                            // the FSSpec.
+                                            .filter(|key| !key.is_empty())
+                                        });
+                                    if found.is_some() {
+                                        break;
+                                    }
+                                }
+                            }
+                        }
 
                         if was_changed_ptr != 0 {
                             bus.write_byte(was_changed_ptr, 0);

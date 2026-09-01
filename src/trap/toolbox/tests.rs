@@ -8030,6 +8030,116 @@
     }
 
     #[test]
+    fn resolve_alias_round_trips_new_alias_and_records_without_a_path_extra() {
+        // Until 1 September 2026 NewAlias and ResolveAlias could not round-trip:
+        // build_alias_record appended only a parent-directory-name extra while
+        // ResolveAlias resolved only through the full-path extra, so every
+        // alias a guest created answered fnfErr (-43) forever after. That is
+        // exactly how Cythera's Onward button stayed on "No Player Selected"
+        // while its CurPlayer preference resource loaded perfectly.
+        //
+        // Two cases here. The round trip covers records written from now on.
+        // The second case strips the full-path extra to mimic a record already
+        // sitting in a preferences file on disk, which only the parent-dir-ID
+        // + name fallback (IM: Files pp. 4-4..4-5, the Alias Manager's primary
+        // mechanism) can resolve.
+        let (mut disp, mut cpu, mut bus) = setup();
+        let sp = TEST_SP;
+        disp.vfs
+            .insert("Onward Player".to_string(), vec![0u8; 16]);
+        disp.ensure_vfs_catalog();
+
+        // FSSpec for the target at the volume root.
+        let target = 0x360000u32;
+        bus.write_word(target, TrapDispatcher::boot_volume_ref_num_u16());
+        bus.write_long(target + 2, 2); // fsRtDirID
+        let name = b"Onward Player";
+        bus.write_byte(target + 6, name.len() as u8);
+        bus.write_bytes(target + 7, name);
+
+        // NewAlias (selector 2): alias_ptr, target_ptr, fromFile, result.
+        let alias_out = 0x360100u32;
+        cpu.write_reg(Register::A7, sp);
+        bus.write_long(sp, alias_out);
+        bus.write_long(sp + 4, target);
+        bus.write_long(sp + 8, 0);
+        bus.write_word(sp + 12, 0xBEEF);
+        cpu.write_reg(Register::D0, 2);
+        assert!(disp
+            .dispatch_toolbox(true, 0x023, &mut cpu, &mut bus)
+            .unwrap()
+            .is_ok());
+        let alias_handle = bus.read_long(alias_out);
+        assert_ne!(alias_handle, 0, "NewAlias produced a handle");
+
+        let resolve = |disp: &mut TrapDispatcher,
+                       cpu: &mut MockCpu,
+                       bus: &mut MacMemoryBus,
+                       handle: u32|
+         -> (u16, String) {
+            let out_spec = 0x360200u32;
+            for i in 0..70 {
+                bus.write_byte(out_spec + i, 0xEE);
+            }
+            cpu.write_reg(Register::A7, sp);
+            bus.write_long(sp, 0); // wasChanged: NIL is legal
+            bus.write_long(sp + 4, out_spec);
+            bus.write_long(sp + 8, handle);
+            bus.write_long(sp + 12, 0); // fromFile
+            bus.write_word(sp + 16, 0xBEEF);
+            cpu.write_reg(Register::D0, 3);
+            assert!(disp.dispatch_toolbox(true, 0x023, cpu, bus).unwrap().is_ok());
+            assert_eq!(cpu.read_reg(Register::A7), sp + 16, "ResolveAlias pops 16");
+            let err = bus.read_word(sp + 16);
+            let len = bus.read_byte(out_spec + 6) as usize;
+            let bytes = bus.read_bytes(out_spec + 7, len.min(63));
+            (err, String::from_utf8_lossy(&bytes).to_string())
+        };
+
+        let (err, resolved_name) = resolve(&mut disp, &mut cpu, &mut bus, alias_handle);
+        assert_eq!(err, 0, "a freshly built alias resolves");
+        assert_eq!(resolved_name, "Onward Player");
+
+        // Case two: the same record with its full-path extra excised -- the
+        // shape of every record written before the fix. Walk the extras
+        // (kind:i16, len:u16, data, pad-to-even) and drop kind 2.
+        let alias_data = bus.read_long(alias_handle);
+        let total = bus.read_word(alias_data + 4) as usize;
+        let record = bus.read_bytes(alias_data, total);
+        let fixed = 150usize; // ALIAS_RECORD_FIXED_SIZE
+        let mut stripped = record[..fixed].to_vec();
+        let mut at = fixed;
+        while at + 4 <= record.len() {
+            let kind = i16::from_be_bytes([record[at], record[at + 1]]);
+            let len = u16::from_be_bytes([record[at + 2], record[at + 3]]) as usize;
+            let padded = len + (len % 2);
+            let end = (at + 4 + padded).min(record.len());
+            if kind != 2 {
+                stripped.extend_from_slice(&record[at..end]);
+            }
+            if kind == -1 {
+                break;
+            }
+            at = end;
+        }
+        let new_size = stripped.len().min(u16::MAX as usize) as u16;
+        stripped[4] = (new_size >> 8) as u8;
+        stripped[5] = (new_size & 0xFF) as u8;
+        let stripped_data = bus.alloc(stripped.len() as u32);
+        bus.write_bytes(stripped_data, &stripped);
+        let stripped_handle = bus.alloc(4);
+        bus.write_long(stripped_handle, stripped_data);
+
+        let (err, resolved_name) = resolve(&mut disp, &mut cpu, &mut bus, stripped_handle);
+        assert_eq!(
+            err, 0,
+            "a record with no full-path extra resolves through its parent \
+             directory ID and name -- the on-disk CurPlayer case"
+        );
+        assert_eq!(resolved_name, "Onward Player");
+    }
+
+    #[test]
     fn pack0_lrect_reports_cell_rectangles_and_empties_offscreen_cells() {
         // LRect used to fall through to pack0_fallback, which pops the right
         // number of bytes and never writes the caller's VAR cellRect -- so the
@@ -15069,8 +15179,20 @@
         assert_eq!(bus.read_pstring(alias_data_ptr + 50), b"Prefs".to_vec());
         assert_eq!(bus.read_word(alias_data_ptr + 150) as i16, 0);
         let parent_len = bus.read_word(alias_data_ptr + 152) as usize;
-        let end_offset = 154 + parent_len + (parent_len % 2);
-        assert_eq!(bus.read_word(alias_data_ptr + end_offset as u32) as i16, -1);
+        let mut at = 154 + parent_len + (parent_len % 2);
+        // Since 1 September 2026 build_alias_record also appends a full-path
+        // extra (kind 2) when the target has a VFS key, so ResolveAlias's own
+        // path branch can read back what NewAlias wrote -- before that no
+        // record built here carried one, and no guest-created alias could
+        // ever be resolved again. Accept the extra when present, then require
+        // the end marker.
+        if bus.read_word(alias_data_ptr + at as u32) as i16
+            == TrapDispatcher::ALIAS_EXTRA_FULL_PATH
+        {
+            let path_len = bus.read_word(alias_data_ptr + at as u32 + 2) as usize;
+            at += 4 + path_len + (path_len % 2);
+        }
+        assert_eq!(bus.read_word(alias_data_ptr + at as u32) as i16, -1);
     }
 
     // AliasDispatch ($A823) / selector $0009 NewAliasMinimalFromFullPath

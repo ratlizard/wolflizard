@@ -5160,8 +5160,9 @@ impl SharedProcessAppleEventLaunchState {
     }
 
     /// Return whether the process-wide synthetic `kAEOpenApplication` has
-    /// already been claimed by either attached Event Manager gateway.
-    #[cfg(test)]
+    /// already been claimed by either attached Event Manager gateway. An
+    /// inspection-only trap path reads this rather than calling
+    /// `claim_open_application_event`, which would spend the one shot.
     pub(crate) fn is_open_application_event_sent(&self) -> bool {
         self.with_ref(|state| state.open_application_event_sent)
     }

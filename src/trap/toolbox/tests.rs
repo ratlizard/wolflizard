@@ -7965,6 +7965,70 @@
         assert_eq!(data_bounds_bottom, 3);
     }
 
+    // MenuDispatch ($A825) selector $0503 — GetMenuItemCommandID
+    // Inside Macintosh: Appearance Manager / Menu Manager. An Appearance-era
+    // application ships an 'xmnu' beside each 'MENU' and never calls
+    // SetMenuItemCommandID, so the command IDs have to come from the resource.
+    #[test]
+    fn get_menu_item_command_id_reads_the_xmnu_resource() {
+        let (mut disp, mut cpu, mut bus) = setup();
+
+        // 'xmnu' shaped like Cythera's: version, item count, then one entry
+        // per item -- a bare zero word for an item with no command, else a
+        // 30-byte entry whose command ID is the long at +2.
+        fn item_entry(xmnu: &mut Vec<u8>, command: u32) {
+            xmnu.extend_from_slice(&[0x00, 0x01]);
+            xmnu.extend_from_slice(&command.to_be_bytes());
+            xmnu.extend_from_slice(&[0u8; 24]);
+        }
+        let mut xmnu: Vec<u8> = vec![0x00, 0x00, 0x00, 0x04];
+        item_entry(&mut xmnu, 3); // item 1
+        xmnu.extend_from_slice(&[0x00, 0x00]); // item 2: separator
+        item_entry(&mut xmnu, 5); // item 3
+        item_entry(&mut xmnu, 10); // item 4
+        assert_eq!(xmnu.len(), 4 + 30 + 2 + 30 + 30);
+        disp.install_test_resource(&mut bus, *b"xmnu", 129, &xmnu);
+
+        // A menu record whose first word is the menu id, behind a handle.
+        let menu_ptr = bus.alloc(64);
+        bus.write_word(menu_ptr, 129);
+        let menu_handle = bus.alloc(4);
+        bus.write_long(menu_handle, menu_ptr);
+
+        let out = bus.alloc(4);
+        let mut command_for = |disp: &mut TrapDispatcher,
+                               cpu: &mut MockCpu,
+                               bus: &mut MacMemoryBus,
+                               item: u16| {
+            bus.write_long(out, 0xDEAD_BEEF);
+            let sp = TEST_SP;
+            cpu.write_reg(Register::A7, sp);
+            bus.write_long(sp, out);
+            bus.write_word(sp + 4, item);
+            bus.write_long(sp + 6, menu_handle);
+            bus.write_word(sp + 10, 0xFFFF);
+            cpu.write_reg(Register::D0, 0x0503);
+            let result = disp.dispatch_toolbox(true, 0x025, cpu, bus);
+            assert!(result.unwrap().is_ok());
+            assert_eq!(bus.read_word(cpu.read_reg(Register::A7)), 0, "noErr");
+            bus.read_long(out)
+        };
+
+        assert_eq!(command_for(&mut disp, &mut cpu, &mut bus, 1), 3);
+        assert_eq!(
+            command_for(&mut disp, &mut cpu, &mut bus, 2),
+            0,
+            "a separator carries no command"
+        );
+        assert_eq!(command_for(&mut disp, &mut cpu, &mut bus, 3), 5);
+        assert_eq!(command_for(&mut disp, &mut cpu, &mut bus, 4), 10);
+        assert_eq!(
+            command_for(&mut disp, &mut cpu, &mut bus, 9),
+            0,
+            "an item past the end carries no command"
+        );
+    }
+
     // Pack0 / List Manager ($A9E7) — LAddColumn $0004 and LDelColumn $0020
     // IM:IV 1986 p. IV-270 to IV-271: LAddColumn returns the first column
     // added and increases dataBounds.right; LDelColumn removes columns and

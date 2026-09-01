@@ -9442,10 +9442,10 @@
         let screen_base = bus.alloc(row_bytes * 64);
         bus.fill_zeros(screen_base, row_bytes * 64);
         d.screen_mode = (screen_base, row_bytes, 64, 64, 8);
-        d.device_clut = [[0, 0, 0]; 256];
-        d.device_clut[7] = [0x1111, 0x0000, 0x0000];
-        d.device_clut[8] = [0x0000, 0x2222, 0x0000];
-        d.device_clut[9] = [0x0000, 0x0000, 0x3333];
+        d.device_clut.with_mut(|clut| *clut = [[0, 0, 0]; 256]);
+        d.device_clut.with_mut(|clut| clut[7] = [0x1111, 0x0000, 0x0000]);
+        d.device_clut.with_mut(|clut| clut[8] = [0x0000, 0x2222, 0x0000]);
+        d.device_clut.with_mut(|clut| clut[9] = [0x0000, 0x0000, 0x3333]);
 
         let port = bus.alloc(128);
         let pixmap_handle = bus.alloc(4);
@@ -9485,7 +9485,7 @@
         bus.write_long(clip_handle, clip);
         bus.write_long(port + 28, clip_handle);
 
-        d.current_port = port;
+        d.current_port.with_mut(|current_port| *current_port = port);
         let globals_ptr = bus.read_long(cpu.read_reg(Register::A5));
         bus.write_long(globals_ptr, port);
 
@@ -9590,10 +9590,10 @@
         let screen_base = bus.alloc(row_bytes * 64);
         bus.fill_zeros(screen_base, row_bytes * 64);
         d.screen_mode = (screen_base, row_bytes, 64, 64, 8);
-        d.device_clut = [[0, 0, 0]; 256];
-        d.device_clut[7] = [0x1111, 0x0000, 0x0000];
-        d.device_clut[8] = [0x0000, 0x2222, 0x0000];
-        d.device_clut[9] = [0x0000, 0x0000, 0x3333];
+        d.device_clut.with_mut(|clut| *clut = [[0, 0, 0]; 256]);
+        d.device_clut.with_mut(|clut| clut[7] = [0x1111, 0x0000, 0x0000]);
+        d.device_clut.with_mut(|clut| clut[8] = [0x0000, 0x2222, 0x0000]);
+        d.device_clut.with_mut(|clut| clut[9] = [0x0000, 0x0000, 0x3333]);
         let port = bus.alloc(128);
         let pixmap_handle = bus.alloc(4);
         let pixmap = bus.alloc(50);
@@ -9625,7 +9625,7 @@
         let clip_handle = bus.alloc(4);
         bus.write_long(clip_handle, clip);
         bus.write_long(port + 28, clip_handle);
-        d.current_port = port;
+        d.current_port.with_mut(|current_port| *current_port = port);
         let globals_ptr = bus.read_long(cpu.read_reg(Register::A5));
         bus.write_long(globals_ptr, port);
         let pp_handle = make_raw_color_pixpat_handle(&mut bus);

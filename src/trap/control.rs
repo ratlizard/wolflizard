@@ -9470,12 +9470,12 @@ mod tests {
         // must not be rewritten a second time on the way back in.
         let (mut disp, mut cpu, mut bus) = setup_with_port();
         let sp = 0x300000u32;
-        let window_ptr = disp.current_port;
+        let window_ptr = *disp.current_port;
         let (ctrl_handle, ctrl_ptr) =
             alloc_button_control(&mut disp, &mut bus, window_ptr, (20, 20, 40, 80));
 
-        disp.mouse_button = true;
-        disp.mouse_pos = (30, 30);
+        disp.input_state.set_mouse_button_for_test(true);
+        disp.input_state.set_mouse_position_for_test((30, 30));
         arm_control_dispatch(&mut cpu, 0x000A, sp);
         bus.write_long(sp, 0);
         bus.write_word(sp + 4, 0);
@@ -9499,7 +9499,7 @@ mod tests {
         assert_eq!(bus.read_byte(ctrl_ptr + 17), 1, "held button is highlighted");
 
         // The refire: same trap, same A7, frame already rewritten.
-        disp.mouse_button = false;
+        disp.input_state.set_mouse_button_for_test(false);
         cpu.write_reg(Register::D0, 0x000A);
         disp.dispatch_control(true, 0x273, &mut cpu, &mut bus)
             .unwrap()

@@ -273,8 +273,10 @@ fn peeking_the_launch_apple_event_does_not_consume_the_one_delivery_attempt() {
     // application never receives kAEOpenApplication at all.
     // Macintosh Toolbox Essentials 1992, pp. 2-30 to 2-32.
     let (mut disp, mut cpu, mut bus) = setup();
-    disp.application_high_level_event_aware = true;
-    disp.sent_open_app_event = false;
+    disp.apple_event_launch_state
+        .set_high_level_event_aware(true);
+    disp.apple_event_launch_state
+        .set_open_application_event_sent(false);
     disp.event_queue.clear();
 
     let peeked = disp.peek_toolbox_event(&bus, 0xFFFF);
@@ -284,7 +286,9 @@ fn peeking_the_launch_apple_event_does_not_consume_the_one_delivery_attempt() {
         "EventAvail must report the launch event"
     );
     assert!(
-        !disp.sent_open_app_event,
+        !disp
+            .apple_event_launch_state
+            .is_open_application_event_sent(),
         "peeking must not spend the delivery attempt"
     );
     assert!(
@@ -298,7 +302,8 @@ fn peeking_the_launch_apple_event_does_not_consume_the_one_delivery_attempt() {
     assert_eq!(what, 23u16);
     assert_eq!(message, 0x6165_7674u32);
     assert!(
-        disp.sent_open_app_event,
+        disp.apple_event_launch_state
+            .is_open_application_event_sent(),
         "delivery spends the attempt exactly once"
     );
 }

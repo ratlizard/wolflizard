@@ -107,6 +107,7 @@ pub(crate) use systems::macintosh::thread_manager;
 pub(crate) use systems::macintosh::time_manager;
 pub(crate) use systems::macintosh::trace;
 pub(crate) use systems::macintosh::trap;
+pub(crate) use systems::macintosh::tune_player;
 pub(crate) use systems::macintosh::ui_art;
 pub(crate) use systems::macintosh::ui_theme;
 pub(crate) use systems::macintosh::window_manager;

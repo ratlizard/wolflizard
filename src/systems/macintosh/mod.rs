@@ -55,6 +55,7 @@ pub(crate) mod thread_manager;
 pub(crate) mod time_manager;
 pub mod trace;
 pub mod trap;
+pub(crate) mod tune_player;
 pub(crate) mod ui_art;
 pub mod ui_theme;
 pub(crate) mod window_manager;

@@ -270,6 +270,7 @@ fn is_builtin_gestalt_selector(sel: &[u8; 4]) -> bool {
             | b"rsrc"
             | b"scr#"
             | b"qtim"
+            | b"cpnt"
             | b"drag"
             | b"os  "
             | b"powr"
@@ -4093,6 +4094,26 @@ impl super::TrapDispatcher {
                     // the release byte as 0x80 for a final release.
                     b"qtim" => {
                         cpu.write_reg(Register::A0, QUICKTIME_NUM_VERSION);
+                        cpu.write_reg(Register::D0, 0); // noErr
+                    }
+                    // gestaltComponentMgr ('cpnt') -> Component Manager
+                    // version. Inside Macintosh: More Macintosh Toolbox
+                    // (1993), p. 6-8: the response is the manager's version,
+                    // and any non-zero version means the manager is present.
+                    // Version 1 is the original Component Manager; 3 and
+                    // above add automatic version control, unregistration and
+                    // icon families, none of which this host provides, so 1
+                    // is the honest answer.
+                    //
+                    // This is a capability gate, not a feature word: an
+                    // application that gets gestaltUndefSelectorErr here
+                    // concludes the Component Manager is absent and disables
+                    // every path that would reach $A82A, including paths the
+                    // host does serve. Cythera's GMSInit is exactly that --
+                    // one Gestalt('cpnt') decides whether the game has music
+                    // for the rest of the run.
+                    b"cpnt" => {
+                        cpu.write_reg(Register::A0, 1);
                         cpu.write_reg(Register::D0, 0); // noErr
                     }
                     // gestaltDragMgrAttr ('drag') -> Drag Manager attrs.

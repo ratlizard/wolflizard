@@ -155,6 +155,7 @@ pub mod trace {
 pub mod trap {
     pub use crate::systems::macintosh::trap::*;
 }
+pub(crate) use systems::macintosh::tune_player;
 pub(crate) use systems::macintosh::ui_art;
 #[deprecated(note = "use `systemless::systems::macintosh::ui_theme`")]
 pub mod ui_theme {

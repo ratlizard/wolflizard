@@ -251,6 +251,23 @@ pub fn evaluate_gestalt_selector(
         } else {
             0
         })),
+        // gestaltComponentMgr ('cpnt') -> Component Manager
+        // version. Inside Macintosh: More Macintosh Toolbox
+        // (1993), p. 6-8: the response is the manager's version,
+        // and any non-zero version means the manager is present.
+        // Version 1 is the original Component Manager; 3 and
+        // above add automatic version control, unregistration and
+        // icon families, none of which this host provides, so 1
+        // is the honest answer.
+        //
+        // This is a capability gate, not a feature word: an
+        // application that gets gestaltUndefSelectorErr here
+        // concludes the Component Manager is absent and disables
+        // every path that would reach $A82A, including paths the
+        // host does serve. Cythera's GMSInit is exactly that --
+        // one Gestalt('cpnt') decides whether the game has music
+        // for the rest of the run.
+        b"cpnt" => Some(GestaltQueryResult::ok(1)),
         // gestaltDragMgrAttr ('drag') -> Drag Manager absent (0).
         b"drag" => Some(GestaltQueryResult::ok(0)),
         // gestaltOSAttr ('os  ') -> System 7 OS attributes ($00FF).

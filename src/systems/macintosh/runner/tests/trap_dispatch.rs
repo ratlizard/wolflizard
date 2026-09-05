@@ -728,6 +728,7 @@ fn disassemble_at_uses_the_configured_ram_boundary() {
 }
 
 mod screen_size_config_tests {
+    use crate::memory::bus::MemoryBus;
     use crate::runner::{FixtureRunner, FixtureRunnerConfig};
 
     #[test]
@@ -737,9 +738,19 @@ mod screen_size_config_tests {
             ..FixtureRunnerConfig::default()
         };
         let runner = FixtureRunner::new(8 * 1024 * 1024, config);
-        let (_, row_bytes, width, height, depth) = runner.dispatcher().screen_mode;
+        let (base, row_bytes, width, height, depth) = runner.dispatcher().screen_mode;
         assert_eq!((width, height, depth), (640, 1200, 8));
         assert!(row_bytes >= 640 && row_bytes % 16 == 0, "row_bytes {row_bytes}");
+        // The whole screen and the sound buffer lie inside RAM, apart.
+        let end = base + row_bytes * u32::from(height);
+        assert!(end <= 8 * 1024 * 1024, "screen ends at {end:#x}");
+        let sound_base = runner.bus().read_long(crate::memory::globals::addr::SOUND_BASE);
+        let sound_end = sound_base + crate::memory::bus::LEGACY_SOUND_BUFFER_BYTES;
+        assert!(sound_end <= 8 * 1024 * 1024, "sound buffer ends at {sound_end:#x}");
+        assert!(
+            sound_end <= base || sound_base >= end,
+            "sound buffer {sound_base:#x} overlaps the screen {base:#x}..{end:#x}"
+        );
     }
 
     #[test]

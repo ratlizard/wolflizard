@@ -2132,7 +2132,11 @@ impl FixtureRunner {
         dispatcher.set_menu_bar_policy(config.menu_bar_policy);
         dispatcher.mmu_mode = u8::from(config.addressing_32_bit);
         dispatcher.set_ui_theme_id(config.ui_theme);
-        let mut bus = MacMemoryBus::new(ram_size);
+        let profile = crate::machine_profile::reference_machine_profile();
+        let (screen_width, screen_height) = config
+            .screen_size
+            .unwrap_or((profile.screen_width, profile.screen_height));
+        let mut bus = MacMemoryBus::new_with_screen(ram_size, screen_width, screen_height);
         bus.set_addressing_32_bit(config.addressing_32_bit);
         bus.configure_screen_depth(config.screen_depth);
         process_context.attach_classic_memory_bus(&mut bus);
@@ -2144,10 +2148,6 @@ impl FixtureRunner {
             crate::memory::globals::addr::MENU_FLASH,
             crate::memory::globals::DEFAULT_MENU_FLASH_COUNT,
         );
-        let profile = crate::machine_profile::reference_machine_profile();
-        let (screen_width, screen_height) = config
-            .screen_size
-            .unwrap_or((profile.screen_width, profile.screen_height));
         let visible_row_bytes =
             (u32::from(screen_width) * u32::from(config.screen_depth)).div_ceil(8);
         let row_bytes = (visible_row_bytes / 16 + 1) * 16;

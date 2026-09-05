@@ -30,6 +30,22 @@ const MIN_DISPLAY_RESERVE_BYTES: u32 = 0x80000;
 /// instead of running past the end of RAM.
 pub(crate) fn display_reservation_bytes() -> u32 {
     let profile = crate::machine_profile::reference_machine_profile();
+    display_reservation_bytes_for(profile.screen_width, profile.screen_height)
+}
+
+/// The profile's screen at `width` x `height` instead of its own size, for a
+/// runner configured with a screen size of its own.
+fn screen_profile(width: u16, height: u16) -> crate::machine_profile::MachineProfile {
+    crate::machine_profile::MachineProfile {
+        screen_width: width,
+        screen_height: height,
+        ..crate::machine_profile::reference_machine_profile()
+    }
+}
+
+/// [`display_reservation_bytes`] for a screen of `width` x `height` pixels.
+fn display_reservation_bytes_for(width: u16, height: u16) -> u32 {
+    let profile = screen_profile(width, height);
     profile
         .screen_row_bytes()
         .saturating_mul(u32::from(profile.screen_height))
@@ -40,9 +56,9 @@ pub(crate) fn display_reservation_bytes() -> u32 {
 
 /// Base address of the main framebuffer: the top of RAM, below the display
 /// reservation. Small RAM sizes (unit tests) fall back to a safe address.
-fn main_framebuffer_base(ram_size: usize) -> u32 {
+fn main_framebuffer_base(ram_size: usize, width: u16, height: u16) -> u32 {
     if ram_size >= 0x100000 {
-        (ram_size as u32).saturating_sub(display_reservation_bytes())
+        (ram_size as u32).saturating_sub(display_reservation_bytes_for(width, height))
     } else if ram_size >= 0x20000 {
         (ram_size as u32) - 0x10000
     } else {
@@ -1337,10 +1353,18 @@ impl MacMemoryBus {
         }
     }
 
-    /// Create a new memory bus with the given RAM size
+    /// Create a new memory bus with the given RAM size and the machine
+    /// profile's screen.
     pub fn new(ram_size: usize) -> Self {
+        let profile = crate::machine_profile::reference_machine_profile();
+        Self::new_with_screen(ram_size, profile.screen_width, profile.screen_height)
+    }
+
+    /// Create a new memory bus with the given RAM size and an 8-bit screen of
+    /// `width` x `height` pixels at the top of RAM.
+    pub fn new_with_screen(ram_size: usize, width: u16, height: u16) -> Self {
         // Screen buffer is at the top of RAM; heap must not grow into it.
-        let screen_buffer_start: u32 = match main_framebuffer_base(ram_size) {
+        let screen_buffer_start: u32 = match main_framebuffer_base(ram_size, width, height) {
             0 => ram_size as u32,
             base => base,
         };
@@ -1367,14 +1391,14 @@ impl MacMemoryBus {
         bus.write_word(super::globals::addr::ROM85, 0x7FFF);
 
         // Set up ScrnBase at $0824 to point to screen memory.
-        // Geometry comes from the active machine profile (800x600 8bpp by
-        // default). The framebuffer is placed at the top of RAM, below a
-        // reservation sized to hold it plus the legacy sound buffer.
-        let screen_base = main_framebuffer_base(ram_size);
-        let profile = crate::machine_profile::reference_machine_profile();
-        let screen_width: u16 = profile.screen_width;
-        let screen_height: u16 = profile.screen_height;
-        let screen_row_bytes: u16 = profile.screen_row_bytes() as u16;
+        // Geometry comes from the configured screen (the machine profile's,
+        // 800x600 8bpp, by default). The framebuffer is placed at the top of
+        // RAM, below a reservation sized to hold it plus the legacy sound
+        // buffer.
+        let screen_base = main_framebuffer_base(ram_size, width, height);
+        let screen_width: u16 = width;
+        let screen_height: u16 = height;
+        let screen_row_bytes: u16 = screen_profile(width, height).screen_row_bytes() as u16;
 
         // ScrnBase ($0824) - pointer to screen buffer
         bus.write_long(0x0824, screen_base);
@@ -1414,8 +1438,10 @@ impl MacMemoryBus {
 
     pub(crate) fn configure_screen_depth(&mut self, depth: u16) {
         debug_assert!(matches!(depth, 1 | 2 | 4 | 8));
-        let profile = crate::machine_profile::reference_machine_profile();
-        let row_bytes = profile.screen_row_bytes_at_depth(depth);
+        // The width the bus was built with: screenBits.bounds.right.
+        let screen_width = self.read_word(super::globals::addr::SCREEN_BITS + 12);
+        let screen_height = self.read_word(super::globals::addr::SCREEN_BITS + 10);
+        let row_bytes = screen_profile(screen_width, screen_height).screen_row_bytes_at_depth(depth);
         self.write_word(super::globals::addr::SCREEN_ROW, row_bytes as u16);
         self.write_word(super::globals::addr::SCREEN_BITS + 4, row_bytes as u16);
     }

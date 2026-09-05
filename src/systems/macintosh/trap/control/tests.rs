@@ -1612,6 +1612,74 @@ fn track_control_visible_active_button_hit_returns_inbutton() {
     assert!(trace.contains("part=10 highlighted_item=none outcome=visible_active_hit"));
 }
 
+// An Appearance slider (kControlSliderProc) is all indicator: the click
+// puts the thumb under the pointer, the drag follows it, and the value is
+// set on release from the thumb's final position. ControlDefinitions.h;
+// the customer is Cythera's Preferences dialog.
+#[test]
+fn track_control_slider_moves_the_thumb_to_the_pointer_and_sets_the_value_on_release() {
+    let (mut disp, mut cpu, mut bus) = setup();
+    let sp = 0x300000u32;
+    let trap_pc = 0x0012_3454;
+    let (ctrl_handle, ctrl_ptr) =
+        alloc_scrollbar_control(&mut disp, &mut bus, (100, 100, 116, 220), 255, 0, 0, 0, 2);
+    disp.control_manager.set_proc_id(ctrl_ptr, 50); // slider, with tick marks
+
+    // Mouse down near the right end of the track.
+    disp.input_state.set_mouse_button_for_test(true);
+    disp.input_state.set_mouse_position_for_test((108, 212));
+    bus.write_byte(crate::memory::globals::addr::MB_STATE, 0x00);
+    cpu.write_reg(Register::PC, trap_pc + 2);
+    cpu.write_reg(Register::A7, sp);
+    bus.write_long(sp, 0);
+    bus.write_word(sp + 4, 108);
+    bus.write_word(sp + 6, 212);
+    bus.write_long(sp + 8, ctrl_handle);
+    bus.write_word(sp + 12, 0xBEEF);
+    disp.dispatch_control(true, 0x168, &mut cpu, &mut bus)
+        .unwrap()
+        .unwrap();
+    assert!(
+        disp.scrollbar_thumb_tracking.is_some(),
+        "TrackControl is retained while the button is down"
+    );
+    assert_eq!(cpu.read_reg(Register::A7), sp, "the frame stays for the refire");
+    assert_eq!(bus.read_word(ctrl_ptr + 18), 0, "the value waits for the release");
+
+    // Release where the pointer is.
+    disp.input_state.set_mouse_button_for_test(false);
+    bus.write_byte(crate::memory::globals::addr::MB_STATE, 0x80);
+    cpu.write_reg(Register::PC, trap_pc + 2);
+    cpu.write_reg(Register::A7, sp);
+    disp.dispatch_control(true, 0x168, &mut cpu, &mut bus)
+        .unwrap()
+        .unwrap();
+    assert!(disp.scrollbar_thumb_tracking.is_none());
+    assert_eq!(bus.read_word(sp + 12), 129, "the indicator part is reported");
+    assert_eq!(cpu.read_reg(Register::A7), sp + 12, "the Pascal frame is popped");
+    assert_eq!(bus.read_word(ctrl_ptr + 18) as i16, 2, "the right end of 0..2 is 2");
+
+    // A click in the middle of the track lands on the middle stop.
+    disp.input_state.set_mouse_button_for_test(true);
+    disp.input_state.set_mouse_position_for_test((108, 160));
+    bus.write_byte(crate::memory::globals::addr::MB_STATE, 0x00);
+    cpu.write_reg(Register::PC, trap_pc + 2);
+    cpu.write_reg(Register::A7, sp);
+    bus.write_word(sp + 4, 108);
+    bus.write_word(sp + 6, 160);
+    disp.dispatch_control(true, 0x168, &mut cpu, &mut bus)
+        .unwrap()
+        .unwrap();
+    disp.input_state.set_mouse_button_for_test(false);
+    bus.write_byte(crate::memory::globals::addr::MB_STATE, 0x80);
+    cpu.write_reg(Register::PC, trap_pc + 2);
+    cpu.write_reg(Register::A7, sp);
+    disp.dispatch_control(true, 0x168, &mut cpu, &mut bus)
+        .unwrap()
+        .unwrap();
+    assert_eq!(bus.read_word(ctrl_ptr + 18) as i16, 1, "the middle of 0..2 is 1");
+}
+
 #[test]
 fn track_control_scrollbar_arrow_calls_action_proc_with_part_code() {
     let (mut disp, mut cpu, mut bus) = setup();

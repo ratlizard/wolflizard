@@ -20506,3 +20506,27 @@
             "mapped RAM above 8 MiB must not be reported as unmapped"
         );
     }
+
+    mod screen_size_config_tests {
+        use crate::runner::{FixtureRunner, FixtureRunnerConfig};
+
+        #[test]
+        fn the_config_can_name_the_screen_size() {
+            let config = FixtureRunnerConfig {
+                screen_size: Some((640, 1200)),
+                ..FixtureRunnerConfig::default()
+            };
+            let runner = FixtureRunner::new(8 * 1024 * 1024, config);
+            let (_, row_bytes, width, height, depth) = runner.dispatcher().screen_mode;
+            assert_eq!((width, height, depth), (640, 1200, 8));
+            assert!(row_bytes >= 640 && row_bytes % 16 == 0, "row_bytes {row_bytes}");
+        }
+
+        #[test]
+        fn without_a_size_the_profile_decides() {
+            let runner = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());
+            let profile = crate::machine_profile::reference_machine_profile();
+            let (_, _, width, height, _) = runner.dispatcher().screen_mode;
+            assert_eq!((width, height), (profile.screen_width, profile.screen_height));
+        }
+    }

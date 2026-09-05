@@ -666,6 +666,7 @@ impl super::TrapDispatcher {
     fn standard_testcontrol_part_code(&self, ctrl_ptr: u32) -> u16 {
         match self.control_manager.proc_id(ctrl_ptr) {
             1 | 2 => 11, // inCheckBox for checkbox and radio-button variants
+            p if Self::is_passive_appearance_proc_id(p) => 0, // kControlNoPart
             _ => 10,     // inButton for push buttons and the current fallback path
         }
     }
@@ -1545,6 +1546,22 @@ impl super::TrapDispatcher {
                     proc_id,
                 );
             }
+            288 => {
+                self.draw_static_text_control(
+                    bus, abs_top, abs_left, abs_bottom, abs_right, &title, hilite == 255,
+                );
+            }
+            160 | 161 => {
+                self.draw_group_box_control(
+                    bus, abs_top, abs_left, abs_bottom, abs_right, &title, hilite == 255,
+                );
+            }
+            304 | 305 | 320 | 321 => {
+                // A picture or icon control names a resource in contrlMin
+                // that this host does not yet draw. Nothing is better than
+                // the push-button box the fallback painted: the dialog's own
+                // background shows, and the click falls through.
+            }
             proc_id if Self::is_popup_menu_proc_id(proc_id) => {
                 // popupMenuProc — draw the CNTL-backed popup button using
                 // the selected MENU resource item.
@@ -2010,6 +2027,76 @@ impl super::TrapDispatcher {
 
     /// Thumb length along the track, in pixels.
     pub(crate) const SLIDER_THUMB_SIZE: i16 = 12;
+
+    /// Appearance controls that show something and take no click: the group
+    /// boxes (160, 161), static text (288), pictures (304, 305) and icons
+    /// (320, 321). Their CDEFs answer kControlNoPart, so FindControl walks
+    /// past them to whatever lies underneath -- which in Cythera's
+    /// Preferences dialog is a slider whose end label overlaps it.
+    /// ControlDefinitions.h; Macintosh Toolbox Essentials (1992), 5-92.
+    pub(crate) fn is_passive_appearance_proc_id(proc_id: i16) -> bool {
+        matches!(proc_id, 160 | 161 | 288 | 304 | 305 | 320 | 321)
+    }
+
+    /// Static text: the title, left-aligned at the top of the rectangle, in
+    /// the system font. No frame, no fill -- the dialog behind shows through.
+    fn draw_static_text_control(
+        &self,
+        bus: &mut MacMemoryBus,
+        top: i16,
+        left: i16,
+        bottom: i16,
+        right: i16,
+        title: &str,
+        inactive: bool,
+    ) {
+        let font_id = 0i16;
+        let font_size = 12i16;
+        let metrics = get_font_metrics(font_id, font_size);
+        self.draw_control_label_text(
+            bus, top, left, bottom, right, left, top + metrics.ascent, title, font_id, font_size,
+            inactive,
+        );
+    }
+
+    /// A titled group box: a one-pixel frame whose top edge runs through the
+    /// title's midline, with the frame broken behind the title.
+    fn draw_group_box_control(
+        &self,
+        bus: &mut MacMemoryBus,
+        top: i16,
+        left: i16,
+        bottom: i16,
+        right: i16,
+        title: &str,
+        inactive: bool,
+    ) {
+        let font_id = 0i16;
+        let font_size = 12i16;
+        let metrics = get_font_metrics(font_id, font_size);
+        let text_height = metrics.ascent + metrics.descent;
+        let frame_top = top + text_height / 2;
+        let (screen_base, row_bytes, screen_width, screen_height, pixel_size) =
+            self.get_screen_params();
+        if title.is_empty() {
+            self.draw_rect_border(bus, frame_top, left, bottom, right);
+            return;
+        }
+        let text_left = left + 8;
+        // Draw the title first to learn its width, then the frame around it.
+        let width = Self::fb_draw_string(
+            bus, screen_base, row_bytes, pixel_size, screen_width, screen_height, text_left,
+            top + metrics.ascent, title, font_id, font_size,
+        );
+        self.draw_vline(bus, left, frame_top, bottom);
+        self.draw_vline(bus, right - 1, frame_top, bottom);
+        self.draw_hline(bus, bottom - 1, left, right);
+        self.draw_hline(bus, frame_top, left, text_left - 3);
+        self.draw_hline(bus, frame_top, (text_left + width + 3).min(right), right);
+        if inactive {
+            self.dim_rect(bus, top, text_left, top + text_height, text_left + width);
+        }
+    }
 
     /// Draw an Appearance slider: a recessed track along the long axis, the
     /// thumb at the value's position, and a tick per integer value when the
@@ -2892,7 +2979,12 @@ impl super::TrapDispatcher {
                 let r_left = bus.read_word(ctrl_ptr + 10) as i16;
                 let r_bottom = bus.read_word(ctrl_ptr + 12) as i16;
                 let r_right = bus.read_word(ctrl_ptr + 14) as i16;
-                if pt_v >= r_top && pt_v < r_bottom && pt_h >= r_left && pt_h < r_right {
+                if pt_v >= r_top
+                    && pt_v < r_bottom
+                    && pt_h >= r_left
+                    && pt_h < r_right
+                    && !Self::is_passive_appearance_proc_id(self.control_manager.proc_id(ctrl_ptr))
+                {
                     return Some((ctrl_handle, ctrl_ptr));
                 }
             }
@@ -3871,6 +3963,11 @@ impl super::TrapDispatcher {
                             if pt_v >= r_top && pt_v < r_bottom && pt_h >= r_left && pt_h < r_right
                             {
                                 let proc_id = self.control_manager.proc_id(ctrl_ptr);
+                                if Self::is_passive_appearance_proc_id(proc_id) {
+                                    bus.write_word(sp + 12, 0);
+                                    cpu.write_reg(Register::A7, sp + 12);
+                                    return Some(Ok(()));
+                                }
                                 if Self::is_slider_proc_id(proc_id) {
                                     // An Appearance slider is all indicator. The
                                     // thumb moves to the pointer on the click
@@ -5006,7 +5103,12 @@ impl super::TrapDispatcher {
                         }
                         self.control_click_via_dispatch = true;
                         let result = self.dispatch_control(true, 0x168, cpu, bus);
-                        if !self.is_control_tracking() {
+                        // A thumb drag (scroll bar or slider) is retained in
+                        // its own state, not `control_tracking`; clearing the
+                        // flag on it left the next refire unrecognised, the
+                        // frame rewritten a second time, and the release
+                        // never delivered.
+                        if !self.is_control_tracking() && self.scrollbar_thumb_tracking.is_none() {
                             self.control_click_via_dispatch = false;
                         }
                         return result;

@@ -1680,6 +1680,47 @@ fn track_control_slider_moves_the_thumb_to_the_pointer_and_sets_the_value_on_rel
     assert_eq!(bus.read_word(ctrl_ptr + 18) as i16, 1, "the middle of 0..2 is 1");
 }
 
+// Cythera's Preferences dialog lays a static text label over the end of
+// its Graphics Quality slider. Static text answers no part, so the point
+// belongs to the slider beneath it, and TrackControl on the text itself
+// reports nothing.
+#[test]
+fn find_control_walks_past_static_text_to_the_slider_beneath() {
+    let (mut disp, mut cpu, mut bus) = setup();
+    let window_ptr = bus.alloc(160);
+    let (label_handle, label_ptr) = alloc_control_handle(&mut bus, (60, 150, 80, 240), 255, 0);
+    disp.control_manager.set_proc_id(label_ptr, 288);
+    let (slider_handle, slider_ptr) =
+        alloc_scrollbar_control(&mut disp, &mut bus, (58, 100, 82, 250), 255, 0, 0, 0, 2);
+    disp.control_manager.set_proc_id(slider_ptr, 50);
+    bus.write_long(window_ptr + 140, label_handle);
+    bus.write_long(label_ptr, slider_handle); // nextControl
+    bus.write_long(slider_ptr, 0);
+
+    assert_eq!(
+        disp.control_under_point(&bus, window_ptr, 70, 200),
+        Some((slider_handle, slider_ptr)),
+        "the label is passed over for the slider under it"
+    );
+    assert_eq!(disp.standard_testcontrol_part_code(label_ptr), 0);
+
+    let sp = 0x300000u32;
+    cpu.write_reg(Register::PC, 0x0012_3456);
+    cpu.write_reg(Register::A7, sp);
+    bus.write_long(sp, 0);
+    bus.write_word(sp + 4, 70);
+    bus.write_word(sp + 6, 200);
+    bus.write_long(sp + 8, label_handle);
+    bus.write_word(sp + 12, 0xBEEF);
+    disp.input_state.set_mouse_button_for_test(true);
+    disp.dispatch_control(true, 0x168, &mut cpu, &mut bus)
+        .unwrap()
+        .unwrap();
+    assert_eq!(bus.read_word(sp + 12), 0, "TrackControl on static text is no part");
+    assert_eq!(cpu.read_reg(Register::A7), sp + 12);
+    assert!(disp.scrollbar_thumb_tracking.is_none());
+}
+
 #[test]
 fn track_control_scrollbar_arrow_calls_action_proc_with_part_code() {
     let (mut disp, mut cpu, mut bus) = setup();

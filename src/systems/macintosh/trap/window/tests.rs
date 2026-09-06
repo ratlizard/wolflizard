@@ -1050,7 +1050,16 @@ fn getnewcwindow_visible_custom_wdef_arms_wnew_wcalcrgns_then_wdraw_trampoline()
         "final callback should restore chExtra and pnLocHFrac"
     );
     assert_eq!(bus.read_long(draw_tramp + 62), window_ptr + 12);
-    assert_eq!(bus.read_word(draw_tramp + 66), 0x4E75);
+    // Then the application's port comes back: PEA savedPort; _SetPort; RTS.
+    assert_eq!(bus.read_word(draw_tramp + 66), 0x4879, "PEA the saved port");
+    assert_ne!(bus.read_long(draw_tramp + 68), 0, "a port to restore");
+    assert_ne!(
+        bus.read_long(draw_tramp + 68),
+        disp.window_manager_cport,
+        "the restored port is the application's, not the WMgrPort"
+    );
+    assert_eq!(bus.read_word(draw_tramp + 72), 0xA873, "_SetPort");
+    assert_eq!(bus.read_word(draw_tramp + 74), 0x4E75, "RTS");
     assert_eq!(
         *disp.current_port, disp.window_manager_cport,
         "wDraw should run in the color Window Manager port"

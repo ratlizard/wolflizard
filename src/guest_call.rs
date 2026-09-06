@@ -1859,7 +1859,9 @@ impl SharedGuestCallStack {
         self.0.borrow().kernel.set_scheduling_state(task, state)
     }
 
-    #[cfg(test)]
+    /// The scheduler-proc path asks this outside tests: it answers None
+    /// inside a critical section and when nothing else is ready, which are
+    /// the two cases an application's scheduler must not be consulted in.
     pub(crate) fn next_ready_task(
         &self,
         suggested: Option<ExecutionTaskId>,

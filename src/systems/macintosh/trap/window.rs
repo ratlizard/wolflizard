@@ -2643,13 +2643,22 @@ impl super::TrapDispatcher {
         window_ptr: u32,
         source_rect: (i16, i16, i16, i16),
     ) {
-        // CalcVis / CalcVisBehind clamp the top edge against the menu bar.
+        // CalcVis / CalcVisBehind recompute the *visible* region, and the
+        // desktop they intersect it with stops at the menu bar (Inside
+        // Macintosh Volume I, I-297; Volume V, V-245). The content and
+        // structure regions are the window's own shape and are not clamped:
+        // a window whose content is moved to global (0, 0) keeps its title
+        // bar above the screen, it does not slide down below the menu bar.
+        // Cythera does exactly that with its 'Delver' backdrop
+        // (MoveWindow 0,0 then SizeWindow to the screen, menu bar hidden
+        // later); clamping the content region here put a title bar across
+        // the top twenty rows of the game.
         let mbar_h = bus.read_word(crate::memory::globals::addr::MBAR_HEIGHT) as i16;
         let (bounds_top, _) = self.port_bounds_top_left(bus, window_ptr);
         let local_mbar_bottom = mbar_h.saturating_add(bounds_top);
         let local_vis_top = source_rect.0.max(local_mbar_bottom);
         let local_rect = (local_vis_top, source_rect.1, source_rect.2, source_rect.3);
-        let global_content = self.window_local_rect_to_global(bus, window_ptr, local_rect);
+        let global_content = self.window_local_rect_to_global(bus, window_ptr, source_rect);
         let global_structure =
             self.window_structure_global_rect_for_window(bus, window_ptr, global_content);
 

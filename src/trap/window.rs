@@ -67,7 +67,7 @@ impl super::TrapDispatcher {
     const WDEF_WCALC_RGNS_MSG: i16 = 2;
     const WDEF_WNEW_MSG: i16 = 3;
     const WDEF_FIRST_APPLICATION_RESOURCE_ID: i16 = 128;
-    const WDEF_TRAMPOLINE_SIZE: u32 = 68;
+    const WDEF_TRAMPOLINE_SIZE: u32 = 80;
     const AUX_WIN_NEXT_OFFSET: u32 = 0;
     const AUX_WIN_OWNER_OFFSET: u32 = 4;
     pub(crate) const AUX_WIN_CTABLE_OFFSET: u32 = 8;
@@ -824,6 +824,7 @@ impl super::TrapDispatcher {
         return_slot: u32,
         next_trampoline: Option<u32>,
         restore_cgraf_fields: Option<(u32, u32)>,
+        restore_port: u32,
     ) {
         bus.write_word(tramp, 0x48E7);
         bus.write_word(tramp + 2, 0xF0F0);
@@ -849,20 +850,32 @@ impl super::TrapDispatcher {
                 bus.write_long(tramp + 48, next);
             }
             None => {
+                let mut at = tramp + 46;
                 if let Some((graf_vars, color_fields)) = restore_cgraf_fields {
                     // MOVE.L #grafVars,window+8
-                    bus.write_word(tramp + 46, 0x23FC);
-                    bus.write_long(tramp + 48, graf_vars);
-                    bus.write_long(tramp + 52, window_ptr + 8);
+                    bus.write_word(at, 0x23FC);
+                    bus.write_long(at + 2, graf_vars);
+                    bus.write_long(at + 6, window_ptr + 8);
                     // MOVE.L #chExtra/pnLocHFrac,window+12
-                    bus.write_word(tramp + 56, 0x23FC);
-                    bus.write_long(tramp + 58, color_fields);
-                    bus.write_long(tramp + 62, window_ptr + 12);
-                    bus.write_word(tramp + 66, 0x4E75); // RTS
-                } else {
-                    bus.write_word(tramp + 46, 0x4E75); // RTS
-                    bus.write_long(tramp + 48, 0);
+                    bus.write_word(at + 10, 0x23FC);
+                    bus.write_long(at + 12, color_fields);
+                    bus.write_long(at + 16, window_ptr + 12);
+                    at += 20;
                 }
+                // The Window Manager brackets a definition call with GetPort
+                // and SetPort: the WDEF draws in the WMgrPort and the
+                // application resumes in its own. Without this the game's
+                // next drawing landed at the screen origin -- Cythera's
+                // conversation bevel at the top-left of the desktop. PEA
+                // savedPort; _SetPort, through the trap so the host's own
+                // port state follows. Inside Macintosh Volume I, p. I-282.
+                if restore_port != 0 {
+                    bus.write_word(at, 0x4879); // PEA abs.L
+                    bus.write_long(at + 2, restore_port);
+                    bus.write_word(at + 6, 0xA873); // _SetPort
+                    at += 8;
+                }
+                bus.write_word(at, 0x4E75); // RTS
             }
         }
     }
@@ -881,6 +894,14 @@ impl super::TrapDispatcher {
 
         let def_handle = bus.read_long(window_ptr + Self::WINDOW_DEF_PROC_OFFSET);
         let proc_addr = Self::window_def_proc_addr(bus, def_handle);
+        if std::env::var_os("SYSTEMLESS_TRACE_WDEF").is_some() {
+            eprintln!(
+                "[WDEF] window=${window_ptr:08X} def_handle=${def_handle:08X} proc=${proc_addr:08X} first=${:04X} target=${:08X} messages={:?}",
+                bus.read_word(proc_addr),
+                bus.read_long(proc_addr + 2),
+                messages
+            );
+        }
         if !Self::window_def_entry_looks_callable(bus, proc_addr) {
             return false;
         }
@@ -893,6 +914,12 @@ impl super::TrapDispatcher {
         // Window Manager port. Macintosh Toolbox Essentials 1992, pp. 4-120
         // through 4-127; Inside Macintosh Volume I 1985, pp. I-282, I-304.
         let wmgr_port = self.ensure_color_window_manager_port(bus);
+        let saved_port = *self.current_port;
+        let restore_port = if saved_port != 0 && saved_port != wmgr_port {
+            saved_port
+        } else {
+            0
+        };
         self.set_current_port_state(bus, cpu, wmgr_port, None);
 
         // Pre-Color QuickDraw WDEFs receive WindowPeek and commonly read the
@@ -952,6 +979,7 @@ impl super::TrapDispatcher {
                 return_slot,
                 next,
                 final_restore,
+                if next.is_none() { restore_port } else { 0 },
             );
         }
 
@@ -2380,6 +2408,19 @@ impl super::TrapDispatcher {
             // I-299 (the hit message).
             let proc_id = self.window_proc_ids.get(&window_ptr).copied().unwrap_or(0);
             if !Self::window_is_document_proc(proc_id) {
+                // A real Window Manager asks an application WDEF where the
+                // point falls (wHit). Systemless cannot call guest code from
+                // inside FindWindow, so the structure region the WDEF gave
+                // wCalcRgns stands in: inside it and outside the content is
+                // the frame, and the frame drags. Inside Macintosh Volume I,
+                // pp. I-287 and I-299.
+                if self.window_uses_custom_def_proc(bus, window_ptr)
+                    && self
+                        .window_structure_rect(bus, window_ptr)
+                        .is_some_and(|rect| Self::point_in_rect(pt_v, pt_h, rect))
+                {
+                    return (4, window_ptr);
+                }
                 continue;
             }
             let title_top = top.saturating_sub(20).max(mbar_h);
@@ -4906,6 +4947,15 @@ impl super::TrapDispatcher {
                 self.move_window_to_global(bus, the_window, h_global, v_global, front_flag);
 
                 cpu.write_reg(Register::A7, sp + 10);
+                // move_window_to_global wrote systemless's own structure
+                // region; an application WDEF's wCalcRgns replaces it and
+                // wDraw paints the frame in its new place.
+                if the_window != 0
+                    && self.window_visible(bus, the_window)
+                    && self.window_uses_custom_def_proc(bus, the_window)
+                {
+                    self.arm_window_def_draw(cpu, bus, the_window);
+                }
                 Ok(())
             }
 
@@ -5125,9 +5175,12 @@ impl super::TrapDispatcher {
                     if let Some(index) = self.event_queue.iter().position(|event| event.what == 2) {
                         self.event_queue.remove(index);
                     }
+                    let mut moved_custom_window = false;
                     if Self::point_in_rect(mouse.0, mouse.1, tracking.bounds_rect)
                         && mouse != tracking.start_mouse
                     {
+                        moved_custom_window =
+                            self.window_uses_custom_def_proc(bus, tracking.window_ptr);
                         let new_v = tracking
                             .original_port_origin
                             .0
@@ -5158,6 +5211,11 @@ impl super::TrapDispatcher {
                         eprintln!("[DRAGWINDOW] no move");
                     }
                     cpu.write_reg(Register::A7, tracking.stack_ptr + 12);
+                    if moved_custom_window {
+                        // As for MoveWindow: the WDEF recomputes its regions
+                        // and paints its frame where the window now is.
+                        self.arm_window_def_draw(cpu, bus, tracking.window_ptr);
+                    }
                     return Some(Ok(()));
                 }
 
@@ -5462,8 +5520,17 @@ impl super::TrapDispatcher {
                 // Pascal BOOLEAN in high byte (MPW C convention).
                 let show_flag = bus.read_byte(sp) != 0;
                 let the_window = bus.read_long(sp + 2);
+                // Cythera reveals every window it creates hidden through
+                // ShowHide, never ShowWindow, and only ShowWindow asked an
+                // application WDEF to draw; so only its start screen, created
+                // visible, ever had a frame. The frame is drawn on reveal here
+                // too, after the Pascal frame is popped, as ShowWindow does.
+                let mut arm_custom_wdef_draw = false;
                 if the_window != 0 {
                     let was_visible = self.window_visible(bus, the_window);
+                    arm_custom_wdef_draw = show_flag
+                        && !was_visible
+                        && self.window_uses_custom_def_proc(bus, the_window);
                     if !show_flag {
                         self.dialog_visible_snapshots.remove(&the_window);
                     }
@@ -5509,6 +5576,9 @@ impl super::TrapDispatcher {
                     }
                 }
                 cpu.write_reg(Register::A7, sp + 6);
+                if arm_custom_wdef_draw {
+                    self.arm_window_def_draw(cpu, bus, the_window);
+                }
                 Ok(())
             }
 
@@ -7310,7 +7380,16 @@ mod tests {
             "final callback should restore chExtra and pnLocHFrac"
         );
         assert_eq!(bus.read_long(draw_tramp + 62), window_ptr + 12);
-        assert_eq!(bus.read_word(draw_tramp + 66), 0x4E75);
+        // Then the application's port comes back: PEA savedPort; _SetPort; RTS.
+        assert_eq!(bus.read_word(draw_tramp + 66), 0x4879, "PEA the saved port");
+        assert_ne!(bus.read_long(draw_tramp + 68), 0, "a port to restore");
+        assert_ne!(
+            bus.read_long(draw_tramp + 68),
+            disp.window_manager_cport,
+            "the restored port is the application's, not the WMgrPort"
+        );
+        assert_eq!(bus.read_word(draw_tramp + 72), 0xA873, "_SetPort");
+        assert_eq!(bus.read_word(draw_tramp + 74), 0x4E75, "RTS");
         assert_eq!(
             *disp.current_port, disp.window_manager_cport,
             "wDraw should run in the color Window Manager port"

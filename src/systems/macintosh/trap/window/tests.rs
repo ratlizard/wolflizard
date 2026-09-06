@@ -5890,6 +5890,66 @@ fn calcvisbehind_menu_clamp_uses_window_local_coordinates() {
 }
 
 #[test]
+fn calcvisbehind_clamps_only_the_visible_region_to_the_menu_bar() {
+    // A document window moved to global (0, 0) and sized to the screen
+    // keeps its title bar above the screen. CalcVisBehind trims the
+    // visRgn to the desktop below the menu bar and leaves the content and
+    // structure regions where the application put them.
+    // Inside Macintosh Volume I (1985), p. I-297; Volume V (1988), p. V-245.
+    let (mut disp, mut cpu, mut bus) = setup();
+    let window_addr = bus.alloc(256);
+    disp.menu_bar_hidden = false;
+    bus.write_word(crate::memory::globals::addr::MBAR_HEIGHT, 20);
+    let (_, _, screen_w, screen_h, _) = disp.screen_mode;
+
+    disp.init_cgraf_window(
+        &mut bus,
+        &mut cpu,
+        window_addr,
+        disp.screen_mode.0,
+        0,
+        0,
+        screen_h as i16,
+        screen_w as i16,
+        "Delver",
+        12,
+        true,
+        false,
+        false,
+        0,
+    );
+    disp.window_list.with_mut(|windows| *windows = vec![window_addr]);
+    disp.sync_window_list_links(&mut bus);
+
+    let clobbered_rgn = super::super::TrapDispatcher::alloc_rect_region_handle(
+        &mut bus,
+        Some((0, 0, screen_h as i16, screen_w as i16)),
+    );
+    let sp = TEST_SP - 8;
+    cpu.write_reg(Register::A7, sp);
+    bus.write_long(sp, clobbered_rgn);
+    bus.write_long(sp + 4, window_addr);
+
+    let result = dispatch(&mut disp, 0x10A, &mut cpu, &mut bus);
+    assert!(result.unwrap().is_ok());
+
+    assert_eq!(
+        read_window_region_rect(
+            &bus,
+            window_addr,
+            super::super::TrapDispatcher::WINDOW_CONT_RGN_OFFSET
+        ),
+        (0, 0, screen_h as i16, screen_w as i16),
+        "the content region is the application's, not the desktop's"
+    );
+    assert_eq!(
+        read_window_region_rect(&bus, window_addr, 24).0,
+        20,
+        "only the visible region stops at the menu bar"
+    );
+}
+
+#[test]
 fn checkupdate_returns_true_and_writes_eventrecord_for_pending_update() {
     // CheckUpdate returns TRUE and writes an update EventRecord when a
     // visible window needs updating.

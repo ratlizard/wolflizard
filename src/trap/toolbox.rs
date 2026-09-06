@@ -1344,6 +1344,136 @@ impl super::TrapDispatcher {
             .cooperative_context(ExecutionTaskId::from_thread_id(thread_id))
     }
 
+    const SCHEDULER_TRAMPOLINE_SELECTOR: u16 = 0xFEFD;
+
+    /// Hand a yield to the application's scheduler proc, if one is
+    /// installed and there is a decision to make.
+    ///
+    /// Inside Macintosh: Thread Manager (1999), pp. 1-79..1-80: the
+    /// Thread Manager calls the custom scheduler "each time it is about to
+    /// schedule a thread", passing a `SchedulerInfoRec` with the current
+    /// and suggested thread IDs; the proc returns the ID of the thread to
+    /// run next, or `kNoThreadID` to accept the default. The proc is
+    ///
+    ///   pascal ThreadID proc(SchedulerInfoRecPtr schedulerInfo);
+    ///
+    /// so the yielding thread's stack gets the record, a four-byte result
+    /// slot, the record's address and a return address into the
+    /// trampoline. `finish_scheduler_call` completes the yield when the
+    /// proc returns. The default path is kept when no scheduler is
+    /// installed, inside a critical section, when nothing else is ready,
+    /// or while a scheduler call is already in flight.
+    ///
+    /// An application that installs a scheduler means it: Cythera's
+    /// TTaskMaster::MyScheduler withholds its animation thread while a
+    /// conversation is up, and round-robin in its place let that thread
+    /// close every conversation on the frame after it opened.
+    fn begin_scheduler_call<C: CpuOps>(
+        &mut self,
+        cpu: &mut C,
+        bus: &mut MacMemoryBus,
+        suggested_thread: u32,
+    ) -> bool {
+        let proc_addr = self.cooperative_thread_scheduler;
+        // The task cursor answers None inside a critical section and when
+        // no other thread is ready, which are the two cases the scheduler
+        // proc must not be consulted in.
+        if proc_addr == 0
+            || self.scheduler_call_state.is_some()
+            || self.guest_calls.next_ready_task(None).is_none()
+        {
+            return false;
+        }
+        let trampoline = match self.scheduler_trampoline_addr {
+            Some(addr) => addr,
+            None => {
+                let addr = bus.alloc(8);
+                bus.write_word(addr, 0x303C); // MOVE.W #imm, D0
+                bus.write_word(addr + 2, Self::SCHEDULER_TRAMPOLINE_SELECTOR);
+                bus.write_word(addr + 4, 0xA816); // _Pack8
+                self.scheduler_trampoline_addr = Some(addr);
+                addr
+            }
+        };
+        let original_sp = cpu.read_reg(Register::A7);
+        let return_pc = cpu.read_reg(Register::PC);
+        // SchedulerInfoRec: InfoRecSize, CurrentThreadID,
+        // SuggestedThreadID, InterruptedCoopThreadID (Threads.h).
+        let info_rec = original_sp.wrapping_sub(16);
+        bus.write_long(info_rec, 16);
+        bus.write_long(
+            info_rec + 4,
+            ThreadManager::new(&self.guest_calls).current_thread(),
+        );
+        bus.write_long(info_rec + 8, suggested_thread);
+        bus.write_long(info_rec + 12, 0);
+        let result_slot = info_rec.wrapping_sub(4);
+        bus.write_long(result_slot, 0);
+        let arg = result_slot.wrapping_sub(4);
+        bus.write_long(arg, info_rec);
+        let ret = arg.wrapping_sub(4);
+        bus.write_long(ret, trampoline);
+        cpu.write_reg(Register::A7, ret);
+        cpu.write_reg(Register::PC, proc_addr);
+        self.scheduler_call_state = Some(super::dispatch::SchedulerCallState {
+            return_pc,
+            original_sp,
+            result_slot,
+        });
+        true
+    }
+
+    /// The scheduler proc has returned: apply its choice and resume.
+    fn finish_scheduler_call<C: CpuOps>(&mut self, cpu: &mut C, bus: &mut MacMemoryBus) -> Result<()> {
+        let Some(state) = self.scheduler_call_state.take() else {
+            return Err(Error::Halted);
+        };
+        let chosen = bus.read_long(state.result_slot);
+        cpu.write_reg(Register::A7, state.original_sp);
+        cpu.write_reg(Register::PC, state.return_pc);
+        cpu.write_reg(Register::D0, 0);
+        let current = ThreadManager::new(&self.guest_calls).current_thread();
+        if chosen == current {
+            return Ok(());
+        }
+        // kNoThreadID (0) accepts the default choice; any other ID is a
+        // suggestion the default scheduler honours when that thread is
+        // ready, and falls back to round-robin otherwise.
+        self.yield_classic_thread_at(cpu, bus, chosen, state.original_sp);
+        Ok(())
+    }
+
+    /// The classic `YieldToThread` switch, shared by the trap and by the
+    /// scheduler proc's return: the outgoing thread resumes at `result_sp`
+    /// with noErr in D0, and whatever context the shared scheduler chooses
+    /// is installed.
+    fn yield_classic_thread_at<C: CpuOps>(
+        &mut self,
+        cpu: &mut C,
+        bus: &mut MacMemoryBus,
+        suggested_thread: u32,
+        result_sp: u32,
+    ) {
+        let current = self.guest_calls.current_task();
+        let mut outgoing = self
+            .guest_calls
+            .cooperative_context(current)
+            .unwrap_or_else(|| CooperativeThread::capture(cpu));
+        outgoing.save_registers(cpu);
+        outgoing.d_regs[0] = 0;
+        outgoing.a_regs[7] = result_sp;
+        let result = self
+            .guest_calls
+            .yield_classic_thread(outgoing, suggested_thread);
+        let error = result.as_ref().err().copied().unwrap_or(0);
+        bus.write_word(result_sp, error as u16);
+        cpu.write_reg(Register::D0, error as u32);
+        cpu.write_reg(Register::A7, result_sp);
+        if let Ok(crate::guest_call::ClassicYield::Switched(Some(context))) = result {
+            context.install(cpu);
+        }
+    }
+
     fn apply_classic_retirement<C: CpuOps>(
         &mut self,
         cpu: &mut C,
@@ -7237,6 +7367,10 @@ impl super::TrapDispatcher {
                 // returns, its `RTD` lands on a tiny `MOVE.W #$FEFE, D0;
                 // _Pack8` stub that re-enters Pack8 with this sentinel.
                 // Resume the original `AEProcessAppleEvent` caller's flow.
+                if selector == Self::SCHEDULER_TRAMPOLINE_SELECTOR {
+                    return Some(self.finish_scheduler_call(cpu, bus));
+                }
+
                 if selector == 0xFEFE {
                     let state = self
                         .ae_call_state
@@ -17343,25 +17477,15 @@ impl super::TrapDispatcher {
                     0x0205 => {
                         let suggested_thread = bus.read_long(sp);
                         let result_sp = sp.wrapping_add(4);
-                        let current = self.guest_calls.current_task();
-                        let mut outgoing = self
-                            .guest_calls
-                            .cooperative_context(current)
-                            .unwrap_or_else(|| CooperativeThread::capture(cpu));
-                        outgoing.save_registers(cpu);
-                        outgoing.d_regs[0] = 0;
-                        outgoing.a_regs[7] = result_sp;
-                        let result = self
-                            .guest_calls
-                            .yield_classic_thread(outgoing, suggested_thread);
-                        let error = result.as_ref().err().copied().unwrap_or(0);
-                        bus.write_word(result_sp, error as u16);
-                        cpu.write_reg(Register::D0, error as u32);
+                        // The application's own scheduler decides the yield when
+                        // one is installed; the shared scheduler is the default.
+                        bus.write_word(result_sp, 0);
                         cpu.write_reg(Register::A7, result_sp);
-                        if let Ok(crate::guest_call::ClassicYield::Switched(Some(context))) = result
-                        {
-                            context.install(cpu);
+                        cpu.write_reg(Register::D0, 0);
+                        if self.begin_scheduler_call(cpu, bus, suggested_thread) {
+                            return Some(Ok(()));
                         }
+                        self.yield_classic_thread_at(cpu, bus, suggested_thread, result_sp);
                         return Some(Ok(()));
                     }
                     // GetCurrentThread(currentThreadID)

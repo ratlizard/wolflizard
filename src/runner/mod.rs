@@ -3399,6 +3399,36 @@ impl FixtureRunner {
         self.wait_sleep_cap_in_headless
     }
 
+    /// One line on the state of the sound path, for a host that can show a
+    /// log and nothing else: how many Sound Manager channels are open, how
+    /// many sound commands have been issued, how many component instances
+    /// the host has opened, and for each QuickTime tune player its queue
+    /// depth, whether a segment is playing and its volume. Written for a
+    /// phone that reported the audio context running and zero samples mixed.
+    pub fn audio_debug_summary(&self) -> String {
+        let d = &self.dispatcher;
+        let mut out = format!(
+            "tick {} channels {} snd_cmds {} components {} tune_players {} buffered {}",
+            self.guest_tick(),
+            d.sound_manager.channels.len(),
+            d.sound_manager.debug_cmd_count,
+            d.synthetic_component_instances.len(),
+            d.tune_players.len(),
+            self.audio_buffer.len(),
+        );
+        for (instance, player) in &d.tune_players {
+            out.push_str(&format!(
+                " [tune ${instance:08X}: queue {} playing {} until {:?} volume {:.2} rendered {}]",
+                player.queue.len(),
+                player.head_until_tick.is_some(),
+                player.head_until_tick,
+                player.volume_fixed as f64 / 65536.0,
+                player.rendered.is_some(),
+            ));
+        }
+        out
+    }
+
     /// Drain accumulated audio samples for external consumers (e.g. WASM).
     /// Returns unsigned 8-bit mono PCM at 22050 Hz (silence = 0x80).
     pub fn drain_audio(&mut self) -> Vec<u8> {

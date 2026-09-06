@@ -2714,13 +2714,22 @@ impl super::TrapDispatcher {
         window_ptr: u32,
         source_rect: (i16, i16, i16, i16),
     ) {
-        // CalcVis / CalcVisBehind clamp the top edge against the menu bar.
+        // CalcVis / CalcVisBehind recompute the *visible* region, and the
+        // desktop they intersect it with stops at the menu bar (Inside
+        // Macintosh Volume I, I-297; Volume V, V-245). The content and
+        // structure regions are the window's own shape and are not clamped:
+        // a window whose content is moved to global (0, 0) keeps its title
+        // bar above the screen, it does not slide down below the menu bar.
+        // Cythera does exactly that with its 'Delver' backdrop
+        // (MoveWindow 0,0 then SizeWindow to the screen, menu bar hidden
+        // later); clamping the content region here put a title bar across
+        // the top twenty rows of the game.
         let mbar_h = bus.read_word(crate::memory::globals::addr::MBAR_HEIGHT) as i16;
         let (bounds_top, _) = self.port_bounds_top_left(bus, window_ptr);
         let local_mbar_bottom = mbar_h.saturating_add(bounds_top);
         let local_vis_top = source_rect.0.max(local_mbar_bottom);
         let local_rect = (local_vis_top, source_rect.1, source_rect.2, source_rect.3);
-        let global_content = self.window_local_rect_to_global(bus, window_ptr, local_rect);
+        let global_content = self.window_local_rect_to_global(bus, window_ptr, source_rect);
         let global_structure =
             self.window_structure_global_rect_for_window(bus, window_ptr, global_content);
 
@@ -11632,11 +11641,14 @@ mod tests {
         assert!(result.unwrap().is_ok());
         assert_eq!(cpu.read_reg(Register::A7), TEST_SP);
 
-        for (label, rgn_data) in [
-            ("middle_cont", middle_cont),
-            ("middle_vis", middle_vis),
-            ("middle_clip", middle_clip),
-        ] {
+        // The content region is the window's own shape; CalcVisBehind does
+        // not move it below the menu bar (IM:I I-297). Only visRgn and
+        // clipRgn stop at the menu bar.
+        assert_eq!(bus.read_word(middle_cont + 2) as i16, 10, "middle_cont.top");
+        assert_eq!(bus.read_word(middle_cont + 4) as i16, 20, "middle_cont.left");
+        assert_eq!(bus.read_word(middle_cont + 6) as i16, 110, "middle_cont.bottom");
+        assert_eq!(bus.read_word(middle_cont + 8) as i16, 210, "middle_cont.right");
+        for (label, rgn_data) in [("middle_vis", middle_vis), ("middle_clip", middle_clip)] {
             assert_eq!(bus.read_word(rgn_data + 2) as i16, 18, "{}.top", label);
             assert_eq!(bus.read_word(rgn_data + 4) as i16, 20, "{}.left", label);
             assert_eq!(bus.read_word(rgn_data + 6) as i16, 110, "{}.bottom", label);
@@ -11663,11 +11675,14 @@ mod tests {
             "middle_struc.right"
         );
 
-        for (label, rgn_data) in [
-            ("back_cont", back_cont),
-            ("back_vis", back_vis),
-            ("back_clip", back_clip),
-        ] {
+        // The content region is the window's own shape; CalcVisBehind does
+        // not move it below the menu bar (IM:I I-297). Only visRgn and
+        // clipRgn stop at the menu bar.
+        assert_eq!(bus.read_word(back_cont + 2) as i16, 10, "back_cont.top");
+        assert_eq!(bus.read_word(back_cont + 4) as i16, 20, "back_cont.left");
+        assert_eq!(bus.read_word(back_cont + 6) as i16, 110, "back_cont.bottom");
+        assert_eq!(bus.read_word(back_cont + 8) as i16, 210, "back_cont.right");
+        for (label, rgn_data) in [("back_vis", back_vis), ("back_clip", back_clip)] {
             assert_eq!(bus.read_word(rgn_data + 2) as i16, 18, "{}.top", label);
             assert_eq!(bus.read_word(rgn_data + 4) as i16, 20, "{}.left", label);
             assert_eq!(bus.read_word(rgn_data + 6) as i16, 110, "{}.bottom", label);
@@ -11890,6 +11905,66 @@ mod tests {
             ),
             (100, 200, 300, 500),
             "CalcVisBehind should preserve global content coordinates for nonzero window origins"
+        );
+    }
+
+    #[test]
+    fn calcvisbehind_clamps_only_the_visible_region_to_the_menu_bar() {
+        // A document window moved to global (0, 0) and sized to the screen
+        // keeps its title bar above the screen. CalcVisBehind trims the
+        // visRgn to the desktop below the menu bar and leaves the content and
+        // structure regions where the application put them.
+        // Inside Macintosh Volume I (1985), p. I-297; Volume V (1988), p. V-245.
+        let (mut disp, mut cpu, mut bus) = setup();
+        let window_addr = bus.alloc(256);
+        disp.menu_bar_hidden = false;
+        bus.write_word(crate::memory::globals::addr::MBAR_HEIGHT, 20);
+        let (_, _, screen_w, screen_h, _) = disp.screen_mode;
+
+        disp.init_cgraf_window(
+            &mut bus,
+            &mut cpu,
+            window_addr,
+            disp.screen_mode.0,
+            0,
+            0,
+            screen_h as i16,
+            screen_w as i16,
+            "Delver",
+            12,
+            true,
+            false,
+            false,
+            0,
+        );
+        disp.window_list.with_mut(|windows| *windows = vec![window_addr]);
+        disp.sync_window_list_links(&mut bus);
+
+        let clobbered_rgn = super::super::TrapDispatcher::alloc_rect_region_handle(
+            &mut bus,
+            Some((0, 0, screen_h as i16, screen_w as i16)),
+        );
+        let sp = TEST_SP - 8;
+        cpu.write_reg(Register::A7, sp);
+        bus.write_long(sp, clobbered_rgn);
+        bus.write_long(sp + 4, window_addr);
+
+        let result = dispatch(&mut disp, 0x10A, &mut cpu, &mut bus);
+        assert!(result.unwrap().is_ok());
+
+        assert_eq!(
+            read_window_region_rect(
+                &bus,
+                window_addr,
+                super::super::TrapDispatcher::WINDOW_CONT_RGN_OFFSET
+            ),
+            (0, 0, screen_h as i16, screen_w as i16),
+            "the content region is the application's, not the desktop's"
+        );
+        assert_eq!(
+            read_window_region_rect(&bus, window_addr, 24).0,
+            20,
+            "only the visible region stops at the menu bar"
         );
     }
 

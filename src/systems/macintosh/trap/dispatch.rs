@@ -1765,6 +1765,12 @@ pub struct TrapDispatcher {
     /// given, and the guest tick at which the rendered audio will run out --
     /// which is what `TuneGetStatus` reports and `GMSTune::Idle` polls.
     pub(crate) tune_players: HashMap<u32, TunePlayerState>,
+    /// Substitute music handed over by the host rather than found on disk,
+    /// keyed by the checksum of the tune it replaces -- the same key the
+    /// `SYSTEMLESS_TUNE_LIBRARY` directory names its files by. A browser has
+    /// no directory to read, so a frontend installs the bytes instead; when
+    /// an entry is present it is used and the directory is not consulted.
+    pub(crate) installed_tunes: HashMap<u32, Vec<u8>>,
     /// Next opaque ComponentInstance value returned by OpenComponent.
     pub(crate) next_synthetic_component_instance: u32,
     pub(crate) classic_graphics_importers:
@@ -4175,6 +4181,7 @@ impl TrapDispatcher {
             scheduler_trampoline_addr: None,
             synthetic_component_instances: HashSet::default(),
             tune_players: HashMap::new(),
+            installed_tunes: HashMap::new(),
             next_synthetic_component_instance: 0x00C1_0001,
             classic_graphics_importers: HashMap::default(),
             saved_draw_old_regions: HashMap::default(),

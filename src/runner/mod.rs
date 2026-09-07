@@ -10123,9 +10123,20 @@ impl FixtureRunner {
         // idle. With a thread ready the null event is delivered at once --
         // what an application that owns threads gets by passing sleep 0 --
         // and the application's own scheduler dispatches the thread.
+        // Spend one tick of it and let the guest have that tick, rather than
+        // spending the whole sleep at once with nothing running. The
+        // application's event loop keeps the rate its sleep asks for -- the
+        // clock still moves a tick per pass -- and its threads get the time
+        // instead of nobody. The budget is deliberately not refilled: a
+        // refill here lets an application whose thread is always ready spin
+        // its event loop at the full instruction budget, which is what an
+        // idle start screen did when this skipped the sleep outright.
         if self.dispatcher.guest_calls.next_ready_task(None).is_some() {
-            self.dispatcher.pending_wait_sleep_ticks = 0;
-            self.dispatcher.pending_wait_next_event_return = None;
+            self.dispatcher.pending_wait_sleep_ticks -= 1;
+            self.advance_guest_tick_from(&TS_WAIT_SLEEP);
+            if self.dispatcher.pending_wait_sleep_ticks == 0 {
+                self.dispatcher.pending_wait_next_event_return = None;
+            }
             return false;
         }
 

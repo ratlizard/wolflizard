@@ -2093,6 +2093,22 @@ pub struct FixtureRunner {
     pub(crate) debug: crate::debug::DebuggerCoordinator,
 }
 
+/// What an installed substitute turned out to be.
+///
+/// The kind is read from the bytes, not from a file name, so a frontend
+/// can hand over whatever it was given and be told what it was.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum SubstituteTune {
+    /// Neither a Standard MIDI File nor uncompressed PCM this host reads.
+    /// The tune it was installed for plays as the game wrote it.
+    Unusable,
+    /// A Standard MIDI File: the game keeps the timing and the volume,
+    /// the notes are someone else's.
+    Midi,
+    /// A recording, played as it is.
+    Recording,
+}
+
 impl FixtureRunner {
     /// Construct a fresh runner with `ram_size` bytes of guest RAM and
     /// the given [`FixtureRunnerConfig`]. The CPU begins at PC = 0 with
@@ -3433,6 +3449,52 @@ impl FixtureRunner {
 
     pub fn wait_sleep_cap_in_headless(&self) -> Option<u32> {
         self.wait_sleep_cap_in_headless
+    }
+
+    /// Install music to play in place of the tune with this checksum -- the
+    /// same key `SYSTEMLESS_TUNE_LIBRARY` names its files by, so a library
+    /// built for the desktop can be handed over file by file by a frontend
+    /// that has no directory to point at, such as a browser.
+    ///
+    /// Unusable bytes are still kept: what a host installed is what it can
+    /// later clear, and refusing them here would leave the caller unable to
+    /// tell "not installed" from "installed and ignored".
+    pub fn install_substitute_tune(&mut self, checksum: u32, bytes: Vec<u8>) -> SubstituteTune {
+        let kind = if bytes.starts_with(b"RIFF") {
+            if crate::tune_player::wav::decode_wav(&bytes).is_some() {
+                SubstituteTune::Recording
+            } else {
+                SubstituteTune::Unusable
+            }
+        } else if crate::tune_player::midi::decode_midi(&bytes).is_some() {
+            SubstituteTune::Midi
+        } else {
+            SubstituteTune::Unusable
+        };
+        self.dispatcher.installed_tunes.insert(checksum, bytes);
+        self.forget_rendered_tunes();
+        kind
+    }
+
+    /// Forget every installed substitute, so the game's own music plays.
+    pub fn clear_substitute_tunes(&mut self) {
+        self.dispatcher.installed_tunes.clear();
+        self.forget_rendered_tunes();
+    }
+
+    /// How many substitutes are installed.
+    pub fn substitute_tune_count(&self) -> usize {
+        self.dispatcher.installed_tunes.len()
+    }
+
+    /// Drop every player's cached render. A render is kept and reused when
+    /// the same segment is queued again, so without this a tune the game has
+    /// already played would go on playing as it was rendered before the
+    /// music changed.
+    fn forget_rendered_tunes(&mut self) {
+        for player in self.dispatcher.tune_players.values_mut() {
+            player.rendered = None;
+        }
     }
 
     /// One line on the state of the sound path, for a host that can show a

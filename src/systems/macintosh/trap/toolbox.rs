@@ -1250,7 +1250,15 @@ impl RetiredThreadStorageEdge for ClassicRetiredThreadStorageEdge<'_> {
 ///
 /// A missing directory, a missing file, or a file that will not parse all
 /// mean the same thing here, which is that the game's own music plays.
-fn load_substitute_tune(checksum: u32) -> Option<crate::tune_player::DecodedTune> {
+fn load_substitute_tune(
+    checksum: u32,
+    installed: Option<&[u8]>,
+) -> Option<crate::tune_player::DecodedTune> {
+    // Bytes the host installed win outright: it asked for this music by
+    // checksum, and there is nothing a directory could add.
+    if let Some(bytes) = installed {
+        return crate::tune_player::midi::decode_midi(bytes);
+    }
     let directory = std::env::var_os("SYSTEMLESS_TUNE_LIBRARY")?;
     let directory = std::path::Path::new(&directory);
     for extension in ["mid", "midi"] {
@@ -1276,7 +1284,20 @@ fn load_substitute_tune(checksum: u32) -> Option<crate::tune_player::DecodedTune
 /// recording is a finished performance and neither of the others can be.
 /// Named the same way -- `1A2B3C4D.wav` -- so one library directory can hold
 /// recordings for some tunes and MIDI for others.
-fn load_substitute_recording(checksum: u32) -> Option<crate::tune_player::wav::Recording> {
+fn load_substitute_recording(
+    checksum: u32,
+    installed: Option<&[u8]>,
+) -> Option<crate::tune_player::wav::Recording> {
+    // One installed entry per tune, whatever it holds, so the kind is read
+    // from the bytes rather than from a file extension. A recording is tried
+    // first for the same reason a `.wav` is on disk: it is a finished
+    // performance and neither the MIDI nor the game's own notes can be.
+    if let Some(bytes) = installed {
+        if bytes.starts_with(b"RIFF") {
+            return crate::tune_player::wav::decode_wav(bytes);
+        }
+        return None;
+    }
     let directory = std::env::var_os("SYSTEMLESS_TUNE_LIBRARY")?;
     let path = std::path::Path::new(&directory).join(format!("{checksum:08X}.wav"));
     let bytes = std::fs::read(&path).ok()?;
@@ -1458,7 +1479,8 @@ impl super::TrapDispatcher {
                 // of it, which is why this exists.
                 // A recording, if one is installed, is played as it is; there
                 // is nothing for a synthesiser to add to a performance.
-                if let Some(recording) = load_substitute_recording(checksum) {
+                let installed = self.installed_tunes.get(&checksum).map(Vec::as_slice);
+                if let Some(recording) = load_substitute_recording(checksum, installed) {
                     let duration_ms = recording.duration_ms();
                     if trace {
                         eprintln!(
@@ -1481,7 +1503,8 @@ impl super::TrapDispatcher {
                     self.start_due_tune_segment(instance, tick);
                     return;
                 }
-                let substitute = load_substitute_tune(checksum);
+                let installed = self.installed_tunes.get(&checksum).map(Vec::as_slice);
+                let substitute = load_substitute_tune(checksum, installed);
                 let substituted = substitute.is_some();
                 let (decoded, render_scale) = match substitute {
                     Some(tune) => {

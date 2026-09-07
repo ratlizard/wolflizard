@@ -10039,6 +10039,33 @@ impl FixtureRunner {
         {
             return false;
         }
+        // A WaitNextEvent sleep relinquishes the processor to *other
+        // processes* -- "the amount of time your application is willing to
+        // relinquish the processor if no events are pending", to "allow
+        // background processes to receive processing time" (Macintosh
+        // Toolbox Essentials 1992, p. 2-88). The runner hosts one
+        // application and no background processes, so it treats the sleep as
+        // idle time and advances the clock across it without executing guest
+        // code. That is right only while the application has nothing to do.
+        //
+        // An application with a ready cooperative thread does have something
+        // to do, and idling the sleep away starves it: Cythera's event loop
+        // yields to its loader and animation threads immediately after
+        // WaitNextEvent returns, so the thread advances one slice per sleep
+        // rather than for the duration of one. Measured on the headless
+        // inventory probe: 75,209 sleeps of 3 ticks in a 280M-instruction
+        // run, a thread ready at every one of them, 225,621 of the run's
+        // 346,912 ticks spent idling past ready work.
+        //
+        // So the sleep is honoured only when the application is genuinely
+        // idle. With a thread ready the null event is delivered at once --
+        // what an application that owns threads gets by passing sleep 0 --
+        // and the application's own scheduler dispatches the thread.
+        if self.dispatcher.guest_calls.next_ready_task(None).is_some() {
+            self.dispatcher.pending_wait_sleep_ticks = 0;
+            self.dispatcher.pending_wait_next_event_return = None;
+            return false;
+        }
 
         if self.frozen_ticks.is_some() {
             self.dispatcher.pending_wait_sleep_ticks = 0;

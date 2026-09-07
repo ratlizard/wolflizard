@@ -17983,6 +17983,47 @@
     }
 
     #[test]
+    fn an_installed_substitute_is_recognised_by_its_bytes_and_clears_the_render_cache() {
+        // A frontend with no directory to point at hands the bytes over and
+        // is told what they were; the kind comes from the bytes so it can
+        // pass on whatever it was given.
+        let mut runner = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());
+        runner
+            .dispatcher
+            .tune_players
+            .insert(0x00C1_0001, crate::trap::dispatch::TunePlayerState::default());
+        runner
+            .dispatcher
+            .tune_players
+            .get_mut(&0x00C1_0001)
+            .unwrap()
+            .rendered = None;
+
+        assert_eq!(
+            runner.install_substitute_tune(0x1234_5678, b"not a tune at all".to_vec()),
+            SubstituteTune::Unusable
+        );
+        // A minimal Standard MIDI File: one track, one note on and off.
+        let mut midi = b"MThd\x00\x00\x00\x06\x00\x00\x00\x01\x00\x60".to_vec();
+        let track: Vec<u8> = vec![
+            0x00, 0x90, 0x3C, 0x40, // note on, middle C
+            0x60, 0x80, 0x3C, 0x40, // note off a beat later
+            0x00, 0xFF, 0x2F, 0x00, // end of track
+        ];
+        midi.extend_from_slice(b"MTrk");
+        midi.extend_from_slice(&(track.len() as u32).to_be_bytes());
+        midi.extend_from_slice(&track);
+        assert_eq!(
+            runner.install_substitute_tune(0x1234_5679, midi),
+            SubstituteTune::Midi
+        );
+
+        assert_eq!(runner.substitute_tune_count(), 2);
+        runner.clear_substitute_tunes();
+        assert_eq!(runner.substitute_tune_count(), 0);
+    }
+
+    #[test]
     fn pending_wait_sleep_ticks_wakes_wait_next_event_with_queued_input() {
         let mut runner = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());
         let program_start = 0x0001_0000;

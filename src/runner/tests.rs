@@ -18296,10 +18296,11 @@
     #[test]
     fn wait_next_event_sleep_yields_to_a_ready_cooperative_thread_instead_of_idling() {
         // A ready thread is work the application has to do, so the sleep is
-        // not idle time: the null event is delivered at once and the guest
-        // runs, as it would had the application passed sleep 0. Idling here
-        // starved Cythera's loader thread and inflated the guest clock --
-        // 225,621 of 346,912 ticks in the headless inventory probe.
+        // not empty time: it is spent a tick at a time with the guest running
+        // for each, rather than all at once with nothing running. Spending it
+        // all at once starved Cythera's loader thread -- on the paced path
+        // whole host frames went by with the clock advancing and no guest
+        // code executed at all.
         use crate::execution_kernel::ExecutionTaskState;
         let (mut runner, _) = runner_parked_in_wait_sleep(30);
         let worker = runner
@@ -18314,16 +18315,19 @@
         let tick_before = runner.guest_tick();
 
         let (steps, running) = runner.run_steps(4, None);
+        let spent = runner.guest_tick() - tick_before;
 
         assert!(running);
         assert!(steps > 0, "the guest runs instead of idling the sleep away");
-        assert_eq!(
-            runner.guest_tick(),
-            tick_before,
-            "no clock is invented for work that was not idle"
+        assert!(
+            spent > 0 && spent < 30,
+            "the sleep is spent a tick at a time, not all at once: {spent}"
         );
-        assert_eq!(runner.dispatcher.pending_wait_sleep_ticks, 0);
-        assert!(runner.dispatcher.pending_wait_next_event_return.is_none());
+        assert_eq!(
+            runner.dispatcher.pending_wait_sleep_ticks,
+            30 - spent,
+            "what is left of the sleep is what was not spent"
+        );
     }
 
     #[test]

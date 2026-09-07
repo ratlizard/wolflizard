@@ -490,8 +490,28 @@ fn brightness(voicing: Voicing) -> (f32, f32) {
         Voicing::Plucked => (0.45, 0.0),
         // A bowed or blown note is held, so its spectrum settles rather than
         // dying: the attack is bright, the body of the note is not.
-        Voicing::Sustained => (0.30, 0.65),
-        Voicing::Vocal => (0.40, 0.55),
+        Voicing::Sustained => (0.30, 0.45),
+        Voicing::Vocal => (0.40, 0.40),
+    }
+}
+
+/// How far a held part's second voice is detuned, as a frequency ratio.
+///
+/// Nothing in life plays a sustained note in perfect tune with itself. A
+/// section of strings, a choir, and the sampled instruments QuickTime played
+/// this music with are all several sources at slightly different pitches, and
+/// the slow beating between them is most of what separates a held chord from
+/// a test tone -- which is what a single stack of exact sine partials is. Two
+/// and a half cents puts the beat at two thirds of a Hertz on a note at
+/// concert A, and faster on the partials above it, as it would be.
+///
+/// Struck and plucked parts are left alone: their notes are gone before a
+/// beat that slow completes, and the cost is a second oscillator per partial.
+fn detune_ratio(voicing: Voicing) -> f32 {
+    match voicing {
+        Voicing::Plucked => 0.0,
+        Voicing::Sustained => 0.0015,
+        Voicing::Vocal => 0.0021,
     }
 }
 
@@ -628,8 +648,12 @@ pub(crate) fn render_tune(
         // waits inside the trap, so the recurrence is the difference between
         // an unnoticeable pause and a stall.
         let (bright_seconds, bright_floor) = brightness(voicing);
+        let detune = detune_ratio(voicing);
         let mut level = [1.0f32; MAX_HARMONICS];
         let mut level_step = [1.0f32; MAX_HARMONICS];
+        // The detuned second voice, when the family has one.
+        let mut phase_b = [0.0f32; MAX_HARMONICS];
+        let mut step_b = [0.0f32; MAX_HARMONICS];
         let mut partials = 0usize;
         for index in 0..harmonics.len() {
             let partial = frequency * (index as f32 + 1.0);
@@ -644,6 +668,9 @@ pub(crate) fn render_tune(
             // per partial, and the same on every render of the same tune.
             let spread = (index as u32).wrapping_mul(2_654_435_761) ^ u32::from(note.pitch);
             phase[index] = (spread % SINE_TABLE_LEN as u32) as f32;
+            step_b[index] = step[index] * (1.0 + detune);
+            phase_b[index] =
+                ((spread.wrapping_mul(40_503) >> 3) % SINE_TABLE_LEN as u32) as f32;
             level_step[index] = if index == 0 {
                 1.0
             } else {
@@ -687,8 +714,18 @@ pub(crate) fn render_tune(
             let mut sample = 0.0f32;
             for index in 0..partials {
                 let position = phase[index] as usize & (SINE_TABLE_LEN - 1);
-                let shape = bright_floor + (1.0 - bright_floor) * level[index];
-                sample += harmonics[index] * shape * table[position];
+                let shape = harmonics[index]
+                    * (bright_floor + (1.0 - bright_floor) * level[index]);
+                if detune > 0.0 {
+                    let position_b = phase_b[index] as usize & (SINE_TABLE_LEN - 1);
+                    sample += shape * 0.5 * (table[position] + table[position_b]);
+                    phase_b[index] += step_b[index] * vibrato;
+                    if phase_b[index] >= SINE_TABLE_LEN as f32 {
+                        phase_b[index] -= SINE_TABLE_LEN as f32;
+                    }
+                } else {
+                    sample += shape * table[position];
+                }
                 level[index] *= level_step[index];
                 phase[index] += step[index] * vibrato;
                 if phase[index] >= SINE_TABLE_LEN as f32 {

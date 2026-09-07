@@ -17952,11 +17952,10 @@
     #[test]
     fn wait_next_event_sleep_yields_to_a_ready_cooperative_thread_instead_of_idling() {
         // A ready thread is work the application has to do, so the sleep is
-        // not empty time: it is spent a tick at a time with the guest running
-        // for each, rather than all at once with nothing running. Spending it
-        // all at once starved Cythera's loader thread -- on the paced path
-        // whole host frames went by with the clock advancing and no guest
-        // code executed at all.
+        // not idle time and no clock is invented for it. Spending it whole
+        // with nothing running starved Cythera's loader thread: on the paced
+        // path whole host frames went by with the clock advancing and no
+        // guest code executed at all.
         use crate::execution_kernel::ExecutionTaskState;
         let (mut runner, _) = runner_parked_in_wait_sleep(30);
         let worker = runner
@@ -17971,19 +17970,15 @@
         let tick_before = runner.guest_tick();
 
         let (steps, running) = runner.run_steps(4, None);
-        let spent = runner.guest_tick() - tick_before;
 
         assert!(running);
         assert!(steps > 0, "the guest runs instead of idling the sleep away");
-        assert!(
-            spent > 0 && spent < 30,
-            "the sleep is spent a tick at a time, not all at once: {spent}"
-        );
         assert_eq!(
-            runner.dispatcher.pending_wait_sleep_ticks,
-            30 - spent,
-            "what is left of the sleep is what was not spent"
+            runner.guest_tick(),
+            tick_before,
+            "and no clock is invented for time the application did not idle"
         );
+        assert_eq!(runner.dispatcher.pending_wait_sleep_ticks, 0);
     }
 
     #[test]

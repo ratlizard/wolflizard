@@ -9906,20 +9906,22 @@ impl FixtureRunner {
         // idle. With a thread ready the null event is delivered at once --
         // what an application that owns threads gets by passing sleep 0 --
         // and the application's own scheduler dispatches the thread.
-        // Spend one tick of it and let the guest have that tick, rather than
-        // spending the whole sleep at once with nothing running. The
-        // application's event loop keeps the rate its sleep asks for -- the
-        // clock still moves a tick per pass -- and its threads get the time
-        // instead of nobody. The budget is deliberately not refilled: a
-        // refill here lets an application whose thread is always ready spin
-        // its event loop at the full instruction budget, which is what an
-        // idle start screen did when this skipped the sleep outright.
+        // The null event is delivered at once, as an application that owns
+        // threads gets by passing sleep 0, and the game's own scheduler
+        // dispatches the thread.
+        //
+        // Spending the sleep a tick at a time instead was tried, to stop an
+        // application whose thread is always ready from running its event
+        // loop at the full instruction budget. It cost a pass through the run
+        // loop for every tick of every sleep and made the 280M inventory
+        // probe 100 s against 33 s, and the idle it was meant to protect
+        // turned out to be a measuring mistake: the harness drove the guest
+        // to its deadline every tick, so it filled every tick whatever this
+        // did. Skipping is both faster and the honest reading -- an
+        // application with work to do is not idle.
         if self.dispatcher.guest_calls.next_ready_task(None).is_some() {
-            self.dispatcher.pending_wait_sleep_ticks -= 1;
-            self.advance_guest_tick_from(&TS_WAIT_SLEEP);
-            if self.dispatcher.pending_wait_sleep_ticks == 0 {
-                self.dispatcher.pending_wait_next_event_return = None;
-            }
+            self.dispatcher.pending_wait_sleep_ticks = 0;
+            self.dispatcher.pending_wait_next_event_return = None;
             return false;
         }
 

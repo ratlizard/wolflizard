@@ -783,6 +783,68 @@ pub(crate) fn render_tune(
 mod tests {
     use super::*;
 
+    /// A whole 16-bit mono PCM WAV of `frames` frames, header honest.
+    fn pcm16_wav(rate: u32, frames: usize) -> Vec<u8> {
+        let data_len = frames * 2;
+        let mut out = Vec::with_capacity(44 + data_len);
+        out.extend_from_slice(b"RIFF");
+        out.extend_from_slice(&((36 + data_len) as u32).to_le_bytes());
+        out.extend_from_slice(b"WAVEfmt ");
+        out.extend_from_slice(&16u32.to_le_bytes());
+        out.extend_from_slice(&1u16.to_le_bytes()); // PCM
+        out.extend_from_slice(&1u16.to_le_bytes()); // mono
+        out.extend_from_slice(&rate.to_le_bytes());
+        out.extend_from_slice(&(rate * 2).to_le_bytes());
+        out.extend_from_slice(&2u16.to_le_bytes());
+        out.extend_from_slice(&16u16.to_le_bytes());
+        out.extend_from_slice(b"data");
+        out.extend_from_slice(&(data_len as u32).to_le_bytes());
+        for frame in 0..frames {
+            out.extend_from_slice(&((frame as i16).wrapping_mul(37)).to_le_bytes());
+        }
+        out
+    }
+
+    #[test]
+    fn a_wav_cut_short_is_refused_rather_than_played_as_a_stub() {
+        // A download that stopped leaves a data chunk claiming more audio
+        // than the file holds. Playing the surviving prefix turns a long
+        // tune into a fraction of a second and then silence, with nothing
+        // said about why; the game's own music is the better answer.
+        let mut whole = pcm16_wav(44100, 4410);
+        let claimed = whole.len();
+        whole.truncate(claimed - 4000);
+        assert!(
+            wav::decode_wav(&whole).is_none(),
+            "a truncated recording must be refused"
+        );
+        assert!(
+            wav::wav_problem(&whole).contains("cut short"),
+            "and say so: {}",
+            wav::wav_problem(&whole)
+        );
+    }
+
+    #[test]
+    fn a_whole_wav_of_the_same_shape_is_still_accepted() {
+        let whole = pcm16_wav(44100, 4410);
+        let decoded = wav::decode_wav(&whole).expect("an untruncated recording still decodes");
+        assert_eq!(decoded.sample_rate, 44100);
+        assert_eq!(decoded.samples.len(), 4410);
+    }
+
+    #[test]
+    fn an_oversized_recording_is_not_told_to_convert_itself() {
+        // It is already PCM; converting it again cannot make it fit, and
+        // that was the only advice this gave.
+        let too_big = vec![0u8; wav::MAX_WAV_BYTES + 1];
+        assert!(wav::decode_wav(&too_big).is_none());
+        let said = wav::wav_problem(&too_big);
+        assert!(said.contains("64 MB"), "{said}");
+        assert!(!said.contains("afconvert"), "{said}");
+    }
+
+
     fn rest(ms: u32) -> u32 {
         (REST_EVENT_TYPE << EVENT_TYPE_POS) | ms
     }
@@ -1474,6 +1536,35 @@ pub(crate) mod wav {
     /// The Sound Manager channel this ends up on carries unsigned 8-bit
     /// samples, so a 16-bit recording is reduced to that. The rate is kept
     /// and handed to the mixer, which resamples.
+    /// Why `decode_wav` said no, in words a person can act on.
+    ///
+    /// The caller has only `None` to go on, and told everyone to convert
+    /// their file with `afconvert` whatever the trouble was -- advice that
+    /// cannot help a file which is already PCM and merely too big, or one
+    /// that arrived cut short.
+    pub(crate) fn wav_problem(bytes: &[u8]) -> &'static str {
+        if bytes.len() > MAX_WAV_BYTES {
+            return "larger than the 64 MB of audio this host will load; a shorter \
+                    recording, or a lower sample rate, will fit";
+        }
+        if bytes.len() >= 12 && &bytes[0..4] == b"RIFF" && &bytes[8..12] == b"WAVE" {
+            let mut at = 12usize;
+            while at + 8 <= bytes.len() {
+                let size = match u32le(bytes, at + 4) {
+                    Some(size) => size as usize,
+                    None => break,
+                };
+                if &bytes[at..at + 4] == b"data" && size > bytes.len().saturating_sub(at + 8) {
+                    return "cut short: its data chunk claims more audio than the file \
+                            holds, so the download or copy did not finish";
+                }
+                at = at + 8 + size + (size & 1);
+            }
+        }
+        "not uncompressed PCM this host can read; convert it, for instance with: \
+         afconvert -f WAVE -d LEI16"
+    }
+
     pub(crate) fn decode_wav(bytes: &[u8]) -> Option<Recording> {
         if bytes.len() > MAX_WAV_BYTES || bytes.len() < 12 {
             return None;
@@ -1484,6 +1575,7 @@ pub(crate) mod wav {
 
         let mut format: Option<(u16, u16, u32, u16, usize, usize)> = None;
         let mut data: Option<(usize, usize)> = None;
+        let mut truncated: Option<(usize, usize)> = None;
         let mut at = 12usize;
         // Walk the chunks rather than assuming fmt is first and data second;
         // plenty of writers put LIST or fact between them.
@@ -1501,13 +1593,26 @@ pub(crate) mod wav {
                     size,
                 ));
             } else if id == b"data" {
-                data = Some((body, size.min(bytes.len().saturating_sub(body))));
+                // A `data` chunk that claims more than the file holds means
+                // the file is cut short -- a download that stopped, a copy
+                // that was interrupted. Clamping to what is there and playing
+                // it turns a 96-second tune into a half-second stub followed
+                // by silence, with nothing said; the game's own music is a
+                // better answer, and the caller says so.
+                let available = bytes.len().saturating_sub(body);
+                if size > available {
+                    truncated = Some((size, available));
+                }
+                data = Some((body, size.min(available)));
             }
             // Chunks are padded to an even length.
             at = body + size + (size & 1);
         }
 
         let (tag, channels, sample_rate, bits, fmt_at, fmt_size) = format?;
+        if truncated.is_some() {
+            return None;
+        }
         let (start, length) = data?;
 
         // 1 is WAVE_FORMAT_PCM. 0xFFFE is WAVE_FORMAT_EXTENSIBLE, which is

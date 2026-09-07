@@ -1305,9 +1305,9 @@ fn load_substitute_recording(
         Some(recording) => Some(recording),
         None => {
             eprintln!(
-                "[TUNE] {} is not uncompressed PCM this host can read; \
-                 convert it, for instance with: afconvert -f WAVE -d LEI16",
-                path.display()
+                "[TUNE] {} is {}",
+                path.display(),
+                crate::tune_player::wav::wav_problem(&bytes)
             );
             None
         }

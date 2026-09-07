@@ -428,7 +428,7 @@ pub(crate) fn decode_tune(words: &[u32]) -> DecodedTune {
 /// harpsichord line does not sound like an organ line, which is as far as this
 /// goes.
 /// The longest harmonic series `timbre` returns.
-const MAX_HARMONICS: usize = 5;
+const MAX_HARMONICS: usize = 8;
 
 /// How a part behaves over time, which matters more to recognition than the
 /// exact harmonic amplitudes.
@@ -446,23 +446,52 @@ enum Voicing {
 
 fn timbre(program: u8) -> (&'static [f32], Voicing) {
     match program {
-        0..=7 => (&[1.0, 0.5, 0.25, 0.12, 0.06], Voicing::Plucked),
-        8..=15 => (&[1.0, 0.3, 0.6, 0.2], Voicing::Plucked),
-        16..=23 => (&[1.0, 0.8, 0.6, 0.5, 0.3], Voicing::Sustained),
-        24..=31 => (&[1.0, 0.6, 0.35, 0.2, 0.1], Voicing::Plucked),
-        32..=39 => (&[1.0, 0.7, 0.2, 0.1], Voicing::Plucked),
-        40..=51 => (&[1.0, 0.5, 0.35, 0.25, 0.15], Voicing::Sustained),
+        0..=7 => (&[1.0, 0.55, 0.32, 0.20, 0.12, 0.07, 0.04, 0.02], Voicing::Plucked),
+        8..=15 => (&[1.0, 0.3, 0.6, 0.2, 0.12, 0.06], Voicing::Plucked),
+        // An organ really is additive, and its partials really do hold, so
+        // this family is the one the plain sum was always right for.
+        16..=23 => (&[1.0, 0.8, 0.6, 0.5, 0.3, 0.22, 0.15, 0.1], Voicing::Sustained),
+        24..=31 => (&[1.0, 0.6, 0.38, 0.24, 0.15, 0.09, 0.05], Voicing::Plucked),
+        32..=39 => (&[1.0, 0.7, 0.25, 0.12, 0.06], Voicing::Plucked),
+        40..=51 => (&[1.0, 0.6, 0.42, 0.3, 0.22, 0.16, 0.11, 0.07], Voicing::Sustained),
         // Choir Aahs, Voice Oohs, Synth Voice. A vowel's energy sits in the
         // low harmonics with little above the fourth, which is what separates
         // it from the strings either side of it in the General MIDI order.
         52..=54 => (&[1.0, 0.62, 0.30, 0.10], Voicing::Vocal),
-        55..=63 => (&[1.0, 0.7, 0.5, 0.35, 0.2], Voicing::Sustained),
-        64..=79 => (&[1.0, 0.35, 0.15, 0.08], Voicing::Sustained),
+        // Brass carries energy a long way up the series; that is most of
+        // what makes a horn a horn rather than a loud flute.
+        55..=63 => (&[1.0, 0.8, 0.65, 0.5, 0.38, 0.28, 0.2, 0.14], Voicing::Sustained),
+        // Pipes and reeds are hollow: the second partial is weak and the
+        // third is not.
+        64..=79 => (&[1.0, 0.4, 0.5, 0.2, 0.15, 0.08], Voicing::Sustained),
         // Synth leads and pads. 85 (Lead 6, voice) and 91 (Pad 4, choir) are
         // vocal in name and in use.
         85 | 91 => (&[1.0, 0.62, 0.30, 0.10], Voicing::Vocal),
-        80..=95 => (&[1.0, 0.45, 0.3, 0.2], Voicing::Sustained),
-        _ => (&[1.0, 0.4, 0.25, 0.15], Voicing::Sustained),
+        80..=95 => (&[1.0, 0.5, 0.35, 0.25, 0.16, 0.1], Voicing::Sustained),
+        _ => (&[1.0, 0.45, 0.28, 0.18, 0.1], Voicing::Sustained),
+    }
+}
+
+/// How each partial's own loudness moves over a note, as a time constant in
+/// seconds for the partials above the fundamental and the fraction they
+/// settle at.
+///
+/// This is what a fixed harmonic mix cannot do, and the difference is not
+/// subtle: in a real instrument the top of the spectrum dies away faster than
+/// the bottom, so a note is brightest at its attack and mellows as it rings.
+/// Hold the mix still instead and every family comes out sounding like an
+/// organ, because a held mix is what an organ has. Partial `i` (counting the
+/// fundamental as 0) decays with time constant `seconds / i` -- the fifth
+/// partial five times faster than the first above the fundamental -- towards
+/// `floor` of its starting amplitude.
+fn brightness(voicing: Voicing) -> (f32, f32) {
+    match voicing {
+        // Struck and plucked strings lose their top almost at once.
+        Voicing::Plucked => (0.45, 0.0),
+        // A bowed or blown note is held, so its spectrum settles rather than
+        // dying: the attack is bright, the body of the note is not.
+        Voicing::Sustained => (0.30, 0.65),
+        Voicing::Vocal => (0.40, 0.55),
     }
 }
 
@@ -546,6 +575,11 @@ pub(crate) fn render_tune(
         // A sung note starts far more gently than a struck one.
         let attack_seconds = if voicing == Voicing::Vocal { 0.045 } else { 0.008 };
         let attack = ((attack_seconds * rate) as usize).max(1);
+        // A short string rings for less time than a long one, which is why a
+        // piano's top octave is percussive and its bottom one is not. One
+        // decay for every pitch made every plucked part sound like the same
+        // instrument played in different registers.
+        let pluck_seconds = (0.45 * (440.0 / frequency).powf(0.35)).clamp(0.12, 0.95);
 
         // Controllers in force where this note begins. Volume, pan, pressure
         // and the damper move slowly enough that reading them once at the
@@ -587,15 +621,34 @@ pub(crate) fn render_tune(
         let table = sine_table();
         let mut phase = [0.0f32; MAX_HARMONICS];
         let mut step = [0.0f32; MAX_HARMONICS];
+        // Each partial's own decay: `level` starts at one and is multiplied
+        // by `level_step` every frame, so the amplitude is one multiply per
+        // partial per frame rather than an `exp` call. A tune can run to a
+        // hundred million partial samples and is rendered while the game
+        // waits inside the trap, so the recurrence is the difference between
+        // an unnoticeable pause and a stall.
+        let (bright_seconds, bright_floor) = brightness(voicing);
+        let mut level = [1.0f32; MAX_HARMONICS];
+        let mut level_step = [1.0f32; MAX_HARMONICS];
         let mut partials = 0usize;
-        for (index, amplitude) in harmonics.iter().enumerate() {
+        for index in 0..harmonics.len() {
             let partial = frequency * (index as f32 + 1.0);
             if partial > rate / 2.0 {
                 break;
             }
             step[index] = partial / rate * SINE_TABLE_LEN as f32;
-            phase[index] = 0.0;
-            let _ = amplitude;
+            // Partials that all start at phase zero sum to an identical
+            // impulse at every note onset, which is heard as a click and as
+            // the sameness between one note and the next. Spread them by a
+            // fixed hash of the partial and the pitch: different per note and
+            // per partial, and the same on every render of the same tune.
+            let spread = (index as u32).wrapping_mul(2_654_435_761) ^ u32::from(note.pitch);
+            phase[index] = (spread % SINE_TABLE_LEN as u32) as f32;
+            level_step[index] = if index == 0 {
+                1.0
+            } else {
+                (-(index as f32) / (bright_seconds * rate)).exp()
+            };
             partials += 1;
         }
 
@@ -634,7 +687,9 @@ pub(crate) fn render_tune(
             let mut sample = 0.0f32;
             for index in 0..partials {
                 let position = phase[index] as usize & (SINE_TABLE_LEN - 1);
-                sample += harmonics[index] * table[position];
+                let shape = bright_floor + (1.0 - bright_floor) * level[index];
+                sample += harmonics[index] * shape * table[position];
+                level[index] *= level_step[index];
                 phase[index] += step[index] * vibrato;
                 if phase[index] >= SINE_TABLE_LEN as f32 {
                     phase[index] -= SINE_TABLE_LEN as f32;
@@ -643,7 +698,7 @@ pub(crate) fn render_tune(
             sample /= harmonic_sum;
 
             let envelope = match voicing {
-                Voicing::Plucked => (-(frame as f32) / (0.45 * rate)).exp(),
+                Voicing::Plucked => (-(frame as f32) / (pluck_seconds * rate)).exp(),
                 _ if frame < sustain_frames => 1.0,
                 // A voice releases more slowly than an instrument stopped by
                 // its player.

@@ -3649,7 +3649,14 @@ fn save_screenshot(runner: &FixtureRunner, num: usize) {
     });
 
     let ticks = runner.guest_tick();
-    let path = std::env::temp_dir().join(format!("systemless_headless_{:04}.png", num));
+    // Two headless runs at once used to write over each other's frames:
+    // the directory was the host's temporary directory and the name carried
+    // only the frame number. `SYSTEMLESS_HEADLESS_SCREENSHOT_DIR` gives a run
+    // somewhere of its own.
+    let dir = std::env::var_os("SYSTEMLESS_HEADLESS_SCREENSHOT_DIR")
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(std::env::temp_dir);
+    let path = dir.join(format!("systemless_headless_{:04}.png", num));
     img.save(&path).expect("Failed to save screenshot");
     eprintln!(
         "[HEADLESS] Screenshot #{}: {} (ticks={})",

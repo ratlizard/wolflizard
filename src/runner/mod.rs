@@ -313,6 +313,78 @@ fn trace_dialog_procs_enabled() -> bool {
 // `VecDeque` pop_front + push_back + an extra `bus.read_word` + 6
 // register reads. Enable with `SYSTEMLESS_TRACE_BUFFER=1` when diagnosing
 // a crash.
+/// A short, allocation-free name for a batch's exit reason.
+fn batch_exit_label(exit: &BatchExit) -> &'static str {
+    match exit {
+        BatchExit::BudgetExhausted => "budget",
+        BatchExit::Stopped => "stop",
+        BatchExit::WatchedPc { .. } => "watched",
+        BatchExit::AlineTrap { .. } => "a-line",
+        BatchExit::FlineTrap { .. } => "f-line",
+        BatchExit::TrapInstruction { .. } => "trap",
+        BatchExit::Breakpoint { .. } => "bkpt",
+        BatchExit::IllegalInstruction { .. } => "illegal",
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+static SINGLE_STEP_FROM: OnceLock<Option<u64>> = OnceLock::new();
+/// The retired-instruction count `SYSTEMLESS_SINGLE_STEP_FROM` asks the
+/// runner to stop batching at, or `None` when it is unset.
+///
+/// A fault that only appears while the runner is batching cannot be traced
+/// the ordinary way: every per-instruction tracer forces one-instruction
+/// batches for the whole run, which changes the interleaving enough that
+/// the fault never happens. Switching at a chosen instruction count leaves
+/// the run identical up to that point and single-steps -- with the trace
+/// buffer filling -- from there on, so the run-up to a batched fault can be
+/// read without preventing it. The count is the one printed by
+/// `[RUN_STEPS] CPU stopped at`, less however far back the trace wants to
+/// begin.
+fn single_step_from() -> Option<u64> {
+    #[cfg(target_arch = "wasm32")]
+    {
+        return None;
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    *SINGLE_STEP_FROM.get_or_init(|| {
+        std::env::var("SYSTEMLESS_SINGLE_STEP_FROM")
+            .ok()
+            .and_then(|value| value.trim().parse::<u64>().ok())
+    })
+}
+
+/// Default depth of `batch_trace`. `SYSTEMLESS_TRACE_BATCHES=<n>` sets its
+/// own: a runaway program counter walking zero-filled memory retires four
+/// bytes an instruction, so following one back to the jump that started it
+/// wants hundreds of batches, not tens.
+const BATCH_TRACE_DEPTH_DEFAULT: usize = 96;
+
+#[cfg(not(target_arch = "wasm32"))]
+static BATCH_TRACE_DEPTH: OnceLock<Option<usize>> = OnceLock::new();
+/// The batch-history depth `SYSTEMLESS_TRACE_BATCHES` asks for, or `None`
+/// when it is unset. Deliberately absent from
+/// `per_instruction_diagnostics_active`: the whole point is to observe a
+/// run that is still batching.
+fn batch_trace_depth() -> Option<usize> {
+    #[cfg(target_arch = "wasm32")]
+    {
+        return None;
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    *BATCH_TRACE_DEPTH.get_or_init(|| {
+        let value = std::env::var("SYSTEMLESS_TRACE_BATCHES").ok()?;
+        Some(
+            value
+                .trim()
+                .parse::<usize>()
+                .ok()
+                .filter(|depth| *depth > 0)
+                .unwrap_or(BATCH_TRACE_DEPTH_DEFAULT),
+        )
+    })
+}
+
 #[cfg(not(target_arch = "wasm32"))]
 static TRACE_BUFFER_ENABLED: OnceLock<bool> = OnceLock::new();
 fn trace_buffer_enabled() -> bool {
@@ -1895,6 +1967,20 @@ pub struct FixtureRunner {
     prefer_powerpc_executables: bool,
     installer_handoff_baseline: Option<BTreeSet<String>>,
     trace_buffer: std::collections::VecDeque<(u32, u16, u32, u32, u32, u32)>, // (PC, Op, A0, SP, A6, A5)
+    /// A batch-granular history of guest execution, for crashes the
+    /// per-instruction `trace_buffer` cannot be used on.
+    ///
+    /// Enabling any per-instruction tracer forces `batch_max` to 1, which
+    /// changes when interrupt callbacks and tick charges land relative to
+    /// the guest's instruction stream. A fault that only appears while the
+    /// runner is batching therefore disappears the moment `trace_buffer` is
+    /// switched on, and the run-up to it cannot be seen. This buffer records
+    /// one entry per batch instead -- the PC the batch started at, how many
+    /// instructions it retired, the PC it left off at and why -- so the jump
+    /// that took the guest somewhere it should not be is still visible with
+    /// the batching intact. Gated on `SYSTEMLESS_TRACE_BATCHES` so the
+    /// measured runs pay nothing for it.
+    batch_trace: std::collections::VecDeque<(u32, u32, u32, u32, &'static str)>,
     /// Set to true when the application calls ExitToShell
     halted: bool,
     /// Trap opcode that caused the halt, if known.
@@ -2187,6 +2273,7 @@ impl FixtureRunner {
             prefer_powerpc_executables: false,
             installer_handoff_baseline: None,
             trace_buffer: std::collections::VecDeque::with_capacity(2000),
+            batch_trace: std::collections::VecDeque::new(),
             halted: false,
             halted_trap: None,
             halted_pc: None,
@@ -6363,7 +6450,9 @@ impl FixtureRunner {
             // and `VecDeque` pop/push run on every instruction fetch
             // just so `dump_trace()` can show recent instructions on a
             // halt. Default off; enable for crash diagnostics.
-            if trace_buffer_enabled() {
+            if trace_buffer_enabled()
+                || single_step_from().is_some_and(|at| self.total_instructions >= at)
+            {
                 let opcode = self.bus.read_word(pc);
                 let a0 = self.m68k.cpu.read_reg(Register::A0);
                 let a6 = self.m68k.cpu.read_reg(Register::A6);
@@ -6696,7 +6785,9 @@ impl FixtureRunner {
                 }
                 precharged = true;
             }
-            let batch_max = if per_instruction_diagnostics_active() {
+            let batch_max = if per_instruction_diagnostics_active()
+                || single_step_from().is_some_and(|at| self.total_instructions >= at)
+            {
                 1
             } else {
                 let mut n = (max_steps - count).min(BATCH_CHUNK);
@@ -6735,6 +6826,18 @@ impl FixtureRunner {
             let batch = self.m68k.cpu.run_batch(&mut self.bus, batch_max, &watch_buf);
             self.dispatcher
                 .retire_returned_native_trap_call(&mut self.m68k.cpu);
+            if let Some(depth) = batch_trace_depth() {
+                if self.batch_trace.len() >= depth {
+                    self.batch_trace.pop_front();
+                }
+                self.batch_trace.push_back((
+                    pc,
+                    self.m68k.cpu.read_reg(Register::A7),
+                    batch.instructions,
+                    self.m68k.cpu.read_reg(Register::PC),
+                    batch_exit_label(&batch.exit),
+                ));
+            }
             // Trap exits consumed their opcode word too; count it like the
             // old per-step path did.
             let executed = batch.instructions as usize
@@ -9588,7 +9691,56 @@ impl FixtureRunner {
         self.halted_pc = Some(halted_pc);
         self.halted_sp = Some(self.m68k.cpu.read_reg(Register::A7));
         self.halted_d0 = Some(self.m68k.cpu.read_reg(Register::D0));
+        self.dump_halt_registers();
+        self.dump_batch_trace();
         self.dump_trace();
+    }
+
+    /// Print the whole register file and the top of the stack at a halt.
+    ///
+    /// A halt at an address the application never compiled code at says
+    /// almost nothing on its own; the return addresses still on the stack
+    /// say which routine was running when the guest went astray, and the
+    /// address registers say what pointer it followed. Printing them costs
+    /// nothing -- this runs once, on the way out.
+    fn dump_halt_registers(&self) {
+        let d = |r| self.m68k.cpu.read_reg(r);
+        eprintln!(
+            "[HALT] d0={:08X} d1={:08X} d2={:08X} d3={:08X} d4={:08X} d5={:08X} d6={:08X} d7={:08X}",
+            d(Register::D0), d(Register::D1), d(Register::D2), d(Register::D3),
+            d(Register::D4), d(Register::D5), d(Register::D6), d(Register::D7),
+        );
+        eprintln!(
+            "[HALT] a0={:08X} a1={:08X} a2={:08X} a3={:08X} a4={:08X} a5={:08X} a6={:08X} sp={:08X}",
+            d(Register::A0), d(Register::A1), d(Register::A2), d(Register::A3),
+            d(Register::A4), d(Register::A5), d(Register::A6), d(Register::A7),
+        );
+        let sp = d(Register::A7);
+        for row in 0..6u32 {
+            let base = sp.wrapping_add(row * 16);
+            eprintln!(
+                "[HALT] ({:08X}) {:08X} {:08X} {:08X} {:08X}",
+                base,
+                self.bus.read_long(base),
+                self.bus.read_long(base.wrapping_add(4)),
+                self.bus.read_long(base.wrapping_add(8)),
+                self.bus.read_long(base.wrapping_add(12)),
+            );
+        }
+    }
+
+    /// Print the batch history gathered under `SYSTEMLESS_TRACE_BATCHES`.
+    fn dump_batch_trace(&self) {
+        if self.batch_trace.is_empty() {
+            return;
+        }
+        eprintln!(
+            "[BATCH] Last {} batches (from, sp after -> retired -> to, why):",
+            self.batch_trace.len()
+        );
+        for (from, sp, retired, to, why) in &self.batch_trace {
+            eprintln!("  {:08X}  {:08X}  {:6}  {:08X}  {}", from, sp, retired, to, why);
+        }
     }
 
     // Dialog Manager callbacks execute in the application's foreground, not at
@@ -11734,7 +11886,9 @@ impl FixtureRunner {
             }
 
             // Trace: Push current PC/Opcode/Regs (gated on env var).
-            if trace_buffer_enabled() {
+            if trace_buffer_enabled()
+                || single_step_from().is_some_and(|at| self.total_instructions >= at)
+            {
                 let opcode = self.bus.read_word(pc);
                 let a0 = self.m68k.cpu.read_reg(Register::A0);
                 let sp = self.m68k.cpu.read_reg(Register::A7);

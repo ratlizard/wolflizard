@@ -24325,6 +24325,71 @@
     }
 
     #[test]
+    fn drawtext_between_openpicture_and_closepicture_is_recorded_as_longtext() {
+        // Inside Macintosh Volume I, I-189: between OpenPicture and
+        // ClosePicture every QuickDraw drawing call goes into the picture.
+        // DrawString recorded and DrawText did not, so an application that
+        // draws its text a buffer at a time -- Cythera's papers do, eighteen
+        // DrawText calls inside one OpenPicture -- produced a picture holding
+        // the font state and not one glyph, and the window it was replayed
+        // into came out blank.
+        let (mut d, mut cpu, mut bus) = setup();
+
+        let pic_frame = 0x300280u32;
+        write_rect(&mut bus, pic_frame, 0, 0, 40, 200);
+        bus.write_long(TEST_SP, pic_frame);
+        cpu.write_reg(Register::A7, TEST_SP);
+        d.dispatch_quickdraw(true, 0x0F3, &mut cpu, &mut bus)
+            .expect("OpenPicture should be handled")
+            .expect("OpenPicture should succeed");
+        let handle = bus.read_long(cpu.read_reg(Register::A7));
+
+        let text = b"Welcome, Human";
+        let buffer = bus.alloc(text.len() as u32);
+        bus.write_bytes(buffer, text);
+        let sp = TEST_SP - 8;
+        bus.write_word(sp, text.len() as u16); // byteCount
+        bus.write_word(sp + 2, 0); // firstByte
+        bus.write_long(sp + 4, buffer); // textBuf
+        cpu.write_reg(Register::A7, sp);
+        d.dispatch_quickdraw(true, 0x085, &mut cpu, &mut bus)
+            .expect("DrawText should be handled")
+            .expect("DrawText should succeed");
+        assert_eq!(
+            cpu.read_reg(Register::A7),
+            sp + 8,
+            "DrawText pops its three arguments whether it draws or records"
+        );
+
+        cpu.write_reg(Register::A7, TEST_SP);
+        d.dispatch_quickdraw(true, 0x0F4, &mut cpu, &mut bus)
+            .expect("ClosePicture should be handled")
+            .expect("ClosePicture should succeed");
+
+        let pic_ptr = bus.read_long(handle);
+        let size = usize::from(bus.read_word(pic_ptr));
+        let picture = bus.read_bytes(pic_ptr, size);
+        // Find the run by its bytes and check the seven in front of it are a
+        // LongText header: opcode $0028, the pen point, then the count.
+        // Searching for the opcode word instead matches picFrame coordinates.
+        let at = picture
+            .windows(text.len())
+            .position(|window| window == text)
+            .expect("the recorded picture should carry the drawn run");
+        assert!(at >= 7, "a LongText header should precede the run");
+        assert_eq!(
+            &picture[at - 7..at - 5],
+            &[0x00, 0x28],
+            "the run should be introduced by the LongText opcode"
+        );
+        assert_eq!(
+            usize::from(picture[at - 1]),
+            text.len(),
+            "the recorded run keeps its byte count"
+        );
+    }
+
+    #[test]
     fn closepicture_preserves_an_8bpp_screen_snapshot_for_drawpicture() {
         let (mut d, mut cpu, mut bus) = setup();
         let original = [

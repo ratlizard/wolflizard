@@ -2111,6 +2111,19 @@ impl super::TrapDispatcher {
                         ch,
                     );
                 }
+                // A character drawn into an open picture is recorded, for the
+                // reason given on DrawText below.
+                if self.recording_picture.is_some() {
+                    let text = [ch as u8];
+                    let pen = self.pn_loc;
+                    let width = self.recorded_text_advance(&text);
+                    if let Some((_, _, _, _, _, commands)) = self.recording_picture.as_mut() {
+                        pict::recording_push_long_text(commands, pen.0, pen.1, &text);
+                    }
+                    self.pn_loc.1 = self.pn_loc.1.saturating_add(width);
+                    self.sync_current_port_draw_state(bus);
+                    return Some(Ok(()));
+                }
                 self.draw_char(cpu, bus, ch);
                 self.refresh_visible_dialog_snapshot_for_port(bus, *self.current_port);
                 Ok(())
@@ -2148,24 +2161,15 @@ impl super::TrapDispatcher {
                         String::from_utf8_lossy(&bytes),
                     );
                 }
-                if let Some((_, _, _, _, _, commands)) = self.recording_picture.as_mut() {
+                if self.recording_picture.is_some() {
                     let len = usize::from(bus.read_byte(str_ptr));
                     let text = bus.read_bytes(str_ptr + 1, len);
-                    pict::recording_push_long_text(commands, self.pn_loc.0, self.pn_loc.1, &text);
-                    let mut advance = 0i32;
-                    for &byte in &text {
-                        advance += if let Some((glyph, _)) =
-                            get_glyph(self.tx_font, self.tx_size, byte as char)
-                        {
-                            i32::from(self.glyph_advance(glyph))
-                        } else {
-                            i32::from(self.missing_glyph_advance())
-                        };
+                    let pen = self.pn_loc;
+                    let width = self.recorded_text_advance(&text);
+                    if let Some((_, _, _, _, _, commands)) = self.recording_picture.as_mut() {
+                        pict::recording_push_long_text(commands, pen.0, pen.1, &text);
                     }
-                    self.pn_loc.1 = self
-                        .pn_loc
-                        .1
-                        .saturating_add(self.proportional_text_width(advance));
+                    self.pn_loc.1 = self.pn_loc.1.saturating_add(width);
                     self.sync_current_port_draw_state(bus);
                     return Some(Ok(()));
                 }
@@ -2208,6 +2212,27 @@ impl super::TrapDispatcher {
                         self.tx_mode,
                         String::from_utf8_lossy(&bytes),
                     );
+                }
+                // Text drawn while a picture is open belongs in the picture,
+                // not on the port -- Inside Macintosh Volume I, I-189: between
+                // OpenPicture and ClosePicture "all calls to QuickDraw drawing
+                // routines are stored in the picture definition". DrawString
+                // below already did this and DrawText did not, so an
+                // application that draws its text a buffer at a time recorded
+                // the font state and none of the words. Cythera's papers are
+                // that case: eighteen DrawText calls inside one OpenPicture,
+                // and the scroll window drew an empty parchment.
+                if self.recording_picture.is_some() {
+                    let count = usize::try_from(byte_count).unwrap_or(0);
+                    let text = bus.read_bytes(start, count);
+                    let pen = self.pn_loc;
+                    let width = self.recorded_text_advance(&text);
+                    if let Some((_, _, _, _, _, commands)) = self.recording_picture.as_mut() {
+                        pict::recording_push_long_text(commands, pen.0, pen.1, &text);
+                    }
+                    self.pn_loc.1 = self.pn_loc.1.saturating_add(width);
+                    self.sync_current_port_draw_state(bus);
+                    return Some(Ok(()));
                 }
                 bus.begin_presentation_text_run(self.tx_mode == 0);
                 for i in 0..byte_count {
@@ -21986,6 +22011,22 @@ impl super::TrapDispatcher {
             bytes.push(packed.len() as u8);
         }
         bytes.extend_from_slice(&packed);
+    }
+
+    /// How far the pen moves for `text` in the current font, which is what a
+    /// recorded text opcode has to advance it by: the picture player will
+    /// place the following opcode from the pen this leaves behind.
+    fn recorded_text_advance(&self, text: &[u8]) -> i16 {
+        let mut advance = 0i32;
+        for &byte in text {
+            advance += if let Some((glyph, _)) = get_glyph(self.tx_font, self.tx_size, byte as char)
+            {
+                i32::from(self.glyph_advance(glyph))
+            } else {
+                i32::from(self.missing_glyph_advance())
+            };
+        }
+        self.proportional_text_width(advance)
     }
 
     fn encode_recorded_picture_pict(

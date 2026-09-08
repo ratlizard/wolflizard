@@ -4,7 +4,7 @@
   </a>
 </p>
 
-<h1 align="center">systemless</h1>
+<h1 align="center">wolflizard, a systemless fork for Cythera (1999)</h1>
 
 <p align="center">
   <strong>A high-level runtime for classic Macintosh applications and games.</strong><br>

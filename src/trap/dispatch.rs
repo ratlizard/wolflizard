@@ -4994,6 +4994,71 @@ impl TrapDispatcher {
         });
     }
 
+    /// Exchange two VFS entries' contents, which is what the File Manager
+    /// changes on the volume for `FSpExchangeFiles`/`PBExchangeFiles`.
+    ///
+    /// Inside Macintosh: Files (1992), pp. 2-165 to 2-166: the call "swaps
+    /// the data in two files by changing the information in the volume's
+    /// catalog", specifically "the fields in the catalog entries that record
+    /// the location of the data and the modification dates", and "swaps both
+    /// the data forks and the resource forks". Names, file IDs, parents,
+    /// creation dates and Finder information stay with the catalog entry
+    /// they were in -- that is the whole point of the call, which exists so
+    /// that a rewritten file keeps the identity anything tracking it by file
+    /// ID already holds.
+    ///
+    /// Swapping the fork bytes under the two paths is also what makes an
+    /// open access path behave: a `refNum` here resolves through the path it
+    /// was opened on, so after the swap it reads the bytes that moved in,
+    /// which is the behaviour Inside Macintosh describes for a file control
+    /// block the exchange updates.
+    pub(crate) fn swap_vfs_entry_contents(&mut self, left: &str, right: &str) {
+        let left = Self::normalize_vfs_path(left);
+        let right = Self::normalize_vfs_path(right);
+        if left.is_empty() || right.is_empty() || left == right {
+            return;
+        }
+
+        let left_data = self.vfs.remove(&left);
+        let right_data = self.vfs.remove(&right);
+        if let Some(bytes) = right_data {
+            self.vfs.insert(left.clone(), bytes);
+        }
+        if let Some(bytes) = left_data {
+            self.vfs.insert(right.clone(), bytes);
+        }
+
+        let left_rsrc = self.vfs_rsrc.remove(&left);
+        let right_rsrc = self.vfs_rsrc.remove(&right);
+        if let Some(bytes) = right_rsrc {
+            self.vfs_rsrc.insert(left.clone(), bytes);
+        }
+        if let Some(bytes) = left_rsrc {
+            self.vfs_rsrc.insert(right.clone(), bytes);
+        }
+
+        self.ensure_vfs_file_metadata(&left);
+        self.ensure_vfs_file_metadata(&right);
+        let left_modified = self.vfs_metadata.get(&left).map(|entry| entry.modified_date);
+        let right_modified = self.vfs_metadata.get(&right).map(|entry| entry.modified_date);
+        self.vfs_metadata.with_mut(|metadata| {
+            if let Some(modified) = right_modified {
+                if let Some(entry) = metadata.get_mut(&left) {
+                    entry.modified_date = modified;
+                }
+            }
+            if let Some(modified) = left_modified {
+                if let Some(entry) = metadata.get_mut(&right) {
+                    entry.modified_date = modified;
+                }
+            }
+        });
+        self.process_file_system.with_mut(|file_system| {
+            file_system.publish_classic_vfs_metadata(&left);
+            file_system.publish_classic_vfs_metadata(&right);
+        });
+    }
+
     pub(crate) fn remove_vfs_entry_metadata(&mut self, name: &str) {
         let normalized = Self::normalize_vfs_path(name);
         self.vfs_metadata.remove(&normalized);

@@ -7387,6 +7387,71 @@ impl super::TrapDispatcher {
                         cpu.write_reg(Register::A7, sp + 14);
                         Ok(())
                     }
+                    15 => {
+                        // FSpExchangeFiles ($AA52, selector $000F)
+                        // FUNCTION FSpExchangeFiles(source: FSSpec;
+                        //                           dest: FSSpec): OSErr;
+                        // Files 1992, 2-165..2-166; 2-166 names the selector
+                        // ("_HighLevelHFSDispatch $000F") and lists the
+                        // result codes used below.
+                        //
+                        // Stack, Pascal order: the OSErr slot, then source,
+                        // then dest -- so dest is at SP and source at SP+4.
+                        // Eight bytes of arguments are popped and the result
+                        // word is left for the caller, as FSpDelete does.
+                        //
+                        // This is the second half of the safe-save idiom, and
+                        // Cythera's Save is what wanted it: the game writes
+                        // the player file and then exchanges it with its
+                        // backup. Unimplemented, the selector halted the run
+                        // on the trap, which is why a scripted save had to be
+                        // the last thing a run did.
+                        let sp = cpu.read_reg(Register::A7);
+                        let dest_ptr = bus.read_long(sp);
+                        let source_ptr = bus.read_long(sp + 4);
+                        let source_name = read_fsspec_name(bus, source_ptr);
+                        let dest_name = read_fsspec_name(bus, dest_ptr);
+                        let source_vref = bus.read_word(source_ptr) as i16;
+                        let source_dir = bus.read_long(source_ptr + 2);
+                        let dest_vref = bus.read_word(dest_ptr) as i16;
+                        let dest_dir = bus.read_long(dest_ptr + 2);
+
+                        let source_key = if source_name.is_empty() {
+                            None
+                        } else {
+                            self.find_vfs_file_for_hfs_lookup(source_vref, source_dir, &source_name)
+                                .or_else(|| self.find_vfs_file(&source_name))
+                        };
+                        let dest_key = if dest_name.is_empty() {
+                            None
+                        } else {
+                            self.find_vfs_file_for_hfs_lookup(dest_vref, dest_dir, &dest_name)
+                                .or_else(|| self.find_vfs_file(&dest_name))
+                        };
+
+                        let err: i16 = match (source_key, dest_key) {
+                            // fnfErr: one of the two files is not there.
+                            (None, _) | (_, None) => -43,
+                            (Some(source_key), Some(dest_key)) => {
+                                if source_key == dest_key {
+                                    // afpSameObjectErr.
+                                    -5038
+                                } else if self.vfs_path_is_read_only(&source_key)
+                                    || self.vfs_path_is_read_only(&dest_key)
+                                {
+                                    // wPrErr: the exchange needs the access
+                                    // opening both files for writing needs.
+                                    -44
+                                } else {
+                                    self.swap_vfs_entry_contents(&source_key, &dest_key);
+                                    0
+                                }
+                            }
+                        };
+                        bus.write_word(sp + 8, err as u16);
+                        cpu.write_reg(Register::A7, sp + 8);
+                        Ok(())
+                    }
                     _ => {
                         eprintln!(
                             "[TRAP] HighLevelFSDispatch: Unimplemented Selector {}",
@@ -14367,6 +14432,95 @@ mod tests {
             !disp.vfs_rsrc.contains_key("DelMe.txt"),
             "resource fork should be removed from VFS"
         );
+    }
+
+    // ================================================================
+    // 13f. HighLevelFSDispatch (0x252) selector 15 — FSpExchangeFiles
+    // ================================================================
+    // Files 1992, 2-165: the call "swaps the data in two files ... It swaps
+    // both the data forks and the resource forks", leaving each catalog
+    // entry's name where it was. Stack, Pascal order: the OSErr slot, then
+    // source, then dest, so dest is at SP and source at SP+4, and eight
+    // bytes of arguments are popped.
+    #[test]
+    fn hlfs_dispatch_fspexchangefiles_swaps_both_forks() {
+        let (mut disp, mut cpu, mut bus) = setup();
+
+        disp.vfs.insert("Saved".to_string(), vec![1, 1, 1]);
+        disp.vfs_rsrc.insert("Saved".to_string(), vec![0x11]);
+        disp.vfs.insert("Saved~".to_string(), vec![2, 2, 2, 2]);
+        disp.vfs_rsrc.insert("Saved~".to_string(), vec![0x22]);
+
+        let source_ptr = 0x300000u32;
+        let dest_ptr = 0x300100u32;
+        write_fsspec(&mut bus, source_ptr, 1, 2, b"Saved~");
+        write_fsspec(&mut bus, dest_ptr, 1, 2, b"Saved");
+
+        let sp = TEST_SP;
+        bus.write_long(sp, dest_ptr);
+        bus.write_long(sp + 4, source_ptr);
+        bus.write_word(sp + 8, 0xBEEF);
+        cpu.write_reg(Register::A7, sp);
+        cpu.write_reg(Register::D0, 15);
+
+        call(&mut disp, true, 0x252, &mut cpu, &mut bus).unwrap();
+
+        assert_eq!(cpu.read_reg(Register::A7), TEST_SP + 8);
+        assert_eq!(bus.read_word(TEST_SP + 8), 0, "noErr");
+        assert_eq!(disp.vfs.get("Saved").map(Vec::as_slice), Some(&[2, 2, 2, 2][..]));
+        assert_eq!(disp.vfs.get("Saved~").map(Vec::as_slice), Some(&[1, 1, 1][..]));
+        assert_eq!(disp.vfs_rsrc.get("Saved").map(Vec::as_slice), Some(&[0x22][..]));
+        assert_eq!(disp.vfs_rsrc.get("Saved~").map(Vec::as_slice), Some(&[0x11][..]));
+    }
+
+    #[test]
+    fn hlfs_dispatch_fspexchangefiles_missing_file_returns_fnferr() {
+        // Files 1992, 2-165 result codes: fnfErr -43.
+        let (mut disp, mut cpu, mut bus) = setup();
+
+        disp.vfs.insert("Saved".to_string(), vec![1, 1, 1]);
+
+        let source_ptr = 0x300000u32;
+        let dest_ptr = 0x300100u32;
+        write_fsspec(&mut bus, source_ptr, 1, 2, b"NotThere");
+        write_fsspec(&mut bus, dest_ptr, 1, 2, b"Saved");
+
+        let sp = TEST_SP;
+        bus.write_long(sp, dest_ptr);
+        bus.write_long(sp + 4, source_ptr);
+        cpu.write_reg(Register::A7, sp);
+        cpu.write_reg(Register::D0, 15);
+
+        call(&mut disp, true, 0x252, &mut cpu, &mut bus).unwrap();
+
+        assert_eq!(cpu.read_reg(Register::A7), TEST_SP + 8);
+        assert_eq!(bus.read_word(TEST_SP + 8), (-43i16) as u16);
+        assert_eq!(disp.vfs.get("Saved").map(Vec::as_slice), Some(&[1, 1, 1][..]));
+    }
+
+    #[test]
+    fn hlfs_dispatch_fspexchangefiles_same_file_returns_afpsameobjecterr() {
+        // Files 1992, 2-166 result codes: afpSameObjectErr -5038.
+        let (mut disp, mut cpu, mut bus) = setup();
+
+        disp.vfs.insert("Saved".to_string(), vec![1, 1, 1]);
+
+        let source_ptr = 0x300000u32;
+        let dest_ptr = 0x300100u32;
+        write_fsspec(&mut bus, source_ptr, 1, 2, b"Saved");
+        write_fsspec(&mut bus, dest_ptr, 1, 2, b"Saved");
+
+        let sp = TEST_SP;
+        bus.write_long(sp, dest_ptr);
+        bus.write_long(sp + 4, source_ptr);
+        cpu.write_reg(Register::A7, sp);
+        cpu.write_reg(Register::D0, 15);
+
+        call(&mut disp, true, 0x252, &mut cpu, &mut bus).unwrap();
+
+        assert_eq!(cpu.read_reg(Register::A7), TEST_SP + 8);
+        assert_eq!(bus.read_word(TEST_SP + 8), (-5038i16) as u16);
+        assert_eq!(disp.vfs.get("Saved").map(Vec::as_slice), Some(&[1, 1, 1][..]));
     }
 
     // ================================================================

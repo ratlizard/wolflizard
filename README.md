@@ -1,3 +1,5 @@
+<p align="center"><img width="192" height="192" alt="cythera_tile_0x52B_up2" src="https://github.com/user-attachments/assets/81eb3b6d-be99-4418-a54c-7a90dbd25e60" /></p>
+
 <h1 align="center">
   <a href="https://systemless.org/"><img src=".github/assets/systemless-icon.png" alt="Systemless" width="64" height="64" align="absmiddle"></a>
   wolflizard, a systemless fork for Cythera (1999)

@@ -14,7 +14,8 @@ pub use application_icon::{
     ApplicationIconRepresentation, ApplicationIdentity,
 };
 pub use launch::{
-    init_game, load_game, load_game_from_path, new_runner, new_runner_with_addressing,
+    init_game, load_game, load_game_from_path, macbinary_vfs_file, new_runner,
+    new_runner_with_addressing,
     new_runner_with_configuration, new_runner_with_screen_depth, pack_game_sources_for_web,
     pack_stuffit_for_web, WebPackLoader, MAX_INSTRUCTIONS_PER_FRAME, RAM_SIZE,
 };

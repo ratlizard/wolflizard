@@ -276,7 +276,14 @@ systemless --arrows-as-numpad path/to/game.sit
 systemless --display-scale 2 path/to/game.sit
 systemless --ui-theme classic-system7 path/to/game.sit
 systemless --fullscreen path/to/game.sit
+systemless --preferences-file "Cythera Preferences.bin" path/to/game.sit
 ```
+
+`--preferences-file` puts a MacBinary file into the guest's
+`System Folder:Preferences` before launch, under the name the file carries,
+replacing any stored copy: the way to hand an application a settings file its
+own dialogs never write. It may be repeated, and `SYSTEMLESS_PREFERENCES_FILE`
+names one more for scripted runs whose command line is fixed by a wrapper.
 
 On macOS, desktop windows open at the guest’s logical resolution: an 800×600
 guest gets an 800×600-point content area (1600×1200 backing pixels on a 2× Retina
@@ -445,6 +452,7 @@ Apple Inc.; classic font names identify compatibility requests only.
 | `SYSTEMLESS_DUMP_MEM` | Writes a raw image of guest RAM to the named path (headless). |
 | `SYSTEMLESS_DUMP_MEM_RANGE` | Narrows that dump to `<start_hex>:<len_hex>`. |
 | `SYSTEMLESS_DUMP_MEM_AT` | Takes the dump after N instructions instead of at the end of the run. |
+| `SYSTEMLESS_PREFERENCES_FILE` | Seeds one MacBinary file into the guest's `System Folder:Preferences` before launch, as `--preferences-file` does. |
 
 ## References & Documentation Conventions
 

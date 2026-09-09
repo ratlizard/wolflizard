@@ -21,6 +21,8 @@ pub(super) struct RuntimeConfig {
     pub screen_depth: Option<u16>,
     pub ui_theme: systemless::ui_theme::UiThemeId,
     pub debug_socket: Option<PathBuf>,
+    /// MacBinary files to seed into System Folder/Preferences at boot.
+    pub preferences_files: Vec<PathBuf>,
 }
 
 pub(super) struct RuntimeOwner {
@@ -76,6 +78,7 @@ impl RuntimeOwner {
                     config.ui_theme,
                 );
                 driver.gpu = config.gpu;
+                driver.preferences_files = config.preferences_files;
                 let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(
                     || -> Result<(), String> {
                         #[cfg(target_os = "macos")]
@@ -306,6 +309,7 @@ mod tests {
             screen_depth: Some(8),
             ui_theme: systemless::ui_theme::UiThemeId::ClassicSystem7,
             debug_socket: None,
+            preferences_files: Vec::new(),
         }
     }
 

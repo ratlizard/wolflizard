@@ -4277,6 +4277,39 @@ impl super::TrapDispatcher {
         let screen_h_u32 = u32::from(screen_h);
         let trace = std::env::var_os("SYSTEMLESS_TRACE_BLIT_WINDOW").is_some();
         let latched_port = self.manual_cport_presented_port;
+        // Where do the front window's pixels live? Cythera's paper window is
+        // made invisible at (0,0,149,188), given 28,962 bytes of scroll art by
+        // one PBRead into a buffer of its own, and revealed without
+        // ShowWindow ever being called, and what reaches the screen is noise.
+        // This says whether its PixMap still points at the screen, as
+        // init_cgraf_window left it, or at the game's buffer. Repeated every
+        // frame on purpose: uniq the log.
+        if std::env::var_os("SYSTEMLESS_TRACE_SHOW_PIX").is_some() && self.front_window != 0 {
+            let w = self.front_window;
+            let port_version = bus.read_word(w.wrapping_add(6));
+            let pm_handle = if port_version & 0xC000 != 0 { bus.read_long(w.wrapping_add(2)) } else { 0 };
+            let pm = if pm_handle != 0 { bus.read_long(pm_handle) } else { 0 };
+            if pm != 0 {
+                let original = self.window_original_pixmaps.get(&w).copied().unwrap_or(0);
+                eprintln!(
+                    "[SHOW-PIX] window=${:08X} pmHandle=${:08X} original=${:08X} base=${:08X} \
+screenBase=${:08X} rowBytes={} bounds=({},{},{},{}) pixelSize={} portRect=({},{},{},{})",
+                    w, pm_handle, original,
+                    bus.read_long(pm) & 0x3FFF_FFFF,
+                    screen_base,
+                    bus.read_word(pm.wrapping_add(4)) & 0x3FFF,
+                    bus.read_word(pm.wrapping_add(6)) as i16,
+                    bus.read_word(pm.wrapping_add(8)) as i16,
+                    bus.read_word(pm.wrapping_add(10)) as i16,
+                    bus.read_word(pm.wrapping_add(12)) as i16,
+                    bus.read_word(pm.wrapping_add(32)),
+                    bus.read_word(w.wrapping_add(16)) as i16,
+                    bus.read_word(w.wrapping_add(18)) as i16,
+                    bus.read_word(w.wrapping_add(20)) as i16,
+                    bus.read_word(w.wrapping_add(22)) as i16,
+                );
+            }
+        }
 
         if self.front_window == 0
             || pixel_size != 8

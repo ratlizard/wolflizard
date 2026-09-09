@@ -15,7 +15,7 @@ use crate::loader::ppc::{
 };
 use crate::loader::LoadedApp;
 use crate::managers::resource::ResourceFork;
-use crate::runner::{FixtureRunner, FixtureRunnerConfig};
+use crate::runner::{FixtureRunner, FixtureRunnerConfig, VfsFileSnapshot};
 use std::io::{Cursor, Read};
 use std::path::Component;
 use stuffit::{SitArchive, SitEntry};
@@ -1382,6 +1382,45 @@ fn parse_macbinary_payload(
         creator,
         finder_flags: (u16::from(file_data[73]) << 8) | u16::from(file_data[101]),
         executable_priority,
+    })
+}
+
+/// A MacBinary file as a VFS snapshot, placed in `vfs_dir` under the name
+/// the header carries.
+///
+/// This is the shape a host needs to seed one guest file that came from
+/// neither the archive nor the save store: an application's preferences
+/// file written on the host, say, so the application reads settings at
+/// launch that its own dialogs never offer. The header's creation and
+/// modification dates (offsets 91 and 95) ride along; `import_vfs_file`
+/// leaves the entry's own dates alone when they are zero, which is what a
+/// header with no dates gives.
+pub fn macbinary_vfs_file(file_data: &[u8], vfs_dir: &str) -> Result<VfsFileSnapshot, String> {
+    let payload = parse_macbinary_payload(file_data, "", 0)?;
+    if payload.name.is_empty() {
+        return Err("MacBinary file carries no filename".to_string());
+    }
+    let dir = vfs_dir.trim_matches('/');
+    let path = if dir.is_empty() {
+        payload.name
+    } else {
+        format!("{dir}/{}", payload.name)
+    };
+    let be_u32 = |at: usize| u32::from_be_bytes([
+        file_data[at],
+        file_data[at + 1],
+        file_data[at + 2],
+        file_data[at + 3],
+    ]);
+    Ok(VfsFileSnapshot {
+        path,
+        data_fork: payload.data,
+        resource_fork: payload.rsrc,
+        file_type: u32::from_be_bytes(payload.file_type),
+        creator: u32::from_be_bytes(payload.creator),
+        finder_flags: payload.finder_flags,
+        created_date: be_u32(91),
+        modified_date: be_u32(95),
     })
 }
 
@@ -4592,6 +4631,34 @@ mod tests {
             selected.expect("expected an executable candidate").name,
             "Collection/Product"
         );
+    }
+
+    #[test]
+    fn macbinary_file_becomes_a_vfs_snapshot_in_the_folder_asked_for() {
+        // A preferences file as a host would write it: no data fork, a
+        // resource fork, its own name and type, and dates in the header.
+        let mut bytes = make_macbinary_application("Cythera Preferences", &[], &[1, 2, 3, 4, 5]);
+        bytes[65..69].copy_from_slice(b"pref");
+        bytes[69..73].copy_from_slice(&[0, 0, 0, 0]);
+        bytes[91..95].copy_from_slice(&0xB0A0_9080u32.to_be_bytes());
+        bytes[95..99].copy_from_slice(&0xB0A0_9084u32.to_be_bytes());
+
+        let file = macbinary_vfs_file(&bytes, "System Folder/Preferences/").expect("a snapshot");
+        assert_eq!(file.path, "System Folder/Preferences/Cythera Preferences");
+        assert!(file.data_fork.is_empty());
+        assert_eq!(file.resource_fork, vec![1, 2, 3, 4, 5]);
+        assert_eq!(file.file_type, u32::from_be_bytes(*b"pref"));
+        assert_eq!(file.creator, 0);
+        assert_eq!(file.created_date, 0xB0A0_9080);
+        assert_eq!(file.modified_date, 0xB0A0_9084);
+
+        // With no folder the file sits at the root under its own name.
+        assert_eq!(macbinary_vfs_file(&bytes, "").unwrap().path, "Cythera Preferences");
+        // Something that is not MacBinary is refused rather than mounted.
+        assert!(macbinary_vfs_file(&[0u8; 64], "System Folder/Preferences").is_err());
+        let mut nameless = bytes.clone();
+        nameless[1] = 0;
+        assert!(macbinary_vfs_file(&nameless, "System Folder/Preferences").is_err());
     }
 
     #[test]

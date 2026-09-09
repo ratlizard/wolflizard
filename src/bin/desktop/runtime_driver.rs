@@ -32,6 +32,8 @@ pub(super) struct GuiDriver {
     pub(super) debug_server: Option<debug_server::DebugServer>,
     pub(super) save_store: Option<DesktopSaveStore>,
     pub(super) guest_exit_reported: bool,
+    /// MacBinary files to seed into System Folder/Preferences at boot.
+    pub(super) preferences_files: Vec<PathBuf>,
     pub(super) initialized: bool,
     pub(super) total_instructions: u64,
     /// Wall-clock origin for deriving tick targets.
@@ -101,6 +103,7 @@ impl GuiDriver {
             debug_server: None,
             save_store: None,
             guest_exit_reported: false,
+            preferences_files: Vec::new(),
             initialized: false,
             total_instructions: 0,
             start_time: None,
@@ -156,6 +159,7 @@ impl GuiDriver {
                 restored_saves.len()
             );
         }
+        super::seed_preference_files(&mut runner, &self.preferences_files);
         game::init_game(&mut runner, &app);
         runner.prepare_text_presentation();
         runner.set_arrows_as_numpad(self.arrows_as_numpad);

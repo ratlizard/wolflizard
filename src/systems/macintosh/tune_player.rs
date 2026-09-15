@@ -542,6 +542,66 @@ fn sine_table() -> &'static [f32; SINE_TABLE_LEN] {
     })
 }
 
+/// How often a running-multiply envelope is recomputed from its closed form,
+/// in frames, so the recurrence cannot drift over a long note.
+const ENVELOPE_RESYNC: usize = 1024;
+
+/// One controller's points, split by part and sorted by time, so a note can
+/// walk its part's curve with a cursor instead of scanning every point of
+/// every part for every output sample.
+struct PartCurves {
+    by_part: std::collections::HashMap<u8, Vec<(u32, f32)>>,
+}
+
+impl PartCurves {
+    fn new(points: &[ControlPoint]) -> Self {
+        let mut by_part: std::collections::HashMap<u8, Vec<(u32, f32)>> =
+            std::collections::HashMap::new();
+        for point in points {
+            by_part
+                .entry(point.part)
+                .or_default()
+                .push((point.at_units, point.value));
+        }
+        for curve in by_part.values_mut() {
+            // Stable, so two points at one instant keep the order they were
+            // written in and the later one wins, as the scan they replace did.
+            curve.sort_by_key(|(at_units, _)| *at_units);
+        }
+        Self { by_part }
+    }
+
+    fn cursor(&self, part: u8, default: f32) -> CurveCursor<'_> {
+        CurveCursor {
+            points: self.by_part.get(&part).map_or(&[][..], Vec::as_slice),
+            next: 0,
+            value: default,
+        }
+    }
+}
+
+/// The value of one part's controller curve at a time that only moves
+/// forward: the value of the last point at or before it.
+struct CurveCursor<'a> {
+    points: &'a [(u32, f32)],
+    next: usize,
+    value: f32,
+}
+
+impl CurveCursor<'_> {
+    fn is_flat(&self) -> bool {
+        self.points.is_empty()
+    }
+
+    fn value_at(&mut self, at_units: u32) -> f32 {
+        while self.next < self.points.len() && self.points[self.next].0 <= at_units {
+            self.value = self.points[self.next].1;
+            self.next += 1;
+        }
+        self.value
+    }
+}
+
 /// Render a decoded tune to `OUTPUT_RATE` unsigned 8-bit stereo, the format
 /// the Sound Manager channels take. `volume` is a QuickDraw `Fixed` where
 /// 0x0001_0000 is unity, which is what `TuneSetVolume` is given.
@@ -565,6 +625,16 @@ pub(crate) fn render_tune(
     // Left and right are kept apart from here so that pan is real stereo
     // rather than the same signal twice.
     let mut buffer = vec![(0.0f32, 0.0f32); frames];
+
+    // Modulation and pitch bend are read as a note plays. Reading them by
+    // scanning the whole controller list, twice per output sample per note,
+    // made the render cost proportional to notes x samples x controller
+    // points: a 214-second tune of 1,236 notes took 25 s natively and 40 s
+    // in the browser, with the game waiting inside the trap and the screen
+    // black. The curves are split by part and sorted once here and walked
+    // with a cursor below; a part with no such controllers skips the lookup.
+    let modulation_curves = PartCurves::new(&tune.controllers.modulation);
+    let bend_curves = PartCurves::new(&tune.controllers.pitch_bend);
 
     for note in &tune.notes {
         let frequency = pitch_hz(note.pitch);
@@ -679,38 +749,62 @@ pub(crate) fn render_tune(
             partials += 1;
         }
 
+        let mut modulation_curve = modulation_curves.cursor(note.part, 0.0);
+        let mut bend_curve = bend_curves.cursor(note.part, 0.0);
+        let controllers_move = !modulation_curve.is_flat() || !bend_curve.is_flat();
+        // The envelopes below are running multiplies, like `level_step`
+        // above, rather than an `exp` per frame; they are recomputed from
+        // the closed form every ENVELOPE_RESYNC frames so they cannot drift.
+        let pluck_step = (-1.0 / (pluck_seconds * rate)).exp();
+        let release_seconds = if voicing == Voicing::Vocal { 0.22 } else { 0.12 };
+        let release_step = (-1.0 / (release_seconds * rate)).exp();
+        let mut envelope_run = 1.0f32;
+
         for frame in 0..length {
             let seconds = frame as f32 / rate;
-            let now_units = note
-                .start_units
-                .saturating_add(ms_to_units((seconds * 1000.0) as u32, time_scale));
 
             // Vibrato has two sources: a sung part carries its own, and the
-            // modulation wheel asks for it on any part. They add.
-            let modulation =
-                Controllers::value_at(&controls.modulation, note.part, now_units, 0.0);
-            let own_depth = if voicing == Voicing::Vocal {
-                0.006 * (seconds / 0.25).min(1.0)
-            } else {
-                0.0
-            };
-            let depth = own_depth + (modulation.clamp(0.0, 1.0) * 0.02);
-            let vibrato = if depth > 0.0 {
-                let phase = (seconds * VIBRATO_HZ * SINE_TABLE_LEN as f32) as usize;
-                1.0 + depth * table[phase & (SINE_TABLE_LEN - 1)]
+            // modulation wheel asks for it on any part. They add. Pitch bend,
+            // in semitones, is applied as a frequency ratio on top. A struck
+            // or bowed part with no controllers has neither and skips this.
+            let vibrato = if controllers_move || voicing == Voicing::Vocal {
+                let now_units = if controllers_move {
+                    note.start_units
+                        .saturating_add(ms_to_units((seconds * 1000.0) as u32, time_scale))
+                } else {
+                    note.start_units
+                };
+                let modulation = if modulation_curve.is_flat() {
+                    0.0
+                } else {
+                    modulation_curve.value_at(now_units)
+                };
+                let own_depth = if voicing == Voicing::Vocal {
+                    0.006 * (seconds / 0.25).min(1.0)
+                } else {
+                    0.0
+                };
+                let depth = own_depth + (modulation.clamp(0.0, 1.0) * 0.02);
+                let vibrato = if depth > 0.0 {
+                    let phase = (seconds * VIBRATO_HZ * SINE_TABLE_LEN as f32) as usize;
+                    1.0 + depth * table[phase & (SINE_TABLE_LEN - 1)]
+                } else {
+                    1.0
+                };
+                let bend = if bend_curve.is_flat() {
+                    0.0
+                } else {
+                    bend_curve.value_at(now_units)
+                };
+                let bend_ratio = if bend == 0.0 {
+                    1.0
+                } else {
+                    2.0f32.powf(bend / 12.0)
+                };
+                vibrato * bend_ratio
             } else {
                 1.0
             };
-
-            // Pitch bend, in semitones, applied as a frequency ratio.
-            let bend =
-                Controllers::value_at(&controls.pitch_bend, note.part, now_units, 0.0);
-            let bend_ratio = if bend == 0.0 {
-                1.0
-            } else {
-                2.0f32.powf(bend / 12.0)
-            };
-            let vibrato = vibrato * bend_ratio;
             let mut sample = 0.0f32;
             for index in 0..partials {
                 let position = phase[index] as usize & (SINE_TABLE_LEN - 1);
@@ -735,15 +829,25 @@ pub(crate) fn render_tune(
             sample /= harmonic_sum;
 
             let envelope = match voicing {
-                Voicing::Plucked => (-(frame as f32) / (pluck_seconds * rate)).exp(),
+                Voicing::Plucked => {
+                    if frame % ENVELOPE_RESYNC == 0 {
+                        envelope_run = (-(frame as f32) / (pluck_seconds * rate)).exp();
+                    } else {
+                        envelope_run *= pluck_step;
+                    }
+                    envelope_run
+                }
                 _ if frame < sustain_frames => 1.0,
                 // A voice releases more slowly than an instrument stopped by
-                // its player.
-                Voicing::Vocal => {
-                    (-((frame - sustain_frames) as f32) / (0.22 * rate)).exp()
-                }
-                Voicing::Sustained => {
-                    (-((frame - sustain_frames) as f32) / (0.12 * rate)).exp()
+                // its player; `release_seconds` above says which.
+                Voicing::Vocal | Voicing::Sustained => {
+                    let released = frame - sustain_frames;
+                    if released % ENVELOPE_RESYNC == 0 {
+                        envelope_run = (-(released as f32) / (release_seconds * rate)).exp();
+                    } else {
+                        envelope_run *= release_step;
+                    }
+                    envelope_run
                 }
             };
             let envelope = if frame < attack {

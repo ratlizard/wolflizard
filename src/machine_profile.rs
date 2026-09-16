@@ -81,7 +81,20 @@ pub(crate) struct HostExecutionPolicy {
 }
 
 pub(crate) const DEFAULT_HOST_EXECUTION_POLICY: HostExecutionPolicy = HostExecutionPolicy {
-    scripted_instructions_per_tick: 12_000,
+    // The reference machine's own cadence: `realtime_m68k_cpu_mhz` over the
+    // profile's `vbl_hz`, 25_000_000 / 60.15, rounded. Not a const expression
+    // because `f64::round` is not const, so it is written out and the two are
+    // kept in step by `scripted_cadence_is_the_reference_machines`.
+    //
+    // It was 12_000 -- a guest clock paced for about 0.7 MIPS, slower than a
+    // Mac Plus. Everything the guest paces by its own clock ran at that speed:
+    // Cythera's palette animation advanced 0.09 phase steps a guest second
+    // against the seven a second it intends, in exact proportion to this
+    // number, and the cooperative thread driving it was never at fault. The
+    // cost of the change is that timed waits now consume the instructions they
+    // always should have, so a schedule written against 12_000 has to be
+    // re-timed.
+    scripted_instructions_per_tick: 415_628,
     realtime_m68k_cpu_mhz: 25.0,
     realtime_powerpc_cpu_mhz: 120.0,
 };
@@ -244,6 +257,19 @@ mod tests {
                 fpu_type: 0x33,
                 mmu_type: 0x44,
             }
+        );
+    }
+
+    /// The scripted cadence is written out because `f64::round` is not const.
+    /// This keeps the literal and the profile it is derived from in step.
+    #[test]
+    fn scripted_cadence_is_the_reference_machines() {
+        let expected = (DEFAULT_HOST_EXECUTION_POLICY.realtime_m68k_cpu_mhz * 1_000_000.0
+            / REFERENCE_MACHINE_PROFILE.vbl_hz)
+            .round() as u32;
+        assert_eq!(
+            DEFAULT_HOST_EXECUTION_POLICY.scripted_instructions_per_tick, expected,
+            "a scripted guest tick must cost what the reference machine's does"
         );
     }
 

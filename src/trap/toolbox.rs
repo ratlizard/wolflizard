@@ -4724,19 +4724,30 @@ impl super::TrapDispatcher {
         )
     }
 
+    /// Redraw a list's scroll bars, answering the CDEF calls the caller must
+    /// arm for any the application's own definition procedure owns.
+    ///
+    /// LUpdate redraws the list's controls when necessary in addition to its
+    /// intersecting cells (Inside Macintosh Volume IV, IV-276), and the scroll
+    /// bars are drawn under the cells. Both an application CDEF and an
+    /// application LDEF run as guest call chains, and the last chain armed is
+    /// the first the guest runs, so these calls have to be armed *after* the
+    /// cell chain -- see `draw_control_or_defer_cdef`. Cythera's message pane
+    /// owns its scroll bar (procID 16016); before this it reached
+    /// `draw_control`'s unknown-procID arm and came out an empty chamfered
+    /// box.
     fn draw_list_scrollbars<C: CpuOps>(
         &mut self,
         cpu: &mut C,
         bus: &mut MacMemoryBus,
         list_handle: u32,
-    ) {
+    ) -> Vec<(u32, i16, u32, Option<u32>)> {
+        let mut deferred = Vec::new();
         let list_ptr = Self::list_record_ptr(bus, list_handle);
         if list_ptr == 0 {
-            return;
+            return deferred;
         }
 
-        // LUpdate redraws the list's controls when necessary in addition to
-        // its intersecting cells. Inside Macintosh Volume IV, IV-276.
         for offset in [Self::LIST_VSCROLL_OFFSET, Self::LIST_HSCROLL_OFFSET] {
             let control_handle = bus.read_long(list_ptr + offset);
             let control = if control_handle != 0 {
@@ -4749,9 +4760,10 @@ impl super::TrapDispatcher {
                     // LUpdate's inactive-list scrollbar state on Mac OS 8.1.
                     bus.write_byte(control + 17, 254);
                 }
-                self.draw_control(cpu, bus, control);
+                deferred.extend(self.draw_control_or_defer_cdef(cpu, bus, control_handle, control));
             }
         }
+        deferred
     }
 
     fn sync_list_state_to_guest(
@@ -13020,17 +13032,28 @@ impl super::TrapDispatcher {
                     // Inside Macintosh Volume IV, IV-275
                     0x64 => {
                         let list_handle = bus.read_long(sp + 2);
+                        let mut cdef_calls = Vec::new();
                         if let Some(state) = self.list_states.get_record(list_handle) {
                             if state.draw_enabled {
-                                self.draw_list_scrollbars(cpu, bus, list_handle);
+                                cdef_calls = self.draw_list_scrollbars(cpu, bus, list_handle);
                                 if self.draw_list_with_ldef(cpu, bus, list_handle, &state, None, 10)
                                 {
+                                    // Armed after the cell chain: the
+                                    // last chain armed is the first the
+                                    // guest runs, and the scroll bars go
+                                    // under the cells.
+                                    self.arm_deferred_control_def_calls(
+                                        cpu,
+                                        bus,
+                                        &cdef_calls,
+                                    );
                                     return Some(Ok(()));
                                 }
                                 self.draw_list_fallback(cpu, bus, &state, None);
                             }
                         }
                         cpu.write_reg(Register::A7, sp + 10);
+                        self.arm_deferred_control_def_calls(cpu, bus, &cdef_calls);
                         Ok(())
                     }
 
@@ -13052,17 +13075,28 @@ impl super::TrapDispatcher {
                                 state.draw_enabled
                             })
                             .unwrap_or(false);
+                        let mut cdef_calls = Vec::new();
                         if should_draw {
-                            self.draw_list_scrollbars(cpu, bus, list_handle);
+                            cdef_calls = self.draw_list_scrollbars(cpu, bus, list_handle);
                             if let Some(state) = self.list_states.get_record(list_handle) {
                                 if self.draw_list_with_ldef(cpu, bus, list_handle, &state, None, 10)
                                 {
+                                    // Armed after the cell chain: the
+                                    // last chain armed is the first the
+                                    // guest runs, and the scroll bars go
+                                    // under the cells.
+                                    self.arm_deferred_control_def_calls(
+                                        cpu,
+                                        bus,
+                                        &cdef_calls,
+                                    );
                                     return Some(Ok(()));
                                 }
                                 self.draw_list_fallback(cpu, bus, &state, None);
                             }
                         }
                         cpu.write_reg(Register::A7, sp + 10);
+                        self.arm_deferred_control_def_calls(cpu, bus, &cdef_calls);
                         Ok(())
                     }
 
@@ -13087,17 +13121,28 @@ impl super::TrapDispatcher {
                                 state.draw_enabled
                             })
                             .unwrap_or(false);
+                        let mut cdef_calls = Vec::new();
                         if should_draw {
-                            self.draw_list_scrollbars(cpu, bus, list_handle);
+                            cdef_calls = self.draw_list_scrollbars(cpu, bus, list_handle);
                             if let Some(state) = self.list_states.get_record(list_handle) {
                                 if self.draw_list_with_ldef(cpu, bus, list_handle, &state, None, 10)
                                 {
+                                    // Armed after the cell chain: the
+                                    // last chain armed is the first the
+                                    // guest runs, and the scroll bars go
+                                    // under the cells.
+                                    self.arm_deferred_control_def_calls(
+                                        cpu,
+                                        bus,
+                                        &cdef_calls,
+                                    );
                                     return Some(Ok(()));
                                 }
                                 self.draw_list_fallback(cpu, bus, &state, None);
                             }
                         }
                         cpu.write_reg(Register::A7, sp + 10);
+                        self.arm_deferred_control_def_calls(cpu, bus, &cdef_calls);
                         Ok(())
                     }
 
@@ -13137,17 +13182,28 @@ impl super::TrapDispatcher {
                                 state.draw_enabled
                             })
                             .unwrap_or(false);
+                        let mut cdef_calls = Vec::new();
                         if should_draw {
-                            self.draw_list_scrollbars(cpu, bus, list_handle);
+                            cdef_calls = self.draw_list_scrollbars(cpu, bus, list_handle);
                             if let Some(state) = self.list_states.get_record(list_handle) {
                                 if self.draw_list_with_ldef(cpu, bus, list_handle, &state, None, 8)
                                 {
+                                    // Armed after the cell chain: the
+                                    // last chain armed is the first the
+                                    // guest runs, and the scroll bars go
+                                    // under the cells.
+                                    self.arm_deferred_control_def_calls(
+                                        cpu,
+                                        bus,
+                                        &cdef_calls,
+                                    );
                                     return Some(Ok(()));
                                 }
                                 self.draw_list_fallback(cpu, bus, &state, None);
                             }
                         }
                         cpu.write_reg(Register::A7, sp + 8);
+                        self.arm_deferred_control_def_calls(cpu, bus, &cdef_calls);
                         Ok(())
                     }
 
@@ -13840,17 +13896,28 @@ impl super::TrapDispatcher {
                     // + theRgn(4) = 10.
                     0x0064 => {
                         let list_handle = bus.read_long(sp + 2);
+                        let mut cdef_calls = Vec::new();
                         if let Some(state) = self.list_states.get_record(list_handle) {
                             if state.draw_enabled {
-                                self.draw_list_scrollbars(cpu, bus, list_handle);
+                                cdef_calls = self.draw_list_scrollbars(cpu, bus, list_handle);
                                 if self.draw_list_with_ldef(cpu, bus, list_handle, &state, None, 10)
                                 {
+                                    // Armed after the cell chain: the
+                                    // last chain armed is the first the
+                                    // guest runs, and the scroll bars go
+                                    // under the cells.
+                                    self.arm_deferred_control_def_calls(
+                                        cpu,
+                                        bus,
+                                        &cdef_calls,
+                                    );
                                     return Some(Ok(()));
                                 }
                                 self.draw_list_fallback(cpu, bus, &state, None);
                             }
                         }
                         cpu.write_reg(Register::A7, sp + 10);
+                        self.arm_deferred_control_def_calls(cpu, bus, &cdef_calls);
                     }
                     _ => {
                         // Unknown / undocumented selector — pop just

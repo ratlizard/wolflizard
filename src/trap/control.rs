@@ -454,6 +454,46 @@ impl super::TrapDispatcher {
         true
     }
 
+    /// Draw a control, or answer the CDEF call an application-owned
+    /// definition procedure needs instead of drawing it here.
+    ///
+    /// Calling a CDEF is not a function call: `arm_control_def_call_chain`
+    /// writes a chain of trampolines and rewrites A7 and PC so the *guest*
+    /// runs it once the trap returns, which only works as the last thing a
+    /// handler does. A caller with more drawing to arm after this one
+    /// therefore collects the calls and arms them itself, last -- the last
+    /// chain armed is the first the guest runs. Without that the control
+    /// falls through `draw_control`'s unknown-procID arm and is drawn as a
+    /// push button.
+    pub(crate) fn draw_control_or_defer_cdef<C: CpuOps>(
+        &mut self,
+        cpu: &mut C,
+        bus: &mut MacMemoryBus,
+        ctrl_handle: u32,
+        ctrl_ptr: u32,
+    ) -> Option<(u32, i16, u32, Option<u32>)> {
+        if self.control_uses_application_def_proc(bus, ctrl_ptr) {
+            return Self::control_vis_is_visible(bus.read_byte(ctrl_ptr + 16))
+                .then_some((ctrl_handle, Self::CDEF_DRAW_CNTL_MSG, 0, None));
+        }
+        self.draw_control(cpu, bus, ctrl_ptr);
+        None
+    }
+
+    /// Arm the calls `draw_control_or_defer_cdef` handed back. A no-op for an
+    /// empty list, so a caller can call it unconditionally on its way out.
+    pub(crate) fn arm_deferred_control_def_calls<C: CpuOps>(
+        &mut self,
+        cpu: &mut C,
+        bus: &mut MacMemoryBus,
+        calls: &[(u32, i16, u32, Option<u32>)],
+    ) -> bool {
+        if calls.is_empty() {
+            return false;
+        }
+        self.arm_control_def_call_chain(cpu, bus, calls)
+    }
+
     fn arm_control_def_messages<C: CpuOps>(
         &mut self,
         cpu: &mut C,
@@ -5365,6 +5405,54 @@ mod tests {
         bus.write_byte(ctrl_ptr + 16, vis);
         bus.write_byte(ctrl_ptr + 17, hilite);
         (ctrl_handle, ctrl_ptr)
+    }
+
+    /// A control whose procID names the application's own CDEF must come back
+    /// from `draw_control_or_defer_cdef` as a call for the caller to arm, not
+    /// be drawn here -- `draw_control` has no arm for it and would fall
+    /// through to the push-button fallback. Cythera's message pane (procID
+    /// 16016) is the case this was written for.
+    #[test]
+    fn an_application_cdef_control_is_deferred_instead_of_drawn() {
+        let (mut disp, mut cpu, mut bus) = setup();
+        let (ctrl_handle, ctrl_ptr) = alloc_control_handle(&mut bus, (10, 10, 110, 26), 255, 0);
+        disp.control_manager.set_proc_id(ctrl_ptr, 16016);
+        // A def proc whose first word the callable test accepts: JMP abs.L.
+        let def_proc = bus.alloc(8);
+        bus.write_word(def_proc, 0x4EF9);
+        let def_handle = bus.alloc(4);
+        bus.write_long(def_handle, def_proc);
+        bus.write_long(ctrl_ptr + 24, def_handle);
+
+        assert_eq!(
+            disp.draw_control_or_defer_cdef(&mut cpu, &mut bus, ctrl_handle, ctrl_ptr),
+            Some((
+                ctrl_handle,
+                TrapDispatcher::CDEF_DRAW_CNTL_MSG,
+                0,
+                None
+            )),
+        );
+
+        // An invisible one has nothing to draw and nothing to defer.
+        bus.write_byte(ctrl_ptr + 16, 0);
+        assert_eq!(
+            disp.draw_control_or_defer_cdef(&mut cpu, &mut bus, ctrl_handle, ctrl_ptr),
+            None,
+        );
+    }
+
+    /// The other side of the same gate: a standard procID is drawn here, so
+    /// nothing is deferred and no chain is armed for it.
+    #[test]
+    fn a_standard_control_is_drawn_rather_than_deferred() {
+        let (mut disp, mut cpu, mut bus) = setup();
+        let (ctrl_handle, ctrl_ptr) = alloc_control_handle(&mut bus, (10, 10, 110, 26), 255, 0);
+        disp.control_manager.set_proc_id(ctrl_ptr, 16);
+        assert_eq!(
+            disp.draw_control_or_defer_cdef(&mut cpu, &mut bus, ctrl_handle, ctrl_ptr),
+            None,
+        );
     }
 
     fn alloc_scrollbar_control(

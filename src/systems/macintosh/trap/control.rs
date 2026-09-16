@@ -456,6 +456,46 @@ impl super::TrapDispatcher {
         true
     }
 
+    /// Draw a control, or answer the CDEF call an application-owned
+    /// definition procedure needs instead of drawing it here.
+    ///
+    /// Calling a CDEF is not a function call: `arm_control_def_call_chain`
+    /// writes a chain of trampolines and rewrites A7 and PC so the *guest*
+    /// runs it once the trap returns, which only works as the last thing a
+    /// handler does. A caller with more drawing to arm after this one
+    /// therefore collects the calls and arms them itself, last -- the last
+    /// chain armed is the first the guest runs. Without that the control
+    /// falls through `draw_control`'s unknown-procID arm and is drawn as a
+    /// push button.
+    pub(crate) fn draw_control_or_defer_cdef<C: CpuOps>(
+        &mut self,
+        cpu: &mut C,
+        bus: &mut MacMemoryBus,
+        ctrl_handle: u32,
+        ctrl_ptr: u32,
+    ) -> Option<(u32, i16, u32, Option<u32>)> {
+        if self.control_uses_application_def_proc(bus, ctrl_ptr) {
+            return Self::control_vis_is_visible(bus.read_byte(ctrl_ptr + 16))
+                .then_some((ctrl_handle, Self::CDEF_DRAW_CNTL_MSG, 0, None));
+        }
+        self.draw_control(cpu, bus, ctrl_ptr);
+        None
+    }
+
+    /// Arm the calls `draw_control_or_defer_cdef` handed back. A no-op for an
+    /// empty list, so a caller can call it unconditionally on its way out.
+    pub(crate) fn arm_deferred_control_def_calls<C: CpuOps>(
+        &mut self,
+        cpu: &mut C,
+        bus: &mut MacMemoryBus,
+        calls: &[(u32, i16, u32, Option<u32>)],
+    ) -> bool {
+        if calls.is_empty() {
+            return false;
+        }
+        self.arm_control_def_call_chain(cpu, bus, calls)
+    }
+
     fn arm_control_def_messages<C: CpuOps>(
         &mut self,
         cpu: &mut C,

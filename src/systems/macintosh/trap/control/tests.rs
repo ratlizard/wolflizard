@@ -73,6 +73,54 @@ fn alloc_control_handle(
     (ctrl_handle, ctrl_ptr)
 }
 
+/// A control whose procID names the application's own CDEF must come back
+/// from `draw_control_or_defer_cdef` as a call for the caller to arm, not
+/// be drawn here -- `draw_control` has no arm for it and would fall
+/// through to the push-button fallback. Cythera's message pane (procID
+/// 16016) is the case this was written for.
+#[test]
+fn an_application_cdef_control_is_deferred_instead_of_drawn() {
+    let (mut disp, mut cpu, mut bus) = setup();
+    let (ctrl_handle, ctrl_ptr) = alloc_control_handle(&mut bus, (10, 10, 110, 26), 255, 0);
+    disp.control_manager.set_proc_id(ctrl_ptr, 16016);
+    // A def proc whose first word the callable test accepts: JMP abs.L.
+    let def_proc = bus.alloc(8);
+    bus.write_word(def_proc, 0x4EF9);
+    let def_handle = bus.alloc(4);
+    bus.write_long(def_handle, def_proc);
+    bus.write_long(ctrl_ptr + 24, def_handle);
+
+    assert_eq!(
+        disp.draw_control_or_defer_cdef(&mut cpu, &mut bus, ctrl_handle, ctrl_ptr),
+        Some((
+            ctrl_handle,
+            TrapDispatcher::CDEF_DRAW_CNTL_MSG,
+            0,
+            None
+        )),
+    );
+
+    // An invisible one has nothing to draw and nothing to defer.
+    bus.write_byte(ctrl_ptr + 16, 0);
+    assert_eq!(
+        disp.draw_control_or_defer_cdef(&mut cpu, &mut bus, ctrl_handle, ctrl_ptr),
+        None,
+    );
+}
+
+/// The other side of the same gate: a standard procID is drawn here, so
+/// nothing is deferred and no chain is armed for it.
+#[test]
+fn a_standard_control_is_drawn_rather_than_deferred() {
+    let (mut disp, mut cpu, mut bus) = setup();
+    let (ctrl_handle, ctrl_ptr) = alloc_control_handle(&mut bus, (10, 10, 110, 26), 255, 0);
+    disp.control_manager.set_proc_id(ctrl_ptr, 16);
+    assert_eq!(
+        disp.draw_control_or_defer_cdef(&mut cpu, &mut bus, ctrl_handle, ctrl_ptr),
+        None,
+    );
+}
+
 fn alloc_scrollbar_control(
     disp: &mut super::super::TrapDispatcher,
     bus: &mut MacMemoryBus,

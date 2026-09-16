@@ -1944,6 +1944,70 @@
         assert_eq!(second, first + 1);
     }
 
+    /// A window with no palette association of its own inherits the
+    /// application's default palette, and animating a `pmAnimated` entry
+    /// through it must reach the device. Cythera installs exactly one default
+    /// palette and animates its ramps through the map window, which never gets
+    /// an association of its own; requiring one dropped every animation the
+    /// game asked for and nothing on screen ever cycled.
+    #[test]
+    fn animating_through_a_window_on_the_default_palette_reaches_the_device() {
+        let (mut d, _cpu, mut bus) = setup();
+        d.ensure_main_gdevice(&mut bus);
+        let palette = 0x0011_0000u32;
+        let window = 0x0022_0000u32;
+        d.set_window_palette_association(super::PALETTE_DEFAULT_WINDOW, palette, 0);
+        d.front_window = window;
+
+        d.install_animated_palette_entry_on_active_device(
+            window,
+            palette,
+            244,
+            [0x1234, 0x5678, 0x9ABC],
+            super::PM_ANIMATED | super::PM_EXPLICIT,
+        );
+
+        assert_eq!(
+            d.device_clut[244],
+            [0x1234, 0x5678, 0x9ABC],
+            "an entry animated through a window on the application default palette must reach the device"
+        );
+    }
+
+    /// The other side of the same guard, which is what it is really for: an
+    /// unrelated palette must not repaint the front window's color
+    /// environment. Inside Macintosh Volume V (1986), V-164.
+    #[test]
+    fn animating_an_unrelated_palette_leaves_the_device_alone() {
+        let (mut d, _cpu, mut bus) = setup();
+        d.ensure_main_gdevice(&mut bus);
+        let front_palette = 0x0011_0000u32;
+        let other_palette = 0x0033_0000u32;
+        let window = 0x0022_0000u32;
+        d.set_window_palette_association(super::PALETTE_DEFAULT_WINDOW, front_palette, 0);
+        d.front_window = window;
+        let before = d.device_clut[244];
+
+        d.install_animated_palette_entry_on_active_device(
+            window,
+            other_palette,
+            244,
+            [0x1234, 0x5678, 0x9ABC],
+            super::PM_ANIMATED | super::PM_EXPLICIT,
+        );
+        assert_eq!(d.device_clut[244], before, "a background palette must not animate the device");
+
+        // And a tolerant entry is not an animated one, however it is reached.
+        d.install_animated_palette_entry_on_active_device(
+            window,
+            front_palette,
+            244,
+            [0x1234, 0x5678, 0x9ABC],
+            super::PM_TOLERANT,
+        );
+        assert_eq!(d.device_clut[244], before, "only pmAnimated entries reach the device");
+    }
+
     #[test]
     fn palette_authority_low_level_set_entries_only_changes_hardware() {
         let (mut d, _cpu, mut bus) = setup();

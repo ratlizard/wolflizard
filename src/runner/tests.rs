@@ -14521,7 +14521,7 @@
     fn shipped_host_execution_policy_preserves_public_defaults() {
         let runner = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());
 
-        assert_eq!(runner.instructions_per_tick(), 12_000);
+        assert_eq!(runner.instructions_per_tick(), 415_628);
         assert_eq!(DEFAULT_VBL_HZ, 60.15);
         assert_eq!(DEFAULT_REALTIME_CPU_MHZ, 25.0);
         assert_eq!(DEFAULT_REALTIME_PPC_CPU_MHZ, 120.0);
@@ -17720,22 +17720,34 @@
 
         let mut runner = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());
 
-        // The library default is the scripted cadence, which is not a machine
-        // speed: charged unmodified there, one such blit would cost 25 ticks --
-        // longer than a frame -- and defeat any TickCount-deadline frame
-        // limiter the guest has. It is converted instead.
+        // The library default is the reference machine's own cadence, so the
+        // surcharge is charged at its true size. What has to hold either way is
+        // that one such blit costs less than a frame: charge it more and any
+        // TickCount-deadline frame limiter the guest has is defeated.
         let scripted_cadence = crate::machine_profile::DEFAULT_HOST_EXECUTION_POLICY
             .scripted_instructions_per_tick;
         assert_eq!(runner.instructions_per_tick(), scripted_cadence);
+        assert_eq!(scripted_cadence, reference);
         let scripted = runner.hle_work_units_for_cadence(full_screen_blit);
-        assert!(
-            scripted < full_screen_blit / 30,
-            "scripted cadence should charge a fraction of the reference cost, got {scripted} of {full_screen_blit}"
+        assert_eq!(
+            scripted, full_screen_blit,
+            "at the reference cadence the surcharge is charged unconverted"
         );
         assert!(
             scripted < scripted_cadence as i32,
             "a full-screen blit must cost less than one tick, got {scripted}"
         );
+
+        // A cadence slower than the reference is still converted, which is the
+        // branch that keeps an embedder pacing a slow guest clock from being
+        // charged a machine's worth of work per tick.
+        runner.set_instructions_per_tick(reference / 30);
+        let slow = runner.hle_work_units_for_cadence(full_screen_blit);
+        assert!(
+            slow < full_screen_blit / 20,
+            "a slow cadence should charge a fraction of the reference cost, got {slow} of {full_screen_blit}"
+        );
+        runner.set_instructions_per_tick(scripted_cadence);
 
         // Work is never free: a surcharge too small to scale still costs one
         // unit, so an application cannot get unlimited HLE work per tick.

@@ -384,6 +384,10 @@ mod tests {
             8 * 1024 * 1024,
             systemless::runner::FixtureRunnerConfig::default(),
         );
+        // The library default is the reference machine's own cadence now, so
+        // start from a deliberately different rate: otherwise the call would
+        // pass by agreeing with the default rather than by installing its own.
+        runner.set_instructions_per_tick(12_000);
         let fixture_rate = runner.instructions_per_tick();
         let realtime_rate = configure_realtime_execution_rate(&mut runner);
         assert_eq!(realtime_rate, 415_628);

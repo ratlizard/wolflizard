@@ -3960,6 +3960,72 @@ fn setwtitle_decodes_mac_roman_for_window_chrome() {
     assert_eq!(bus.read_pstring(bus.read_long(handle)), b"DLB\xAA");
 }
 
+/// A window with the application's own WDEF gets its title redrawn by
+/// that WDEF. The built-in chrome drawer declines such a window, so
+/// SetWTitle used to leave the new title in the record and never on the
+/// screen -- Cythera's map window kept reading "Map" in place of the
+/// place's name.
+#[test]
+fn setwtitle_on_an_application_wdef_window_arms_wcalcrgns_then_wdraw() {
+    let (mut disp, mut cpu, mut bus) = setup();
+    let proc_id = (200i16 << 4) | 3;
+    install_wind_resource(
+        &mut disp,
+        &mut bus,
+        600,
+        (34, 2, 114, 473),
+        proc_id,
+        true,
+        false,
+        0,
+        b"Map",
+    );
+    let wdef_proc = install_wdef_resource(&mut disp, &mut bus, 200);
+
+    let sp = TEST_SP - 10;
+    cpu.write_reg(Register::A7, sp);
+    cpu.write_reg(Register::PC, 0x1111_1111);
+    bus.write_long(sp, 0);
+    bus.write_long(sp + 4, 0);
+    bus.write_word(sp + 8, 600);
+    bus.write_long(sp + 10, 0);
+    assert!(dispatch(&mut disp, 0x246, &mut cpu, &mut bus).unwrap().is_ok());
+    let window_ptr = bus.read_long(sp + 10);
+    assert_ne!(window_ptr, 0);
+
+    let new_title = bus.alloc(32);
+    bus.write_pstring(new_title, b"Omen's Test");
+    let sp = TEST_SP - 8;
+    let return_pc = 0x2222_2222;
+    cpu.write_reg(Register::A7, sp);
+    cpu.write_reg(Register::PC, return_pc);
+    bus.write_long(sp, new_title);
+    bus.write_long(sp + 4, window_ptr);
+    assert!(dispatch(&mut disp, 0x11A, &mut cpu, &mut bus).unwrap().is_ok());
+
+    let title_handle = bus.read_long(window_ptr + 134);
+    assert_eq!(bus.read_pstring(bus.read_long(title_handle)), b"Omen's Test");
+
+    let tramp = disp.window_def_trampoline;
+    assert_eq!(cpu.read_reg(Register::PC), tramp, "the application WDEF must be called");
+    assert_eq!(
+        bus.read_long(sp + 4),
+        return_pc,
+        "the chain must return to SetWTitle's caller"
+    );
+    assert_eq!(
+        bus.read_word(tramp + 22),
+        super::super::TrapDispatcher::WDEF_WCALC_RGNS_MSG as u16
+    );
+    assert_eq!(bus.read_long(tramp + 32), wdef_proc);
+    let draw_tramp = bus.read_long(tramp + 48);
+    assert_eq!(
+        bus.read_word(draw_tramp + 22),
+        super::super::TrapDispatcher::WDEF_WDRAW_MSG as u16,
+        "wCalcRgns must chain to wDraw"
+    );
+}
+
 #[test]
 fn setwtitle_redraws_front_window_title_bar() {
     let (mut disp, mut cpu, mut bus) = setup();

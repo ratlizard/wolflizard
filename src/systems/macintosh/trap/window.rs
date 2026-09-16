@@ -4702,6 +4702,7 @@ impl super::TrapDispatcher {
                 let sp = cpu.read_reg(Register::A7);
                 let title_ptr = bus.read_long(sp);
                 let the_window = bus.read_long(sp + 4);
+                let mut redraw_with_application_wdef = false;
                 if the_window != 0 && title_ptr != 0 {
                     let bytes = bus.read_pstring(title_ptr);
                     Self::set_title_handle(bus, the_window, &bytes);
@@ -4709,11 +4710,26 @@ impl super::TrapDispatcher {
                         self.window_title = decode_mac_roman(&bytes);
                     }
                     if self.window_visible(bus, the_window) {
-                        let hilited = bus.read_byte(the_window + Self::WINDOW_HILITED_OFFSET) != 0;
-                        self.draw_single_window_chrome_inline(bus, the_window, hilited);
+                        if self.window_uses_custom_def_proc(bus, the_window) {
+                            redraw_with_application_wdef = true;
+                        } else {
+                            let hilited =
+                                bus.read_byte(the_window + Self::WINDOW_HILITED_OFFSET) != 0;
+                            self.draw_single_window_chrome_inline(bus, the_window, hilited);
+                        }
                     }
                 }
                 cpu.write_reg(Register::A7, sp + 8);
+                // SetWTitle redraws the title (Inside Macintosh Volume I,
+                // I-284). The built-in chrome drawer declines a window with
+                // the application's own WDEF, so without this the new title
+                // reached the window record and never the screen: Cythera
+                // retitles its map window with the place's name and the
+                // plaque went on reading "Map". Armed last, after the stack
+                // adjustment, because it runs as a guest call chain.
+                if redraw_with_application_wdef {
+                    self.arm_window_def_draw(cpu, bus, the_window);
+                }
                 Ok(())
             }
 

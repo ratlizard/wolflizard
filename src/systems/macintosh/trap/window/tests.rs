@@ -936,6 +936,52 @@ fn init_cgraf_window_standard_wdef_installs_window_def_proc_handle() {
     );
 }
 
+/// A definition function draws under ClipAbove: the Window Manager
+/// port's clip is the desktop less every visible window in front, so a
+/// frame cannot paint over a window covering it. Inside Macintosh Volume I
+/// (1985), pp. I-296, I-302. Cythera's character window drew its bottom
+/// braid over the To Do bar in front of it without this.
+#[test]
+fn a_wdef_draws_with_windows_in_front_clipped_out() {
+    let (mut disp, mut cpu, mut bus) = setup();
+    bus.write_word(crate::memory::globals::addr::MBAR_HEIGHT, 0);
+    let proc_id = (200i16 << 4) | 3;
+    install_wind_resource(
+        &mut disp, &mut bus, 600, (40, 40, 400, 400), proc_id, true, false, 0, b"",
+    );
+    install_wdef_resource(&mut disp, &mut bus, 200);
+    let sp = TEST_SP - 10;
+    cpu.write_reg(Register::A7, sp);
+    bus.write_long(sp, 0);
+    bus.write_long(sp + 4, 0);
+    bus.write_word(sp + 8, 600);
+    bus.write_long(sp + 10, 0);
+    assert!(dispatch(&mut disp, 0x246, &mut cpu, &mut bus).unwrap().is_ok());
+    let back = bus.read_long(sp + 10);
+
+    // A visible window in front whose structure is a full-width band at the
+    // bottom of the screen, so the clip that is left is still a rectangle.
+    let (_, _, width, height, _) = disp.screen_mode;
+    let (w, h) = (width as i16, height as i16);
+    let front = bus.alloc(256);
+    bus.write_byte(front + 110, 0xFF);
+    let front_struc =
+        super::super::TrapDispatcher::alloc_rect_region_handle(&mut bus, Some((300, 0, h, w)));
+    bus.write_long(front + 114, front_struc);
+    disp.window_list.with_mut(|windows| {
+        windows.retain(|&x| x != front);
+        windows.insert(0, front);
+    });
+
+    assert!(disp.arm_window_def_draw(&mut cpu, &mut bus, back));
+    let clip = bus.read_long(disp.window_manager_cport + 28);
+    assert_eq!(
+        super::super::TrapDispatcher::region_handle_rect(&bus, clip),
+        Some((0, 0, 300, w)),
+        "the window in front must be clipped out of the Window Manager port"
+    );
+}
+
 #[test]
 fn getnewcwindow_visible_custom_wdef_arms_wnew_wcalcrgns_then_wdraw_trampoline() {
     let (mut disp, mut cpu, mut bus) = setup();
@@ -1050,16 +1096,28 @@ fn getnewcwindow_visible_custom_wdef_arms_wnew_wcalcrgns_then_wdraw_trampoline()
         "final callback should restore chExtra and pnLocHFrac"
     );
     assert_eq!(bus.read_long(draw_tramp + 62), window_ptr + 12);
-    // Then the application's port comes back: PEA savedPort; _SetPort; RTS.
-    assert_eq!(bus.read_word(draw_tramp + 66), 0x4879, "PEA the saved port");
-    assert_ne!(bus.read_long(draw_tramp + 68), 0, "a port to restore");
+    // Then ClipAbove is undone: MOVE.L #clipRgn,WMgrPort+28.
+    assert_eq!(bus.read_word(draw_tramp + 66), 0x23FC, "restore the WMgrPort clip");
+    assert_eq!(
+        bus.read_long(draw_tramp + 72),
+        disp.window_manager_cport + 28,
+        "the restore writes the Window Manager port's clipRgn"
+    );
     assert_ne!(
         bus.read_long(draw_tramp + 68),
+        bus.read_long(disp.window_manager_cport + 28),
+        "the call runs with ClipAbove's region, and gets the old one back after"
+    );
+    // Then the application's port comes back: PEA savedPort; _SetPort; RTS.
+    assert_eq!(bus.read_word(draw_tramp + 76), 0x4879, "PEA the saved port");
+    assert_ne!(bus.read_long(draw_tramp + 78), 0, "a port to restore");
+    assert_ne!(
+        bus.read_long(draw_tramp + 78),
         disp.window_manager_cport,
         "the restored port is the application's, not the WMgrPort"
     );
-    assert_eq!(bus.read_word(draw_tramp + 72), 0xA873, "_SetPort");
-    assert_eq!(bus.read_word(draw_tramp + 74), 0x4E75, "RTS");
+    assert_eq!(bus.read_word(draw_tramp + 82), 0xA873, "_SetPort");
+    assert_eq!(bus.read_word(draw_tramp + 84), 0x4E75, "RTS");
     assert_eq!(
         *disp.current_port, disp.window_manager_cport,
         "wDraw should run in the color Window Manager port"

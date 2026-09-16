@@ -66,7 +66,7 @@ impl super::TrapDispatcher {
     const WDEF_WCALC_RGNS_MSG: i16 = 2;
     const WDEF_WNEW_MSG: i16 = 3;
     const WDEF_FIRST_APPLICATION_RESOURCE_ID: i16 = 128;
-    const WDEF_TRAMPOLINE_SIZE: u32 = 80;
+    const WDEF_TRAMPOLINE_SIZE: u32 = 96;
     const AUX_WIN_NEXT_OFFSET: u32 = 0;
     const AUX_WIN_OWNER_OFFSET: u32 = 4;
     pub(crate) const AUX_WIN_CTABLE_OFFSET: u32 = 8;
@@ -824,6 +824,7 @@ impl super::TrapDispatcher {
         next_trampoline: Option<u32>,
         restore_cgraf_fields: Option<(u32, u32)>,
         restore_port: u32,
+        restore_clip: Option<(u32, u32)>,
     ) {
         bus.write_word(tramp, 0x48E7);
         bus.write_word(tramp + 2, 0xF0F0);
@@ -868,6 +869,14 @@ impl super::TrapDispatcher {
                 // conversation bevel at the top-left of the desktop. PEA
                 // savedPort; _SetPort, through the trap so the host's own
                 // port state follows. Inside Macintosh Volume I, p. I-282.
+                if let Some((port, clip_handle)) = restore_clip {
+                    // MOVE.L #clipRgn,port+28 -- hand the Window Manager port
+                    // back the clip it had before ClipAbove replaced it.
+                    bus.write_word(at, 0x23FC);
+                    bus.write_long(at + 2, clip_handle);
+                    bus.write_long(at + 6, port + 28);
+                    at += 10;
+                }
                 if restore_port != 0 {
                     bus.write_word(at, 0x4879); // PEA abs.L
                     bus.write_long(at + 2, restore_port);
@@ -920,6 +929,45 @@ impl super::TrapDispatcher {
             0
         };
         self.set_current_port_state(bus, cpu, wmgr_port, None);
+
+        // The Window Manager calls ClipAbove before a definition function
+        // draws: the Window Manager port's clipRgn becomes the desktop less the
+        // structure region of every visible window in front, so a frame cannot
+        // paint over a window that covers it. Inside Macintosh Volume I (1985),
+        // pp. I-296 and I-302. Without it Cythera's character window drew its
+        // bottom braid over the To Do bar in front of it, and on the real
+        // Macintosh the bar covers that strip. Real regions, not a bounding
+        // box: the bar overlaps only part of the character window's frame, and
+        // a rectangle less a partial strip is still the same rectangle. The
+        // final trampoline restores the clip that was current when this chain
+        // was armed, so chains armed in sequence each put back the one before.
+        let clip_before = bus.read_long(wmgr_port + 28);
+        let clip_above =
+            Self::alloc_rect_region_handle(bus, Some(self.desktop_gray_region_rect(bus)));
+        let ghost_window = bus.read_long(crate::memory::globals::addr::GHOST_WINDOW);
+        let occluders = crate::window_manager::window_occluders(
+            self.window_list.windows().into_iter(),
+            window_ptr,
+            |front| {
+                front != ghost_window
+                    && self.window_visible(bus, front)
+                    && !self.windows_placed_offscreen.contains(&front)
+            },
+        );
+        for front in occluders {
+            let struc_handle = bus.read_long(front + Self::WINDOW_STRUC_RGN_OFFSET);
+            if struc_handle == 0 || Self::region_handle_rect(bus, struc_handle).is_none() {
+                continue;
+            }
+            Self::write_region_boolean_op(
+                bus,
+                clip_above,
+                clip_above,
+                struc_handle,
+                RegionBooleanOp::Difference,
+            );
+        }
+        bus.write_long(wmgr_port + 28, clip_above);
 
         // Pre-Color QuickDraw WDEFs receive WindowPeek and commonly read the
         // classic inline portBits.bounds at offsets +8..+15 to turn portRect
@@ -979,6 +1027,11 @@ impl super::TrapDispatcher {
                 next,
                 final_restore,
                 if next.is_none() { restore_port } else { 0 },
+                if next.is_none() {
+                    Some((wmgr_port, clip_before))
+                } else {
+                    None
+                },
             );
         }
 

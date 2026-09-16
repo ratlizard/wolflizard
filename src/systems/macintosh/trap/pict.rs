@@ -579,6 +579,9 @@ pub fn draw_picture(
         clut_black_white_indices(device_clut)
     };
     let mut fg_idx: u8 = black_idx;
+    // The picture's own RGBFgCol/RGBBkCol opcodes move these. The port's
+    // foreground and background are NOT inherited here, so a transparent-mode
+    // transfer in a picture that sets neither compares against white.
     let mut bg_idx: u8 = white_idx;
     // TxMode (PICT opcode 0x05). Default srcOr (1) per QuickDraw initPort
     // (IM:I I-171). Used by draw_picture_text to XOR glyph pixels when the
@@ -1447,6 +1450,7 @@ pub fn draw_picture(
                     scale_y,
                     screen_mode,
                     device_clut,
+                    bg_idx,
                     clip_region.as_ref(),
                     dst_clip,
                 );
@@ -6660,6 +6664,21 @@ fn pict_source_rgb(
         .unwrap_or(device_clut[translated_pixel as usize])
 }
 
+/// A 48-bit RGB triple narrowed to eight bits a component, which is the
+/// precision a 16- or 32-bit direct source pixel carries.
+fn rgb48_to_rgb8(rgb: [u16; 3]) -> [u8; 3] {
+    [(rgb[0] >> 8) as u8, (rgb[1] >> 8) as u8, (rgb[2] >> 8) as u8]
+}
+
+/// Expand a 16-bit direct pixel's five-bit components to eight bits.
+fn rgb555_to_rgb8(pixel: u16) -> [u8; 3] {
+    [
+        (((pixel >> 10) & 0x1F) * 255 / 31) as u8,
+        (((pixel >> 5) & 0x1F) * 255 / 31) as u8,
+        ((pixel & 0x1F) * 255 / 31) as u8,
+    ]
+}
+
 fn pict_colorize_src_copy_rgb(src_rgb: [u16; 3], fg_rgb: [u16; 3], bg_rgb: [u16; 3]) -> [u16; 3] {
     let mut out = [0u16; 3];
     for component in 0..3 {
@@ -6800,6 +6819,7 @@ fn parse_direct_bits_rect(
     scale_y: f64,
     screen_mode: (u32, u32, u16, u16, u16),
     device_clut: &[[u16; 3]; 256],
+    bg_idx: u8,
     clip_region: Option<&PictureRegion>,
     dst_clip: Option<&DstClip>,
 ) -> u32 {
@@ -6866,6 +6886,14 @@ fn parse_direct_bits_rect(
         pos += rgn_size;
     }
 
+    // Transparent mode transfers every source pixel except those equal to
+    // the background color; srcCopy and the rest always write. Imaging With
+    // QuickDraw (1994), p. 4-39. `ditherCopy` (64) rides on top of the base
+    // mode, so it is masked off before the comparison -- a dithered srcCopy
+    // is still a srcCopy.
+    let transparent = (mode & !0x0040) == 36;
+    let bg_rgb8 = rgb48_to_rgb8(device_clut[usize::from(bg_idx)]);
+
     let height = (pm.bounds_bottom - pm.bounds_top).max(0) as u32;
     let width = (pm.bounds_right - pm.bounds_left).max(0) as u32;
     let (screen_base, screen_rb, screen_w, screen_h, scrn_ps) = (
@@ -6912,6 +6940,9 @@ fn parse_direct_bits_rect(
                     if byte_idx + 1 < row_data.len() {
                         let pixel =
                             ((row_data[byte_idx] as u16) << 8) | (row_data[byte_idx + 1] as u16);
+                        if transparent && rgb555_to_rgb8(pixel) == bg_rgb8 {
+                            continue;
+                        }
                         let Some(pic_y) = mapped_pic_y else {
                             continue;
                         };
@@ -6941,9 +6972,7 @@ fn parse_direct_bits_rect(
                                 dst_clip,
                             );
                         } else {
-                            let r = (((pixel >> 10) & 0x1F) * 255 / 31) as u8;
-                            let g = (((pixel >> 5) & 0x1F) * 255 / 31) as u8;
-                            let b = ((pixel & 0x1F) * 255 / 31) as u8;
+                            let [r, g, b] = rgb555_to_rgb8(pixel);
                             let idx = closest_clut_index(
                                 r as u16 * 257,
                                 g as u16 * 257,
@@ -6979,6 +7008,9 @@ fn parse_direct_bits_rect(
                     let gi = g_start + px as usize;
                     let bi = b_start + px as usize;
                     if bi < row_data.len() {
+                        if transparent && [row_data[ri], row_data[gi], row_data[bi]] == bg_rgb8 {
+                            continue;
+                        }
                         let Some(pic_y) = mapped_pic_y else {
                             continue;
                         };

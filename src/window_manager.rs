@@ -314,6 +314,17 @@ pub(crate) fn standard_window_chrome(
     let tb_bottom = top.saturating_sub(1);
     let tb_left = left.saturating_sub(1);
     let tb_right = right.saturating_add(1);
+    // A title bar lying wholly above the drawable area has nothing to draw.
+    // Clamping only its top to the menu bar inverts it -- `tb_top` lands on the
+    // clamp row while `tb_bottom` stays above it -- and its enclosing top line
+    // would then be drawn right across that row, with the close and zoom boxes
+    // above it in the menu bar. That happens when a titled window's content
+    // starts at the top of a screen with no menu bar: Cythera moves its main
+    // window there, and the line was row 0 of the display, black, over the
+    // game's own backdrop. The background and title clip are already empty
+    // in this case; the window outline and shadow still belong to the window
+    // and are kept.
+    let title_bar_drawable = tb_top <= tb_bottom;
     let title_height = title_ascent.saturating_add(title_descent);
     let title_interior_height = tb_bottom.saturating_sub(tb_top).saturating_sub(1);
     let title_baseline = tb_top
@@ -334,7 +345,9 @@ pub(crate) fn standard_window_chrome(
     // window outline. Keep the title bar enclosed on all four sides.
     // Macintosh Toolbox Essentials (1992), Figure 4-2, pp. 4-5--4-6;
     // Macintosh Human Interface Guidelines (1992), Figures 5-2--5-4.
-    let mut ink = vec![(tb_top, tb_left, tb_top.saturating_add(1), tb_right)];
+    let mut ink = Vec::new();
+    if title_bar_drawable {
+    ink.push((tb_top, tb_left, tb_top.saturating_add(1), tb_right));
     ink.extend([
         (tb_bottom, tb_left, tb_bottom.saturating_add(1), tb_right),
         (
@@ -350,8 +363,9 @@ pub(crate) fn standard_window_chrome(
             tb_right,
         ),
     ]);
+    }
 
-    let has_close_box = active && document_proc && go_away;
+    let has_close_box = title_bar_drawable && active && document_proc && go_away;
     if has_close_box {
         let close_top = top.saturating_sub(15);
         let close_left = left.saturating_add(8);
@@ -383,7 +397,7 @@ pub(crate) fn standard_window_chrome(
         ]);
     }
 
-    let has_zoom_box = active && document_proc && zoom_box;
+    let has_zoom_box = title_bar_drawable && active && document_proc && zoom_box;
     let mut zoom_ink = Vec::new();
     if has_zoom_box {
         // The visible zoom control is an 11-by-11 outer box with the bottom
@@ -518,6 +532,59 @@ where
 
 #[cfg(test)]
 mod tests {
+    /// A titled window whose content starts at the top of a screen with no
+    /// menu bar has its title bar wholly off-screen, and must draw nothing.
+    /// Clamping only the bar's top used to invert it and paint its top line
+    /// across row 0.
+    #[test]
+    fn a_title_bar_above_the_screen_draws_nothing_on_row_zero() {
+        let chrome = super::standard_window_chrome(
+            (0, 0, 480, 640),
+            0,
+            36,
+            9,
+            3,
+            true,
+            true,
+            true,
+            true,
+            true,
+        );
+        // Nothing may be drawn on row 0 of a 640-wide screen: a rect covers it
+        // when it spans row 0 and overlaps columns 0..640.
+        let covers_row_zero = |rect: &super::WindowRect| {
+            rect.0 <= 0 && rect.2 > 0 && rect.1 < 640 && rect.3 > 0 && rect.3 > rect.1
+        };
+        let offenders: Vec<_> = chrome
+            .ink
+            .iter()
+            .chain(&chrome.stripe_ink)
+            .chain(&chrome.zoom_ink)
+            .filter(|rect| covers_row_zero(rect) && rect.3 - rect.1 > 1)
+            .collect();
+        assert!(offenders.is_empty(), "title-bar ink reached row 0: {offenders:?}");
+        // The window outline is the window's, not the title bar's, and stays.
+        assert!(chrome.ink.contains(&(480, -1, 481, 641)), "the bottom outline must remain");
+        assert!(chrome.background.2 <= chrome.background.0, "the background must be empty");
+        assert!(chrome.title_clip.2 <= chrome.title_clip.0, "the title must be clipped away");
+    }
+
+    /// The other side: an ordinary titled window below the menu bar keeps its
+    /// full enclosed title bar, top line included.
+    #[test]
+    fn a_title_bar_below_the_menu_bar_is_still_drawn() {
+        let content = (60, 40, 300, 400);
+        let chrome = super::standard_window_chrome(
+            content, 20, 36, 9, 3, true, true, true, true, true,
+        );
+        assert_eq!(chrome.background.0, 41, "title bar starts 19 rows above the content");
+        assert!(
+            chrome.ink.contains(&(41, 39, 42, 401)),
+            "the enclosing top line must still be drawn, got {:?}",
+            chrome.ink
+        );
+    }
+
     #[test]
     fn grow_retains_the_pointer_offset_inside_the_size_box() {
         let content = (185, 215, 430, 535);

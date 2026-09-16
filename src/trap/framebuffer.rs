@@ -4930,205 +4930,214 @@ screenBase=${:08X} rowBytes={} bounds=({},{},{},{}) pixelSize={} portRect=({},{}
             return;
         }
 
-        // Fill title bar with white (exclusive bottom)
-        Self::fb_fill_rect(
-            bus,
-            screen_base,
-            row_bytes,
-            pixel_size,
-            screen_width,
-            screen_height,
-            tb_top,
-            tb_left,
-            tb_bottom + 1,
-            tb_right,
-            false,
-        );
+        // `standard_window_chrome` leaves the background empty when the title
+        // bar lies wholly above the drawable area. Draw none of it then: this
+        // path strokes the bar's top line itself at `tb_top`, which is the
+        // clamp row, and that line was row 0 of the display, black, under
+        // Cythera's full-screen main window. The outline below still belongs
+        // to the window and is drawn either way.
+        if tb_bottom_exclusive > tb_top {
+            // Fill title bar with white (exclusive bottom)
+            Self::fb_fill_rect(
+                bus,
+                screen_base,
+                row_bytes,
+                pixel_size,
+                screen_width,
+                screen_height,
+                tb_top,
+                tb_left,
+                tb_bottom + 1,
+                tb_right,
+                false,
+            );
 
-        let is_movable_modal = self.window_proc_id == 5;
-        let has_go_away =
-            active && Self::window_is_document_proc(self.window_proc_id) && self.go_away_flag;
+            let is_movable_modal = self.window_proc_id == 5;
+            let has_go_away =
+                active && Self::window_is_document_proc(self.window_proc_id) && self.go_away_flag;
 
-        // The title bar is part of the standard Window Manager frame and is
-        // enclosed by the window outline. Macintosh Toolbox Essentials
-        // (1992), Figure 4-2, pp. 4-5--4-6.
-        Self::fb_hline(
-            bus,
-            screen_base,
-            row_bytes,
-            pixel_size,
-            screen_width,
-            screen_height,
-            tb_top,
-            tb_left,
-            tb_right,
-            true,
-        );
-        Self::fb_hline(
-            bus,
-            screen_base,
-            row_bytes,
-            pixel_size,
-            screen_width,
-            screen_height,
-            tb_bottom,
-            tb_left,
-            tb_right,
-            true,
-        );
-        // Left and right border of title bar
-        Self::fb_vline(bus, screen, tb_left, tb_top, tb_bottom + 1, true);
-        Self::fb_vline(bus, screen, tb_right - 1, tb_top, tb_bottom + 1, true);
+            // The title bar is part of the standard Window Manager frame and is
+            // enclosed by the window outline. Macintosh Toolbox Essentials
+            // (1992), Figure 4-2, pp. 4-5--4-6.
+            Self::fb_hline(
+                bus,
+                screen_base,
+                row_bytes,
+                pixel_size,
+                screen_width,
+                screen_height,
+                tb_top,
+                tb_left,
+                tb_right,
+                true,
+            );
+            Self::fb_hline(
+                bus,
+                screen_base,
+                row_bytes,
+                pixel_size,
+                screen_width,
+                screen_height,
+                tb_bottom,
+                tb_left,
+                tb_right,
+                true,
+            );
+            // Left and right border of title bar
+            Self::fb_vline(bus, screen, tb_left, tb_top, tb_bottom + 1, true);
+            Self::fb_vline(bus, screen, tb_right - 1, tb_top, tb_bottom + 1, true);
 
-        let title_clear_left = if !self.window_title.is_empty() {
-            let text_x = chrome.title_h;
-            text_x - 8
-        } else {
-            tb_right // No clear area
-        };
+            let title_clear_left = if !self.window_title.is_empty() {
+                let text_x = chrome.title_h;
+                text_x - 8
+            } else {
+                tb_right // No clear area
+            };
 
-        let _close_box_width = if has_go_away { 15i16 } else { 0 };
+            let _close_box_width = if has_go_away { 15i16 } else { 0 };
 
-        if is_movable_modal && !active {
-            // Inactive movableDBoxProc: plain title bar, no stripes
-            // Just draw the title text centered
-            if !self.window_title.is_empty() {
-                let text_x = title_clear_left + 8;
-                Self::fb_draw_string_clipped(
-                    bus,
-                    screen_base,
-                    row_bytes,
-                    pixel_size,
-                    screen_width,
-                    screen_height,
-                    text_x,
-                    chrome.title_baseline,
-                    &self.window_title,
-                    font_id,
-                    font_size,
-                    (tb_top, tb_left, tb_bottom - 2, tb_right),
-                );
+            if is_movable_modal && !active {
+                // Inactive movableDBoxProc: plain title bar, no stripes
+                // Just draw the title text centered
+                if !self.window_title.is_empty() {
+                    let text_x = title_clear_left + 8;
+                    Self::fb_draw_string_clipped(
+                        bus,
+                        screen_base,
+                        row_bytes,
+                        pixel_size,
+                        screen_width,
+                        screen_height,
+                        text_x,
+                        chrome.title_baseline,
+                        &self.window_title,
+                        font_id,
+                        font_size,
+                        (tb_top, tb_left, tb_bottom - 2, tb_right),
+                    );
+                }
+            } else {
+                // documentProc/noGrowDocProc: stripes + optional close box
+
+                // Draw close box if goAwayFlag is set.
+                //
+                // Classic Mac System 7.5.3 close-box graphic per BasiliskII reference
+                // (window_goaway): NOT a clean FrameRect. The WDEF draws an 11×11
+                // bounding region split into two shapes:
+                //   * top-left  L-shape — top horizontal (11 wide) + left vertical
+                //                         (11 tall), painting the 3D-highlight edge
+                //   * bottom-right Γ-shape — right vertical (8 tall, inset 2 from
+                //                            top + 1 from bottom) + bottom
+                //                            horizontal (8 wide, inset 2 from left
+                //                            + 1 from right), painting the inner
+                //                            close-box outline
+                // The 1-pixel gap between the two shapes gives the close box its
+                // characteristic 3D-button appearance.
+                // Inside Macintosh Volume V, V-188 figure 5-3.
+                if has_go_away {
+                    let cb_size: i16 = 11;
+                    let interior_top = tb_top + 1;
+                    let interior_height = tb_bottom - interior_top;
+                    let cb_top = interior_top + (interior_height - cb_size) / 2;
+                    let cb_left = tb_left + 9; // 1px border + 8px padding
+
+                    // Top-left L: full 11-wide top edge + full 11-tall left edge
+                    Self::fb_hline(
+                        bus,
+                        screen_base,
+                        row_bytes,
+                        pixel_size,
+                        screen_width,
+                        screen_height,
+                        cb_top,
+                        cb_left,
+                        cb_left + cb_size,
+                        true,
+                    );
+                    Self::fb_vline(bus, screen, cb_left, cb_top, cb_top + cb_size, true);
+
+                    // Bottom-right Γ: 8-tall right edge + 8-wide bottom edge,
+                    // inset 2 from the top-left and 1 from the bottom-right.
+                    let inner_right = cb_left + cb_size - 2; // x=cb_left+9
+                    let inner_bottom = cb_top + cb_size - 2; // y=cb_top+9
+                    Self::fb_vline(
+                        bus,
+                        screen,
+                        inner_right,
+                        cb_top + 2,
+                        cb_top + cb_size - 1,
+                        true,
+                    );
+                    Self::fb_hline(
+                        bus,
+                        screen_base,
+                        row_bytes,
+                        pixel_size,
+                        screen_width,
+                        screen_height,
+                        inner_bottom,
+                        cb_left + 2,
+                        cb_left + cb_size - 1,
+                        true,
+                    );
+                }
+
+                for (top, left, bottom, right) in chrome.zoom_ink.iter().copied() {
+                    Self::fb_fill_rect(
+                        bus,
+                        screen_base,
+                        row_bytes,
+                        pixel_size,
+                        screen_width,
+                        screen_height,
+                        top,
+                        left,
+                        bottom,
+                        right,
+                        true,
+                    );
+                }
+
+                // Use the same WDEF pinstripe geometry as PowerPC and themed
+                // frames. Macintosh Toolbox Essentials (1992), Figure 4-2.
+                for (top, left, bottom, right) in chrome.stripe_ink.iter().copied() {
+                    Self::fb_fill_rect(
+                        bus,
+                        screen_base,
+                        row_bytes,
+                        pixel_size,
+                        screen_width,
+                        screen_height,
+                        top,
+                        left,
+                        bottom,
+                        right,
+                        true,
+                    );
+                }
+
+                // Draw title text centered in title bar. Active windows get
+                // stripes and a close box; inactive windows keep the title text
+                // over a plain title bar.
+                if !self.window_title.is_empty() {
+                    let text_x = title_clear_left + 8;
+                    Self::fb_draw_string_clipped(
+                        bus,
+                        screen_base,
+                        row_bytes,
+                        pixel_size,
+                        screen_width,
+                        screen_height,
+                        text_x,
+                        chrome.title_baseline,
+                        &self.window_title,
+                        font_id,
+                        font_size,
+                        (tb_top, tb_left, tb_bottom - 2, tb_right),
+                    );
+                }
             }
-        } else {
-            // documentProc/noGrowDocProc: stripes + optional close box
 
-            // Draw close box if goAwayFlag is set.
-            //
-            // Classic Mac System 7.5.3 close-box graphic per BasiliskII reference
-            // (window_goaway): NOT a clean FrameRect. The WDEF draws an 11×11
-            // bounding region split into two shapes:
-            //   * top-left  L-shape — top horizontal (11 wide) + left vertical
-            //                         (11 tall), painting the 3D-highlight edge
-            //   * bottom-right Γ-shape — right vertical (8 tall, inset 2 from
-            //                            top + 1 from bottom) + bottom
-            //                            horizontal (8 wide, inset 2 from left
-            //                            + 1 from right), painting the inner
-            //                            close-box outline
-            // The 1-pixel gap between the two shapes gives the close box its
-            // characteristic 3D-button appearance.
-            // Inside Macintosh Volume V, V-188 figure 5-3.
-            if has_go_away {
-                let cb_size: i16 = 11;
-                let interior_top = tb_top + 1;
-                let interior_height = tb_bottom - interior_top;
-                let cb_top = interior_top + (interior_height - cb_size) / 2;
-                let cb_left = tb_left + 9; // 1px border + 8px padding
-
-                // Top-left L: full 11-wide top edge + full 11-tall left edge
-                Self::fb_hline(
-                    bus,
-                    screen_base,
-                    row_bytes,
-                    pixel_size,
-                    screen_width,
-                    screen_height,
-                    cb_top,
-                    cb_left,
-                    cb_left + cb_size,
-                    true,
-                );
-                Self::fb_vline(bus, screen, cb_left, cb_top, cb_top + cb_size, true);
-
-                // Bottom-right Γ: 8-tall right edge + 8-wide bottom edge,
-                // inset 2 from the top-left and 1 from the bottom-right.
-                let inner_right = cb_left + cb_size - 2; // x=cb_left+9
-                let inner_bottom = cb_top + cb_size - 2; // y=cb_top+9
-                Self::fb_vline(
-                    bus,
-                    screen,
-                    inner_right,
-                    cb_top + 2,
-                    cb_top + cb_size - 1,
-                    true,
-                );
-                Self::fb_hline(
-                    bus,
-                    screen_base,
-                    row_bytes,
-                    pixel_size,
-                    screen_width,
-                    screen_height,
-                    inner_bottom,
-                    cb_left + 2,
-                    cb_left + cb_size - 1,
-                    true,
-                );
-            }
-
-            for (top, left, bottom, right) in chrome.zoom_ink.iter().copied() {
-                Self::fb_fill_rect(
-                    bus,
-                    screen_base,
-                    row_bytes,
-                    pixel_size,
-                    screen_width,
-                    screen_height,
-                    top,
-                    left,
-                    bottom,
-                    right,
-                    true,
-                );
-            }
-
-            // Use the same WDEF pinstripe geometry as PowerPC and themed
-            // frames. Macintosh Toolbox Essentials (1992), Figure 4-2.
-            for (top, left, bottom, right) in chrome.stripe_ink.iter().copied() {
-                Self::fb_fill_rect(
-                    bus,
-                    screen_base,
-                    row_bytes,
-                    pixel_size,
-                    screen_width,
-                    screen_height,
-                    top,
-                    left,
-                    bottom,
-                    right,
-                    true,
-                );
-            }
-
-            // Draw title text centered in title bar. Active windows get
-            // stripes and a close box; inactive windows keep the title text
-            // over a plain title bar.
-            if !self.window_title.is_empty() {
-                let text_x = title_clear_left + 8;
-                Self::fb_draw_string_clipped(
-                    bus,
-                    screen_base,
-                    row_bytes,
-                    pixel_size,
-                    screen_width,
-                    screen_height,
-                    text_x,
-                    chrome.title_baseline,
-                    &self.window_title,
-                    font_id,
-                    font_size,
-                    (tb_top, tb_left, tb_bottom - 2, tb_right),
-                );
-            }
         }
 
         // Draw window content area border

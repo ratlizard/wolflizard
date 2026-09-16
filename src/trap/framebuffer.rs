@@ -5233,7 +5233,13 @@ screenBase=${:08X} rowBytes={} bounds=({},{},{},{}) pixelSize={} portRect=({},{}
             cache.push(entry);
             true
         });
-        if !replayed {
+        // `standard_window_chrome` leaves the background empty when the title
+        // bar lies wholly above the drawable area. Draw none of it then: this
+        // path strokes the bar's top line itself at `tb_top`, which is the
+        // clamp row, and that line was row 0 of the display, black, under
+        // Cythera's full-screen main window. The outline below still belongs
+        // to the window and is drawn either way.
+        if !replayed && tb_bottom_exclusive > tb_top {
             let recording = title_key.is_some().then(ColorQueryRecording::start);
             // Fill title bar with white (exclusive bottom)
             Self::fb_fill_rect(

@@ -17659,11 +17659,30 @@ impl super::TrapDispatcher {
         // changes the same active device cells, while an unrelated background
         // palette must not change the front window's color environment.
         // Inside Macintosh Volume V (1986), V-164; Volume VI (1991), 20-13.
-        if usage & PM_ANIMATED == 0
+        // The window animating need not carry an association of its own: a
+        // window with none inherits the application's default palette, the one
+        // `SetPalette((WindowPtr)-1, ...)` installs (Inside Macintosh Volume
+        // VI, 20-18), and animating through such a window is the ordinary
+        // case rather than the exception. Cythera installs exactly one default
+        // palette and animates its ramps through the map window, which has no
+        // association of its own; requiring one dropped every animation it
+        // ever asked for. The front-window test above is what keeps an
+        // unrelated background palette out of the front window's color
+        // environment, and it is unaffected.
+        let front_palette = self.window_palette_handle(self.front_window);
+        let window_palette = self.window_palette_handle(window);
+        let skip = usage & PM_ANIMATED == 0
             || window == 0
-            || self.window_palette_handle(self.front_window) != palette_handle
-            || self.window_palette_handle_exact(window) != palette_handle
-        {
+            || front_palette != palette_handle
+            || window_palette != palette_handle;
+        if skip {
+            if trace_palette_enabled() {
+                eprintln!(
+                    "[PALETTE] animate-device entry={} SKIPPED usage=${:04X} window=${:08X} palette=${:08X} front=${:08X} frontPalette=${:08X} windowPalette=${:08X}",
+                    entry, usage, window, palette_handle, self.front_window,
+                    front_palette, window_palette,
+                );
+            }
             return;
         }
 

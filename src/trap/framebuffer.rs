@@ -8739,7 +8739,7 @@ mod redraw_chrome_tests {
             disp.screen_mode,
             std::array::from_fn(|i| [255 - i as u8; 3]),
         );
-        TrapDispatcher::fb_draw_string(&mut bus, base, 64, 8, 64, 64, 12, 28, "Pilot", 0, 12);
+        TrapDispatcher::fb_draw_string(&mut bus, base, 64, 8, 64, 64, 12, 28, "Pilot", 0, 14);
         let expected = bus.outline_presentation_rgb().unwrap().2;
         assert!(expected.iter().any(|&value| value > 0 && value < 255));
         let bounds = (8, 8, 56, 56);

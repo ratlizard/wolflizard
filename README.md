@@ -416,8 +416,11 @@ For unresolved Application and Geneva requests at 9 points, the
 font drawn unhinted at its own grid size, supplies the raster masks and bearings,
 with URW for the characters it lacks, while a
 [separately sourced compatibility table](src/quickdraw/fonts/compatibility/README.md)
-supplies printable-ASCII advances. Guest FONT/NFNT/sfnt resources and explicit
-local bitmap overrides take precedence.
+supplies printable-ASCII advances. Chicago requests at 12 points likewise take
+their pixels from [Chicago Kare](src/quickdraw/fonts/chicago-kare/README.md), and
+their ASCII advances, bearings and frame from the same compatibility component.
+Guest FONT/NFNT/sfnt resources and explicit local bitmap overrides take
+precedence.
 
 The old hand-drawn font catalogue has been removed. Classic family names remain
 compatibility identifiers; except for the documented Geneva 9 ASCII advances,
@@ -435,8 +438,8 @@ depths and native PowerPC drawing use the logical font raster.
 ### Font licences
 
 The bundled URW and Noto fonts are distributed under the SIL Open Font License
-1.1, and the Geneva 9 FontStruction under the Creative Commons Attribution 3.0
-licence; their original licence and copyright notices are included beside each
+1.1, Chicago Kare under the MIT License, and the Geneva 9 FontStruction under
+the Creative Commons Attribution 3.0 licence; their original licence and copyright notices are included beside each
 font.
 The emulator code remains GPL-3.0-or-later. Systemless is not affiliated with
 Apple Inc.; classic font names identify compatibility requests only.

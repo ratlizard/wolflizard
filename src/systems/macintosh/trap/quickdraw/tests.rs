@@ -8318,7 +8318,7 @@
         write_pixmap_8(&mut bus, offscreen, scratch, 16, 16, 0);
         let rect = bus.alloc(8);
         write_rect(&mut bus, rect, 0, 0, 16, 16);
-        TrapDispatcher::fb_draw_string(&mut bus, base, 16, 8, 16, 16, 3, 10, "a", 3, 9);
+        TrapDispatcher::fb_draw_string(&mut bus, base, 16, 8, 16, 16, 3, 10, "a", 3, 10);
         let expected = bus.outline_presentation_rgb().unwrap().2;
         assert!(expected.iter().any(|&v| v > 0 && v < 255));
         for common in [false, true] {
@@ -8403,7 +8403,8 @@
             write_pixmap_8(&mut bus, offscreen, scratch, 16, 16, ctab);
             let rect = bus.alloc(8);
             write_rect(&mut bus, rect, 0, 0, 16, 16);
-            TrapDispatcher::fb_draw_string(&mut bus, base, 16, 8, 16, 16, 3, 10, "a", 3, 9);
+            // Geneva 11: at 9 Geneva is a pixel strike, which has no outline detail.
+            TrapDispatcher::fb_draw_string(&mut bus, base, 16, 8, 16, 16, 3, 10, "a", 3, 11);
             let original_bytes = bus.read_bytes(base, 256);
             let original_rgb = bus.outline_presentation_rgb().unwrap().2;
             let original_nodes: usize = (0..256).map(|i| bus.test_indexed_detail_nodes(base + i)).sum();

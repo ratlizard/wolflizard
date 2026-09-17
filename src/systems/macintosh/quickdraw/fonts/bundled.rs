@@ -16,3 +16,16 @@ pub(super) fn bytes(font_id: i16) -> Option<&'static [u8]> {
         _ => return None,
     })
 }
+
+/// A recreation of a classic bitmap strike, drawn on a pixel grid, and the
+/// pixels-per-em at which one grid square is one screen pixel. Its glyphs
+/// replace the substitute outline's for that one size; characters it lacks
+/// still come from the substitute.
+pub(super) fn pixel_strike(font_id: i16, size: i16) -> Option<(&'static [u8], f32)> {
+    match (font_id, size) {
+        (FONT_APPLICATION | FONT_GENEVA, 9) => {
+            Some((include_bytes!("fontstruct/geneva-9.ttf"), 16.0))
+        }
+        _ => None,
+    }
+}

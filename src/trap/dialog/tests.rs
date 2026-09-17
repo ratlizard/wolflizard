@@ -718,6 +718,76 @@
         assert_eq!(bus.read_word(bus.read_long(tramp + 48) + 22), 0);
     }
 
+    /// A minimal type-1 color PixPat: a 4x2 2bpp image with a three-entry
+    /// table, enough for `decode_raw_pixpat` to accept it.
+    fn raw_background_pixpat_handle(bus: &mut MacMemoryBus) -> u32 {
+        let pp_handle = bus.alloc(4);
+        let pp_ptr = bus.alloc(128);
+        bus.write_long(pp_handle, pp_ptr);
+        bus.fill_zeros(pp_ptr, 128);
+        bus.write_word(pp_ptr, 1); // patType = color
+        bus.write_long(pp_ptr + 2, 28); // patMap
+        bus.write_long(pp_ptr + 6, 78); // patData
+        bus.write_word(pp_ptr + 14, 0xFFFF); // patXValid
+        let pixmap = pp_ptr + 28;
+        bus.write_word(pixmap, 0x8001);
+        bus.write_word(pixmap + 6, 2);
+        bus.write_word(pixmap + 8, 4);
+        bus.write_word(pixmap + 28, 2); // pixelSize
+        bus.write_word(pixmap + 30, 1);
+        bus.write_word(pixmap + 32, 2);
+        bus.write_long(pixmap + 38, 80); // pmTable
+        bus.write_byte(pp_ptr + 78, 0x19);
+        bus.write_byte(pp_ptr + 79, 0x91);
+        let ctab = pp_ptr + 80;
+        bus.write_word(ctab + 6, 2);
+        for index in 0..3u32 {
+            bus.write_word(ctab + 8 + index * 8, index as u16);
+            bus.write_word(ctab + 10 + index * 8, 0x4000 * index as u16);
+        }
+        pp_handle
+    }
+
+    /// The modal loop redraws a dialog's static text in place. Over a
+    /// background the application paints itself -- a BackPixPat, as
+    /// Cythera's parchment prompts have -- that redraw must not erase to a
+    /// flat colour, which put a white box behind the prompt; a dialog without
+    /// one is still erased.
+    #[test]
+    fn redrawing_static_text_keeps_an_application_background_pattern() {
+        const APPLICATION_BACKGROUND: u8 = 0x5A;
+        let bounds = (100, 100, 180, 300);
+        let text_rect = (10, 10, 40, 190);
+        let (mut disp, mut cpu, mut bus) = setup();
+        let screen = fill_test_screen(&mut disp, &mut bus, 0x2A);
+        let ditl = build_test_ditl_item(8, text_rect, b"Prompt");
+        disp.install_test_resource(&mut bus, *b"DITL", 1961, &ditl);
+        disp.install_test_resource(&mut bus, *b"DLOG", 1960, &build_visible_test_dlog(bounds, 1, 1961));
+        bus.write_long(TEST_SP, 0xFFFF_FFFF);
+        bus.write_long(TEST_SP + 4, 0);
+        bus.write_word(TEST_SP + 8, 1960);
+        disp.dispatch_dialog(true, 0x17C, &mut cpu, &mut bus).unwrap().unwrap();
+        let dialog_ptr = bus.read_long(TEST_SP + 10);
+        let items = disp.dialog_items.get(&dialog_ptr).unwrap().clone();
+        // Inside the text item, below the one line of text.
+        let probe = (bounds.0 + text_rect.2 - 2) as u32 * 640 + (bounds.1 + text_rect.3 - 2) as u32;
+
+        for application_background in [false, true] {
+            if application_background {
+                let pattern = raw_background_pixpat_handle(&mut bus);
+                bus.write_long(dialog_ptr + 32, pattern);
+            }
+            bus.write_byte(screen + probe, APPLICATION_BACKGROUND);
+            disp.redraw_standard_dialog_items(&mut bus, bounds, &items, 1, "", 0, dialog_ptr);
+            let after = bus.read_byte(screen + probe);
+            if application_background {
+                assert_eq!(after, APPLICATION_BACKGROUND, "the redraw erased the application's background");
+            } else {
+                assert_ne!(after, APPLICATION_BACKGROUND, "a plain dialog's text must still be erased");
+            }
+        }
+    }
+
     /// A dialog item replaced by a control with the application's own CDEF
     /// is drawn by that CDEF. Neither DrawDialog nor the modal loop's
     /// redraw of standard items may paint a standard button over it; a

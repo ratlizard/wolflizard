@@ -229,6 +229,17 @@ fn trace_dialog_rect_intersects(top: i16, left: i16, bottom: i16, right: i16) ->
     top < PANE_BOTTOM && bottom > PANE_TOP && left < PANE_RIGHT && right > PANE_LEFT
 }
 
+/// The blend arithmetic transfer mode (Imaging With QuickDraw 1994, p. 4-38).
+const BLEND_TRANSFER_MODE: i16 = 32;
+
+/// Blend one component: `source * weight / 65535 + destination *
+/// (1 - weight / 65535)`, Imaging With QuickDraw (1994), p. 4-40.
+fn blend_component(source: u16, destination: u16, weight: u16) -> u16 {
+    let weight = u64::from(weight);
+    ((u64::from(source) * weight + u64::from(destination) * (65535 - weight) + 32767) / 65535)
+        as u16
+}
+
 fn normalize_boolean_transfer_mode(mode: i16) -> i16 {
     match mode {
         0..=3 => mode,
@@ -1414,6 +1425,11 @@ impl super::TrapDispatcher {
         let fg_idx;
         let bg_idx;
         let mut indexed_clut = None;
+        let op_color = if self.pn_mode == BLEND_TRANSFER_MODE {
+            self.op_color_for_port(bus, port)
+        } else {
+            (0, 0, 0)
+        };
         if matches!(pixel_size, 2 | 4 | 8) {
             let is_screen_port = pix_base == self.screen_mode.0
                 && pix_row_bytes == self.screen_mode.1
@@ -1742,6 +1758,35 @@ impl super::TrapDispatcher {
                         continue;
                     }
                     match op {
+                        ShapeOp::Paint | ShapeOp::Frame
+                            if self.pn_mode == BLEND_TRANSFER_MODE && indexed_clut.is_some() =>
+                        {
+                            // Arithmetic modes work on the RGB of the source
+                            // and destination pixels and store the closest
+                            // index to the result (Imaging With QuickDraw
+                            // 1994, p. 4-40). Cythera rings its default
+                            // button this way, blending white and black
+                            // into the parchment.
+                            let clut = indexed_clut.as_ref().unwrap();
+                            let source_is_black = effective_pn_pat[y.rem_euclid(8) as usize]
+                                & (1 << (7 - x.rem_euclid(8)))
+                                != 0;
+                            let source = clut[usize::from(if source_is_black {
+                                fg_idx
+                            } else {
+                                bg_idx
+                            })];
+                            let destination = clut[usize::from(bus.read_byte(addr))];
+                            let weight = [op_color.0, op_color.1, op_color.2];
+                            let blended = std::array::from_fn(|channel| {
+                                blend_component(
+                                    source[channel],
+                                    destination[channel],
+                                    weight[channel],
+                                )
+                            });
+                            bus.write_byte(addr, shape_palette_index_for_rgb(blended, 8, clut));
+                        }
                         ShapeOp::Paint | ShapeOp::Frame => {
                             let source_is_black = effective_pn_pat[y.rem_euclid(8) as usize]
                                 & (1 << (7 - x.rem_euclid(8)))
@@ -1965,7 +2010,12 @@ impl super::TrapDispatcher {
         bk_pat: [u8; 8],
     ) -> Option<u8> {
         let pattern = match op {
-            ShapeOp::Paint if normalize_boolean_transfer_mode(self.pn_mode) == 0 => pn_pat,
+            ShapeOp::Paint
+                if self.pn_mode != BLEND_TRANSFER_MODE
+                    && normalize_boolean_transfer_mode(self.pn_mode) == 0 =>
+            {
+                pn_pat
+            }
             ShapeOp::Erase => bk_pat,
             ShapeOp::Fill(pattern) => *pattern,
             _ => return None,
@@ -2142,6 +2192,15 @@ mod tests {
     // Lock the anti-aliased glyph blend contract. Partial glyph coverage
     // blends fg → bg linearly in 16-bit Mac RGB space; the ShapeOp::Glyph
     // pixel-write then calls closest_clut_index on the result.
+
+    #[test]
+    fn blend_component_follows_the_documented_weighting() {
+        use super::blend_component;
+        assert_eq!(blend_component(0xFFFF, 0x0000, 0xFFFF), 0xFFFF, "full weight is the source");
+        assert_eq!(blend_component(0xFFFF, 0x4000, 0x0000), 0x4000, "no weight keeps the destination");
+        assert_eq!(blend_component(0xFFFF, 0x0000, 0x8000), 0x8000);
+        assert_eq!(blend_component(0x0000, 0x8000, 0x8000), 0x4000);
+    }
 
     #[test]
     fn blend_rgb_returns_fg_at_full_alpha() {

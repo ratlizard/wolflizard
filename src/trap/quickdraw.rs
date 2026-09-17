@@ -19504,6 +19504,31 @@ impl super::TrapDispatcher {
             .unwrap_or(DEFAULT_QUICKDRAW_HILITE_COLOR)
     }
 
+    /// The port's OpColor, the weight for the blend transfer mode: the
+    /// GrafVars record when the port has one, the process-owned per-port
+    /// value otherwise, and black -- OpenCPort's initial rgbOpColor -- when
+    /// neither was ever set. Imaging With QuickDraw (1994), pp. 4-40, 4-64.
+    pub(crate) fn op_color_for_port(&self, bus: &MacMemoryBus, port: u32) -> (u16, u16, u16) {
+        let port_range_mapped = port.checked_add(14).is_some_and(|end| {
+            end <= bus.ram_size()
+                || (port..end).all(|address| bus.is_foreign_ordinary_sparse_address(address))
+        });
+        if port != 0 && port_range_mapped && (bus.read_word(port + 6) & 0xC000) == 0xC000 {
+            let graf_vars_handle = bus.read_long(port + 8);
+            if Self::handle_points_to_guest_range(bus, graf_vars_handle, 6) {
+                let graf_vars = bus.read_long(graf_vars_handle);
+                return (
+                    bus.read_word(graf_vars),
+                    bus.read_word(graf_vars + 2),
+                    bus.read_word(graf_vars + 4),
+                );
+            }
+        }
+        self.quickdraw_op_colors
+            .quickdraw_op_color(port)
+            .unwrap_or((0, 0, 0))
+    }
+
     fn port_hilite_color_from_graf_vars(
         &self,
         bus: &MacMemoryBus,

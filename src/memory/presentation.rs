@@ -2839,7 +2839,7 @@ mod tests {
     fn native_outline_capture_preserves_logical_font_metrics() {
         use crate::quickdraw::{fonts::FONT_GENEVA, text::get_glyph};
         let mut bus = bus();
-        let (glyph, data) = get_glyph(FONT_GENEVA, 9, 'a').unwrap();
+        let (glyph, data) = get_glyph(FONT_GENEVA, 10, 'a').unwrap();
         let advance = glyph.advance;
         bus.begin_outline_glyph(glyph, data, 0, 7, false, None, None);
         let p = bus.presentation.as_ref().unwrap();
@@ -2854,6 +2854,6 @@ mod tests {
         assert!(styled.width > plain_width);
         assert!(styled.top + styled.height >= 4);
         assert!(styled.pixels.iter().any(|&a| a > 0 && a < 255));
-        assert_eq!(get_glyph(FONT_GENEVA, 9, 'a').unwrap().0.advance, advance);
+        assert_eq!(get_glyph(FONT_GENEVA, 10, 'a').unwrap().0.advance, advance);
     }
 }

@@ -19,6 +19,12 @@ and [licence notice](src/quickdraw/fonts/compatibility/OFL.txt). The GPL runtime
 embeds these separately licensed values while URW continues to supply the glyph
 pixels and bearings.
 
+The Geneva 9 FontStruction by Kelsey Higham, which supplies the glyph pixels for
+Application and Geneva requests at 9 points, is distributed under the Creative
+Commons Attribution 3.0 licence. See its
+[source record](src/quickdraw/fonts/fontstruct/README.md) and
+[licence notice](src/quickdraw/fonts/fontstruct/license.txt).
+
 ## Separate commercial licensing
 
 Ben Letchford may make software for which he holds sufficient rights available

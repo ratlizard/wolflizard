@@ -1042,7 +1042,7 @@ impl super::TrapDispatcher {
         true
     }
 
-    fn arm_window_def_on_create<C: CpuOps>(
+    pub(super) fn arm_window_def_on_create<C: CpuOps>(
         &mut self,
         cpu: &mut C,
         bus: &mut MacMemoryBus,
@@ -4646,6 +4646,9 @@ impl super::TrapDispatcher {
                         if !self.modeless_dialog_cdef_draw_queue.contains(&the_window) {
                             self.modeless_dialog_cdef_draw_queue.push_back(the_window);
                         }
+                        // A dialog is a window: one with the application's
+                        // own WDEF is framed by it when shown (IM:I I-284).
+                        arm_custom_wdef_draw = self.window_uses_custom_def_proc(bus, the_window);
                     } else {
                         let hilited = bus.read_byte(the_window + Self::WINDOW_HILITED_OFFSET) != 0;
                         if self.window_uses_custom_def_proc(bus, the_window) {

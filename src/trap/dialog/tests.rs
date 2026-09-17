@@ -590,6 +590,198 @@
         assert_eq!(items[0].text, "OK");
     }
 
+    /// A visible DLOG with the given procID, for tests that draw.
+    fn build_visible_test_dlog(
+        bounds: (i16, i16, i16, i16),
+        proc_id: i16,
+        items_id: i16,
+    ) -> Vec<u8> {
+        let mut data = build_test_dlog(bounds, items_id, 0);
+        data[8..10].copy_from_slice(&proc_id.to_be_bytes());
+        data[10] = 1;
+        data
+    }
+
+    /// A 640x480 8-bit screen filled with one index, so a test can see which
+    /// pixels a dialog paints.
+    fn fill_test_screen(disp: &mut TrapDispatcher, bus: &mut MacMemoryBus, index: u8) -> u32 {
+        let screen_base = bus.alloc(640 * 480);
+        bus.write_long(0x0824, screen_base);
+        disp.screen_mode = (screen_base, 640, 640, 480, 8);
+        bus.fill_bytes(screen_base, 640 * 480, index);
+        screen_base
+    }
+
+    /// A dialog is a window, so one whose procID names an application WDEF
+    /// is framed by calling that WDEF -- wNew, wCalcRgns, wDraw -- and gets
+    /// no standard frame of its own. A standard procID still does.
+    #[test]
+    fn get_new_dialog_calls_an_application_wdef_instead_of_drawing_a_frame() {
+        const BACKGROUND: u8 = 0x2A;
+        let bounds = (100, 100, 180, 300);
+        // Where a standard dBoxProc frame lands: a few pixels outside the
+        // content, inside the frame margin.
+        let frame_probe = (bounds.0 - 4) as u32 * 640 + 200;
+
+        let (mut disp, mut cpu, mut bus) = setup();
+        let screen = fill_test_screen(&mut disp, &mut bus, BACKGROUND);
+        let ditl = build_test_ditl_item(8, (10, 10, 30, 190), b"Prompt");
+        disp.install_test_resource(&mut bus, *b"DITL", 1931, &ditl);
+        disp.install_test_resource(&mut bus, *b"DLOG", 1930, &build_visible_test_dlog(bounds, 1, 1931));
+        bus.write_long(TEST_SP, 0xFFFF_FFFF);
+        bus.write_long(TEST_SP + 4, 0);
+        bus.write_word(TEST_SP + 8, 1930);
+        disp.dispatch_dialog(true, 0x17C, &mut cpu, &mut bus).unwrap().unwrap();
+        assert_ne!(
+            bus.read_byte(screen + frame_probe),
+            BACKGROUND,
+            "a standard dBoxProc dialog must get the standard frame, or this test proves nothing"
+        );
+
+        let (mut disp, mut cpu, mut bus) = setup();
+        let screen = fill_test_screen(&mut disp, &mut bus, BACKGROUND);
+        let proc_id = (1000i16 << 4) | 1;
+        let wdef_proc = disp.install_test_resource(&mut bus, *b"WDEF", 1000, &[0x4E, 0x56, 0, 0]);
+        disp.install_test_resource(&mut bus, *b"DITL", 1931, &ditl);
+        disp.install_test_resource(
+            &mut bus,
+            *b"DLOG",
+            1930,
+            &build_visible_test_dlog(bounds, proc_id, 1931),
+        );
+        let return_pc = 0x1111_1111;
+        cpu.write_reg(Register::PC, return_pc);
+        bus.write_long(TEST_SP, 0xFFFF_FFFF);
+        bus.write_long(TEST_SP + 4, 0);
+        bus.write_word(TEST_SP + 8, 1930);
+        disp.dispatch_dialog(true, 0x17C, &mut cpu, &mut bus).unwrap().unwrap();
+
+        let dialog_ptr = bus.read_long(TEST_SP + 10);
+        assert_ne!(dialog_ptr, 0);
+        assert_eq!(
+            bus.read_byte(screen + frame_probe),
+            BACKGROUND,
+            "the application WDEF draws the frame, not the Dialog Manager"
+        );
+        let tramp = disp.window_def_trampoline;
+        assert_eq!(cpu.read_reg(Register::PC), tramp, "the application WDEF must be called");
+        // wNew, wCalcRgns, wDraw (IM:I I-299).
+        let messages = [3u16, 2, 0];
+        let mut link = tramp;
+        for (index, message) in messages.into_iter().enumerate() {
+            assert_eq!(bus.read_word(link + 22), message, "message {index}");
+            assert_eq!(bus.read_long(link + 32), wdef_proc);
+            if index + 1 < messages.len() {
+                link = bus.read_long(link + 48);
+            }
+        }
+    }
+
+    /// The same for a dialog created hidden and shown later, as Cythera's
+    /// alerts are: ShowWindow draws its frame through the application WDEF.
+    #[test]
+    fn show_window_frames_a_hidden_dialog_through_its_application_wdef() {
+        let bounds = (100, 100, 180, 300);
+        let (mut disp, mut cpu, mut bus) = setup();
+        let screen = fill_test_screen(&mut disp, &mut bus, 0x2A);
+        let frame_probe = (bounds.0 - 4) as u32 * 640 + 200;
+        let proc_id = (1000i16 << 4) | 1;
+        let wdef_proc = disp.install_test_resource(&mut bus, *b"WDEF", 1000, &[0x4E, 0x56, 0, 0]);
+        let ditl = build_test_ditl_item(8, (10, 10, 30, 190), b"Prompt");
+        disp.install_test_resource(&mut bus, *b"DITL", 1951, &ditl);
+        let mut dlog = build_visible_test_dlog(bounds, proc_id, 1951);
+        dlog[10] = 0;
+        disp.install_test_resource(&mut bus, *b"DLOG", 1950, &dlog);
+        bus.write_long(TEST_SP, 0xFFFF_FFFF);
+        bus.write_long(TEST_SP + 4, 0);
+        bus.write_word(TEST_SP + 8, 1950);
+        disp.dispatch_dialog(true, 0x17C, &mut cpu, &mut bus).unwrap().unwrap();
+        let dialog_ptr = bus.read_long(TEST_SP + 10);
+        assert_ne!(dialog_ptr, 0);
+
+        let sp = TEST_SP - 4;
+        let return_pc = 0x2222_2222;
+        cpu.write_reg(Register::A7, sp);
+        cpu.write_reg(Register::PC, return_pc);
+        bus.write_long(sp, dialog_ptr);
+        disp.dispatch_window(true, 0x115, &mut cpu, &mut bus).unwrap().unwrap();
+
+        assert_eq!(bus.read_byte(screen + frame_probe), 0x2A, "no standard frame");
+        let tramp = disp.window_def_trampoline;
+        assert_eq!(cpu.read_reg(Register::PC), tramp, "ShowWindow must call the WDEF");
+        // ShowWindow pops its one pointer; the chain returns to its caller.
+        assert_eq!(cpu.read_reg(Register::A7), sp);
+        assert_eq!(bus.read_long(sp), return_pc);
+        // wCalcRgns, then wDraw (IM:I I-299).
+        assert_eq!(bus.read_word(tramp + 22), 2);
+        assert_eq!(bus.read_long(tramp + 32), wdef_proc);
+        assert_eq!(bus.read_word(bus.read_long(tramp + 48) + 22), 0);
+    }
+
+    /// A dialog item replaced by a control with the application's own CDEF
+    /// is drawn by that CDEF. Neither DrawDialog nor the modal loop's
+    /// redraw of standard items may paint a standard button over it; a
+    /// standard button in the same place is still painted.
+    #[test]
+    fn dialog_drawing_leaves_application_cdef_controls_to_their_cdef() {
+        const APPLICATION_INK: u8 = 0x5A;
+        let bounds = (100, 100, 180, 300);
+        let button = (40, 120, 60, 180);
+        let (mut disp, mut cpu, mut bus) = setup();
+        let screen = fill_test_screen(&mut disp, &mut bus, 0x2A);
+        let ditl = build_test_ditl_item(4, button, b"Save");
+        disp.install_test_resource(&mut bus, *b"DITL", 1941, &ditl);
+        disp.install_test_resource(&mut bus, *b"DLOG", 1940, &build_visible_test_dlog(bounds, 1, 1941));
+        bus.write_long(TEST_SP, 0xFFFF_FFFF);
+        bus.write_long(TEST_SP + 4, 0);
+        bus.write_word(TEST_SP + 8, 1940);
+        disp.dispatch_dialog(true, 0x17C, &mut cpu, &mut bus).unwrap().unwrap();
+        let dialog_ptr = bus.read_long(TEST_SP + 10);
+        let ctrl_handle = disp
+            .dialog_control_handle_for_item(dialog_ptr, 1)
+            .expect("a button item has a control");
+        let ctrl_ptr = bus.read_long(ctrl_handle);
+        let items = disp.dialog_items.get(&dialog_ptr).unwrap().clone();
+        let inside = (bounds.0 + button.0 + 10) as u32 * 640 + (bounds.1 + button.1 + 30) as u32;
+
+        let paint_application_button = |bus: &mut MacMemoryBus| {
+            for y in (bounds.0 + button.0)..(bounds.0 + button.2) {
+                for x in (bounds.1 + button.1)..(bounds.1 + button.3) {
+                    bus.write_byte(screen + y as u32 * 640 + x as u32, APPLICATION_INK);
+                }
+            }
+        };
+
+        // DrawDialog erases a dialog the application has not painted, so
+        // there compare the button's outline, which only a standard button
+        // draws, with the erased content beside it.
+        let outline = (bounds.0 + button.0) as u32 * 640 + (bounds.1 + button.1 + 30) as u32;
+        let content = (bounds.0 + 5) as u32 * 640 + (bounds.1 + 5) as u32;
+        for application in [false, true] {
+            if application {
+                disp.control_manager.set_proc_id(ctrl_ptr, 16000);
+                let def_proc = bus.alloc(8);
+                bus.write_word(def_proc, 0x4EF9);
+                let def_handle = bus.alloc(4);
+                bus.write_long(def_handle, def_proc);
+                bus.write_long(ctrl_ptr + 24, def_handle);
+            }
+            disp.draw_dialog(&mut bus, bounds, 1, "", &items, 1, "", 0, false, dialog_ptr);
+            let outline_matches_content =
+                bus.read_byte(screen + outline) == bus.read_byte(screen + content);
+            paint_application_button(&mut bus);
+            disp.redraw_standard_dialog_items(&mut bus, bounds, &items, 1, "", 0, dialog_ptr);
+            let after_redraw = bus.read_byte(screen + inside);
+            if application {
+                assert!(outline_matches_content, "DrawDialog drew a standard button over the CDEF's");
+                assert_eq!(after_redraw, APPLICATION_INK, "the item redraw painted over the CDEF's button");
+            } else {
+                assert!(!outline_matches_content, "a standard button must still be drawn");
+                assert_ne!(after_redraw, APPLICATION_INK, "a standard button must still be redrawn");
+            }
+        }
+    }
+
     fn build_test_dlog(bounds: (i16, i16, i16, i16), items_id: i16, position: u16) -> Vec<u8> {
         build_test_dlog_with_title(bounds, items_id, "", position)
     }

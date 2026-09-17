@@ -8708,7 +8708,7 @@
     const DIM_PORT_H: u16 = 24;
 
     /// A white 120 by 24 8-bit screen port presented at 4x, with `text`
-    /// drawn in the system font at 12 points at baseline `v`, in srcOr.
+    /// drawn in Geneva at 12 points at baseline `v`, in srcOr.
     /// Returns it with the screen base and the port's PixMap.
     fn text_on_presented_port(
         v: i16,
@@ -8755,7 +8755,10 @@
         text: &str,
     ) {
         d.fg_color = (0, 0, 0);
-        d.tx_font = 0;
+        // Geneva, not the system font: the fork draws Chicago 12 from Chicago
+        // Kare's bitmap strike, which has no outline for the presentation to
+        // dim, and these tests are about dimming outline text.
+        d.tx_font = crate::quickdraw::fonts::FONT_GENEVA;
         d.tx_size = 12;
         d.tx_face = 0;
         d.tx_mode = 1;

@@ -26,6 +26,7 @@ pub(super) fn pixel_strike(font_id: i16, size: i16) -> Option<(&'static [u8], f3
         (FONT_APPLICATION | FONT_GENEVA, 9) => {
             Some((include_bytes!("fontstruct/geneva-9.ttf"), 16.0))
         }
+        (FONT_CHICAGO, 12) => Some((include_bytes!("chicago-kare/ChicagoKare-Regular.ttf"), 16.0)),
         _ => None,
     }
 }

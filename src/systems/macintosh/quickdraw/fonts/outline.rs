@@ -35,8 +35,7 @@ pub(super) fn face(font_id: i16, size: i16) -> Option<Faces> {
         size,
         bytes,
         super::bundled::pixel_strike(font_id, size),
-        super::compatibility::bundled_advances(font_id, size),
-        super::compatibility::bundled_wid_max(font_id, size),
+        super::compatibility::bundled_layout(font_id, size),
     )?;
     // Coppet is an optical-size-specific ASCII substitute. Retain the
     // established GetFontInfo metrics and extended Mac Roman fallback.
@@ -167,8 +166,11 @@ pub(super) fn rasterize(
         size,
         bytes,
         None,
-        compatibility_advances,
-        compatibility_wid_max,
+        super::compatibility::Layout {
+            advances: compatibility_advances,
+            wid_max: compatibility_wid_max,
+            ..Default::default()
+        },
     )
 }
 
@@ -185,8 +187,7 @@ fn rasterize_with_strike(
     size: i16,
     bytes: &'static [u8],
     pixel_strike: Option<(&'static [u8], f32)>,
-    compatibility_advances: Option<&'static [u8; 95]>,
-    compatibility_wid_max: Option<i16>,
+    layout: super::compatibility::Layout,
 ) -> Option<Faces> {
     use skrifa::{
         instance::{LocationRef, Size},
@@ -316,7 +317,7 @@ fn rasterize_with_strike(
         ..=super::compatibility::LAST_ASCII_CODE)
         .map(|code| glyph(char::from(code)))
         .collect::<Option<Vec<_>>>()?;
-    if let Some(compatibility_advances) = compatibility_advances {
+    if let Some(compatibility_advances) = layout.advances {
         for (glyph, advance) in ascii.iter_mut().zip(compatibility_advances) {
             glyph.advance = *advance;
         }
@@ -334,6 +335,13 @@ fn rasterize_with_strike(
             })
         })
         .collect::<Option<Vec<_>>>()?;
+    if let Some(bearings) = layout.bearings {
+        for ((glyph, bearing), source) in ascii.iter_mut().zip(bearings).zip(&sources) {
+            if !source.hinted && glyph.width > 0 {
+                glyph.origin_x = *bearing as i8;
+            }
+        }
+    }
     let all = || {
         ascii
             .iter()
@@ -355,20 +363,26 @@ fn rasterize_with_strike(
             .filter(|(_, source)| strike.is_none() || !source.hinted)
             .map(|(glyph, _)| glyph)
     };
-    let ascent = (frame_ascent.ceil() as i16)
-        .max(framed().map(|g| -i16::from(g.origin_y)).max().unwrap_or(0));
-    let descent = ((-frame_descent).ceil() as i16).max(
-        framed()
-            .map(|g| i16::from(g.origin_y) + i16::from(g.height))
-            .max()
-            .unwrap_or(0),
-    );
+    let (ascent, descent, leading) = match layout.frame {
+        Some(frame) => frame,
+        None => (
+            (frame_ascent.ceil() as i16)
+                .max(framed().map(|g| -i16::from(g.origin_y)).max().unwrap_or(0)),
+            ((-frame_descent).ceil() as i16).max(
+                framed()
+                    .map(|g| i16::from(g.origin_y) + i16::from(g.height))
+                    .max()
+                    .unwrap_or(0),
+            ),
+            frame_leading.round().max(0.0) as i16,
+        ),
+    };
     let mapped_wid_max = all().map(|g| i16::from(g.advance)).max().unwrap_or(0);
     // Inside Macintosh: Text (1993), pp. 3-66 and 3-74: GetFontInfo.widMax
     // is the integer width of the largest glyph in the selected font.
-    let selected_wid_max = if let Some(wid_max) = compatibility_wid_max {
+    let selected_wid_max = if let Some(wid_max) = layout.wid_max {
         wid_max
-    } else if compatibility_advances.is_some() {
+    } else if layout.advances.is_some() {
         mapped_wid_max
     } else {
         metrics
@@ -385,7 +399,7 @@ fn rasterize_with_strike(
             ascent,
             descent,
             wid_max,
-            leading: frame_leading.round().max(0.0) as i16,
+            leading,
         },
         glyphs: Box::leak(ascii.into_boxed_slice()),
         data,
@@ -704,6 +718,80 @@ mod tests {
                 &substitute.glyphs[usize::from(b'/' - b' ')]
             ),
             glyph_rows(face.data, glyph(b'/')),
+            "the substitute outline must differ, or this test proves nothing"
+        );
+    }
+
+    const CHICAGO12_ADVANCES: &[u8; 95] =
+        include_bytes!("compatibility/chicago12-advances.bin");
+    const CHICAGO12_BEARINGS: &[u8; 95] =
+        include_bytes!("compatibility/chicago12-bearings.bin");
+
+    #[test]
+    fn chicago12_compatibility_components_have_exact_ofl_bytes() {
+        assert_eq!(
+            CHICAGO12_ADVANCES.as_slice(),
+            [
+                4, 6, 7, 10, 7, 11, 10, 3, 5, 5, 7, 7, 4, 7, 4, 7, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 4,
+                4, 6, 8, 6, 8, 11, 8, 8, 8, 8, 7, 7, 8, 8, 6, 7, 9, 7, 12, 9, 8, 8, 8, 8, 7, 6, 8,
+                8, 12, 8, 8, 8, 5, 7, 5, 8, 8, 6, 8, 8, 7, 8, 8, 6, 8, 8, 4, 6, 8, 4, 12, 8, 8, 8,
+                8, 6, 7, 6, 8, 8, 12, 8, 8, 8, 5, 5, 5, 8,
+            ]
+        );
+        assert_eq!(
+            CHICAGO12_BEARINGS.as_slice(),
+            [
+                4, 2, 2, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 2, 1, 1, 1, 1, 1, 1, 1, 1, 1,
+                1, 0, 1, 0, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 2, 0, 1, 1, 1, 1, 1, 1, 1, 1, 1, 0, 1,
+                1, 1, 1, 1, 1, 1, 1, 1, 2, 0, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 0, 1, 1, 1, 1, 1, 1,
+                1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 2, 1, 1,
+            ]
+        );
+    }
+
+    /// Chicago 12's pixels come from Chicago Kare, which draws each glyph at
+    /// the pen; the compatibility component places them, spaces them and
+    /// gives the face its frame.
+    #[test]
+    fn chicago12_places_kare_glyphs_with_the_components_spacing_and_frame() {
+        let (face, _) = super::face(FONT_CHICAGO, 12).unwrap();
+        let h = &face.glyphs[usize::from(b'H' - b' ')];
+        assert_eq!(
+            glyph_rows(face.data, h),
+            [
+                "##..##", "##..##", "##..##", "##..##", "######", "##..##", "##..##", "##..##",
+                "##..##"
+            ]
+        );
+        assert_eq!((h.origin_x, h.origin_y, h.advance), (1, -9, 8));
+        for ((glyph, &advance), &bearing) in face
+            .glyphs
+            .iter()
+            .zip(CHICAGO12_ADVANCES)
+            .zip(CHICAGO12_BEARINGS)
+        {
+            assert_eq!(glyph.advance, advance);
+            if glyph.width > 0 {
+                assert_eq!(glyph.origin_x, bearing as i8);
+            }
+        }
+        assert_eq!(
+            (
+                face.metrics.ascent,
+                face.metrics.descent,
+                face.metrics.leading,
+                face.metrics.wid_max
+            ),
+            (12, 3, 1, 14)
+        );
+        let bytes = super::bytes(FONT_CHICAGO).unwrap();
+        let (substitute, _) = super::rasterize(FONT_CHICAGO, 12, bytes, None, None).unwrap();
+        assert_ne!(
+            glyph_rows(
+                substitute.data,
+                &substitute.glyphs[usize::from(b'H' - b' ')]
+            ),
+            glyph_rows(face.data, h),
             "the substitute outline must differ, or this test proves nothing"
         );
     }
@@ -1049,3 +1137,4 @@ mod tests {
         assert_eq!(face.glyphs[0].advance, 1);
     }
 }
+

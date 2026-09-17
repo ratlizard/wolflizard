@@ -66,6 +66,66 @@ impl skrifa::outline::OutlinePen for OutlinePath {
     }
 }
 
+/// Coverage below this is antialiasing fringe rather than a stroke crossing a
+/// row, and dropout control leaves it off.
+const MONO_DROPOUT_FLOOR: u8 = 64;
+
+/// Threshold an eight-bit coverage mask to QuickDraw's one-bit mask, with
+/// dropout control for glyphs the threshold would otherwise erase.
+///
+/// A plain threshold loses any stroke about half a pixel wide: every pixel it
+/// crosses sits near 50% coverage and falls just under the cut. Geneva 9's
+/// slash rasterised to rows peaking at 102, 100, 128, 116, 81, 127 and 125 and
+/// kept one pixel -- a dot where Cythera's "25/25" should read -- and Monaco 9's
+/// slash and backslash kept none at all. Grid-fitting cannot help a diagonal
+/// the way it snaps a stem.
+///
+/// So, as a TrueType scan converter's dropout control does, each row the stroke
+/// crosses but that is empty after thresholding gets its most-covered pixel
+/// turned on. Only for a glyph the threshold has actually destroyed, though:
+/// one that keeps fewer pixels than half its coverage adds up to. Applied to
+/// every glyph, the same rule also turned periods into L-shapes and filled one
+/// side of an A. Gated, among the bundled faces' ASCII glyphs from 9 to 14
+/// points it changes only slashes, backslashes, grave accents and carets.
+fn mono_mask_with_dropout(coverage: &[u8], width: usize, height: usize) -> Vec<u8> {
+    let mut mask: Vec<u8> = coverage
+        .iter()
+        .map(|&alpha| {
+            if alpha >= MONO_COVERAGE_THRESHOLD {
+                255
+            } else {
+                0
+            }
+        })
+        .collect();
+    if width == 0 || height == 0 || coverage.len() < width * height {
+        return mask;
+    }
+    let mass: u32 = coverage[..width * height]
+        .iter()
+        .map(|&c| u32::from(c))
+        .sum();
+    let kept = mask.iter().filter(|&&v| v != 0).count() as u32;
+    if kept * 255 * 2 >= mass {
+        return mask;
+    }
+    for y in 0..height {
+        let row = y * width..(y + 1) * width;
+        if mask[row.clone()].iter().any(|&v| v != 0) {
+            continue;
+        }
+        let (x, &peak) = coverage[row]
+            .iter()
+            .enumerate()
+            .max_by_key(|&(_, &c)| c)
+            .expect("a row of a non-empty mask has a pixel");
+        if peak >= MONO_DROPOUT_FLOOR {
+            mask[y * width + x] = 255;
+        }
+    }
+    mask
+}
+
 // Inside Macintosh: Text (1993), pp. 4-7–4-9 and 4-18–4-19:
 // outline fonts generate a strike at the requested point size. At the logical
 // 72-dpi screen, one point is one em pixel. Keep QuickDraw's binary masks and
@@ -143,13 +203,11 @@ pub(super) fn rasterize(
             result.height = u8::try_from(placement.height).ok()?;
             result.origin_x = i8::try_from(placement.left).ok()?;
             result.origin_y = i8::try_from(-placement.top).ok()?;
-            data.extend(coverage.iter().map(|&alpha| {
-                if alpha >= MONO_COVERAGE_THRESHOLD {
-                    255
-                } else {
-                    0
-                }
-            }));
+            data.extend(mono_mask_with_dropout(
+                &coverage,
+                placement.width as usize,
+                placement.height as usize,
+            ));
         }
         Some(result)
     };
@@ -329,13 +387,8 @@ pub(crate) fn unicode_glyph(font_id: i16, size: i16, ch: char) -> Option<Unicode
         .origin(zeno::Origin::BottomLeft)
         .inspect(|format, w, h| pixels.resize(format.buffer_size(w, h), 0))
         .render_into(&mut pixels, None);
-    pixels.iter_mut().for_each(|p| {
-        *p = if *p >= MONO_COVERAGE_THRESHOLD {
-            255
-        } else {
-            0
-        }
-    });
+    let pixels =
+        mono_mask_with_dropout(&pixels, placement.width as usize, placement.height as usize);
     let data: &'static [u8] = Box::leak(pixels.into_boxed_slice());
     let glyph: &'static Glyph = Box::leak(Box::new(Glyph {
         width: placement.width.try_into().ok()?,
@@ -586,6 +639,66 @@ mod tests {
             ..accent.data_offset + usize::from(accent.width) * usize::from(accent.height)]
             .iter()
             .any(|&v| v > 0));
+    }
+
+    /// Dropout control is only for a glyph the threshold erased. A comma's
+    /// tail fades through a row of fringe below its head; lighting that row
+    /// made Geneva 9's comma and semicolon a pixel taller, so a glyph that kept
+    /// at least half its coverage is thresholded and nothing more.
+    #[test]
+    fn dropout_leaves_a_glyph_the_threshold_kept() {
+        let comma = [200, 90, 10];
+        assert_eq!(super::mono_mask_with_dropout(&comma, 1, 3), vec![255, 0, 0]);
+
+        // Geneva 9's slash as rasterised: one pixel reaches the threshold.
+        #[rustfmt::skip]
+        let slash = [
+            0, 0, 24, 102,
+            0, 0, 100, 27,
+            0, 0, 128, 0,
+            0, 10, 116, 0,
+            0, 81, 47, 0,
+            0, 127, 0, 0,
+            2, 125, 0, 0,
+        ];
+        #[rustfmt::skip]
+        let expected = vec![
+            0, 0, 0, 255,
+            0, 0, 255, 0,
+            0, 0, 255, 0,
+            0, 0, 255, 0,
+            0, 255, 0, 0,
+            0, 255, 0, 0,
+            0, 255, 0, 0,
+        ];
+        assert_eq!(super::mono_mask_with_dropout(&slash, 4, 7), expected);
+    }
+
+    /// A stroke about half a pixel wide must survive thresholding. Geneva 9's
+    /// slash used to keep one pixel and Monaco 9's none; with dropout control
+    /// both are a diagonal with ink on every row, rising left to right.
+    #[test]
+    fn thin_diagonals_survive_the_one_bit_threshold() {
+        for family in [FONT_GENEVA, FONT_MONACO] {
+            let (face, _) = super::face(family, 9).unwrap();
+            let g = &face.glyphs[(b'/' - b' ') as usize];
+            let w = usize::from(g.width);
+            let h = usize::from(g.height);
+            let px = &face.data[g.data_offset..g.data_offset + w * h];
+            let columns: Vec<Option<usize>> = (0..h)
+                .map(|y| (0..w).find(|&x| px[y * w + x] != 0))
+                .collect();
+            assert!(
+                columns.iter().all(Option::is_some),
+                "{family}/9: every row of the slash must have ink, got {columns:?}"
+            );
+            let first = columns[0].unwrap();
+            let last = columns[h - 1].unwrap();
+            assert!(
+                first > last,
+                "{family}/9: the slash must rise left to right"
+            );
+        }
     }
 
     #[test]

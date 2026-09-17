@@ -6437,97 +6437,102 @@ impl super::TrapDispatcher {
                 items.len()
             );
         }
-        let themed_frame = match proc_id & 0x0F {
-            1 => (
-                top - Self::DBOX_FRAME_MARGIN,
-                left - Self::DBOX_FRAME_MARGIN,
-                bottom + Self::DBOX_FRAME_MARGIN,
-                right + Self::DBOX_FRAME_MARGIN,
-            ),
-            2 => (top - 1, left - 1, bottom + 1, right + 1),
-            3 => (top - 1, left - 1, bottom + 3, right + 3),
-            _ => (top, left, bottom + 2, right + 2),
-        };
-        if !self.draw_theme_dialog_frame(
-            bus,
-            (top, left, bottom, right),
-            themed_frame,
-            proc_id,
-            true,
-            clear_background && content_color.is_none(),
-        ) {
-            if clear_background && content_color.is_none() {
-                Self::fb_fill_rect(
-                    bus,
-                    screen_base,
-                    row_bytes,
-                    pixel_size,
-                    screen_width,
-                    screen_height,
-                    top,
-                    left,
-                    bottom,
-                    right,
-                    false,
-                );
-            }
+        // The application's own WDEF draws this dialog's frame; the
+        // Window Manager calls it, and drawing a standard one here would
+        // cover it.
+        if !self.window_uses_custom_def_proc(bus, dialog_ptr) {
+            let themed_frame = match proc_id & 0x0F {
+                1 => (
+                    top - Self::DBOX_FRAME_MARGIN,
+                    left - Self::DBOX_FRAME_MARGIN,
+                    bottom + Self::DBOX_FRAME_MARGIN,
+                    right + Self::DBOX_FRAME_MARGIN,
+                ),
+                2 => (top - 1, left - 1, bottom + 1, right + 1),
+                3 => (top - 1, left - 1, bottom + 3, right + 3),
+                _ => (top, left, bottom + 2, right + 2),
+            };
+            if !self.draw_theme_dialog_frame(
+                bus,
+                (top, left, bottom, right),
+                themed_frame,
+                proc_id,
+                true,
+                clear_background && content_color.is_none(),
+            ) {
+                if clear_background && content_color.is_none() {
+                    Self::fb_fill_rect(
+                        bus,
+                        screen_base,
+                        row_bytes,
+                        pixel_size,
+                        screen_width,
+                        screen_height,
+                        top,
+                        left,
+                        bottom,
+                        right,
+                        false,
+                    );
+                }
 
-            // Draw border
-            // Inside Macintosh Volume I, I-299:
-            // procID 0 = documentProc (title bar + border)
-            // procID 1 = dBoxProc (double border, no title)
-            // procID 2 = plainDBox (single border, no title)
-            // procID 3 = altDBoxProc (shadow border, no title)
-            // procID 4 = noGrowDocProc (title bar + border, no grow)
-            match proc_id & 0x0F {
-                1 => {
-                    self.draw_classic_dbox_frame(bus, top, left, bottom, right);
-                }
-                2 => {
-                    // plainDBox: single-pixel WDEF border outside the content
-                    // bounds, matching the Window Manager procID 2 path.
-                    // Inside Macintosh Volume I, I-275.
-                    self.draw_rect_border(bus, top - 1, left - 1, bottom + 1, right + 1);
-                }
-                3 => {
-                    // altDBoxProc: single border + shadow
-                    self.draw_rect_border(bus, top - 1, left - 1, bottom + 1, right + 1);
-                    self.draw_shadow(bus, top - 1, left - 1, bottom + 1, right + 1);
-                }
-                0 | 4 | 5 => {
-                    // documentProc/noGrowDocProc use the Window Manager's
-                    // document WDEF title-bar chrome. DrawDialog is allowed
-                    // on modeless dialogs too (IM:I I-417; MTE 1992 p. 6-142),
-                    // so route through the same WDEF frame path used by
-                    // visible window creation instead of the modal-box fallback.
-                    let saved_bounds = self.window_bounds;
-                    let saved_proc_id = self.window_proc_id;
-                    let saved_title = self.window_title.clone();
-                    let saved_go_away = self.go_away_flag;
-                    self.window_bounds = bounds;
-                    self.window_proc_id = proc_id;
-                    self.window_title = if title.is_empty() {
-                        Self::dialog_window_title(bus, dialog_ptr)
-                    } else {
-                        title.to_string()
-                    };
-                    self.go_away_flag = dialog_ptr != 0 && bus.read_byte(dialog_ptr + 112) != 0;
-                    // DrawDialog has already painted the dialog content. The
-                    // full WDEF draw path erases its structure region before
-                    // drawing document/movable chrome, so use the chrome-only
-                    // path here. This also gives movableDBoxProc its striped
-                    // title bar without clearing dialog-manager-owned items.
-                    // MTE 1992 p. 6-142; HIG 1992 pp. 185-186.
-                    self.draw_window_chrome(bus, true);
-                    self.window_bounds = saved_bounds;
-                    self.window_proc_id = saved_proc_id;
-                    self.window_title = saved_title;
-                    self.go_away_flag = saved_go_away;
-                }
-                _ => {
-                    // Default: single border + shadow
-                    self.draw_rect_border(bus, top, left, bottom, right);
-                    self.draw_shadow(bus, top, left, bottom, right);
+                // Draw border
+                // Inside Macintosh Volume I, I-299:
+                // procID 0 = documentProc (title bar + border)
+                // procID 1 = dBoxProc (double border, no title)
+                // procID 2 = plainDBox (single border, no title)
+                // procID 3 = altDBoxProc (shadow border, no title)
+                // procID 4 = noGrowDocProc (title bar + border, no grow)
+                match proc_id & 0x0F {
+                    1 => {
+                        self.draw_classic_dbox_frame(bus, top, left, bottom, right);
+                    }
+                    2 => {
+                        // plainDBox: single-pixel WDEF border outside the content
+                        // bounds, matching the Window Manager procID 2 path.
+                        // Inside Macintosh Volume I, I-275.
+                        self.draw_rect_border(bus, top - 1, left - 1, bottom + 1, right + 1);
+                    }
+                    3 => {
+                        // altDBoxProc: single border + shadow
+                        self.draw_rect_border(bus, top - 1, left - 1, bottom + 1, right + 1);
+                        self.draw_shadow(bus, top - 1, left - 1, bottom + 1, right + 1);
+                    }
+                    0 | 4 | 5 => {
+                        // documentProc/noGrowDocProc use the Window Manager's
+                        // document WDEF title-bar chrome. DrawDialog is allowed
+                        // on modeless dialogs too (IM:I I-417; MTE 1992 p. 6-142),
+                        // so route through the same WDEF frame path used by
+                        // visible window creation instead of the modal-box fallback.
+                        let saved_bounds = self.window_bounds;
+                        let saved_proc_id = self.window_proc_id;
+                        let saved_title = self.window_title.clone();
+                        let saved_go_away = self.go_away_flag;
+                        self.window_bounds = bounds;
+                        self.window_proc_id = proc_id;
+                        self.window_title = if title.is_empty() {
+                            Self::dialog_window_title(bus, dialog_ptr)
+                        } else {
+                            title.to_string()
+                        };
+                        self.go_away_flag = dialog_ptr != 0 && bus.read_byte(dialog_ptr + 112) != 0;
+                        // DrawDialog has already painted the dialog content. The
+                        // full WDEF draw path erases its structure region before
+                        // drawing document/movable chrome, so use the chrome-only
+                        // path here. This also gives movableDBoxProc its striped
+                        // title bar without clearing dialog-manager-owned items.
+                        // MTE 1992 p. 6-142; HIG 1992 pp. 185-186.
+                        self.draw_window_chrome(bus, true);
+                        self.window_bounds = saved_bounds;
+                        self.window_proc_id = saved_proc_id;
+                        self.window_title = saved_title;
+                        self.go_away_flag = saved_go_away;
+                    }
+                    _ => {
+                        // Default: single border + shadow
+                        self.draw_rect_border(bus, top, left, bottom, right);
+                        self.draw_shadow(bus, top, left, bottom, right);
+                    }
                 }
             }
         }
@@ -6542,6 +6547,45 @@ impl super::TrapDispatcher {
             skip_pictures,
             dialog_ptr,
         );
+    }
+
+    /// A dialog is a window, so a dialog whose procID names the application's
+    /// own WDEF is framed by that WDEF, exactly as NewWindow frames any other
+    /// window (IM:I I-412, I-299): `wNew`, then for a visible dialog
+    /// `wCalcRgns` and `wDraw`. Cythera's alerts use WDEF 1000, whose frame is
+    /// the ornate border the game draws around its prompts. The call chain
+    /// runs as guest code after the trap returns, so this must be the last
+    /// thing a creation trap does.
+    fn arm_new_dialog_window_def<C: CpuOps>(
+        &mut self,
+        cpu: &mut C,
+        bus: &mut MacMemoryBus,
+        dialog_ptr: u32,
+    ) -> bool {
+        if dialog_ptr == 0 || !self.window_uses_custom_def_proc(bus, dialog_ptr) {
+            return false;
+        }
+        let proc_id = self.window_proc_ids.get(&dialog_ptr).copied().unwrap_or(0);
+        let visible = bus.read_byte(dialog_ptr + 110) != 0;
+        self.arm_window_def_on_create(cpu, bus, dialog_ptr, proc_id, true, visible)
+    }
+
+    /// Whether a dialog item is a control drawn by the application's own
+    /// control definition function. The Control Manager calls that function
+    /// to draw it, so a standard control painted here would cover what the
+    /// application drew: Cythera replaces its alerts' buttons with CDEF 1000
+    /// controls, stone buttons it composes offscreen and copies to the screen.
+    fn dialog_item_has_application_control(
+        &self,
+        bus: &MacMemoryBus,
+        dialog_ptr: u32,
+        item_num: i16,
+    ) -> bool {
+        self.dialog_control_handle_for_item(dialog_ptr, item_num)
+            .map(|handle| bus.read_long(handle))
+            .is_some_and(|ctrl_ptr| {
+                ctrl_ptr != 0 && self.control_uses_application_def_proc(bus, ctrl_ptr)
+            })
     }
 
     /// DrawDialog paints items in the existing window; creating or erasing
@@ -6755,6 +6799,9 @@ impl super::TrapDispatcher {
                 continue;
             }
             if !self.dialog_control_visible(bus, dialog_ptr, item_num) {
+                continue;
+            }
+            if self.dialog_item_has_application_control(bus, dialog_ptr, item_num) {
                 continue;
             }
 
@@ -6988,7 +7035,9 @@ impl super::TrapDispatcher {
             }
 
             let base_type = item.item_type & 0x7F;
-            if matches!(base_type, 4..=7) && !self.dialog_control_visible(bus, dialog_ptr, item_num)
+            if matches!(base_type, 4..=7)
+                && (!self.dialog_control_visible(bus, dialog_ptr, item_num)
+                    || self.dialog_item_has_application_control(bus, dialog_ptr, item_num))
             {
                 continue;
             }
@@ -11020,6 +11069,9 @@ impl super::TrapDispatcher {
                 cpu.write_reg(Register::A7, sp + 10);
                 let dialog_ptr = bus.read_long(sp + 10);
                 self.arm_new_dialog_control_defs(cpu, bus, dialog_ptr);
+                // Armed last so it runs first: the window is framed before
+                // its controls are initialised.
+                self.arm_new_dialog_window_def(cpu, bus, dialog_ptr);
                 Ok(())
             }
 
@@ -16153,6 +16205,7 @@ impl super::TrapDispatcher {
                 self.apply_behind_parameter(bus, dlg_ptr, behind);
                 bus.write_long(sp + 30, dlg_ptr);
                 cpu.write_reg(Register::A7, sp + 30);
+                self.arm_new_dialog_window_def(cpu, bus, dlg_ptr);
                 Ok(())
             }
 

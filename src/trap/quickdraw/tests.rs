@@ -2891,6 +2891,47 @@
         assert_eq!(bus.read_byte(base + 6), 77);
     }
 
+    /// PenMode(blend) weights the pen colour against each pixel underneath
+    /// by the port's OpColor and stores the closest palette index (Imaging
+    /// With QuickDraw 1994, p. 4-40): Cythera rings its default button this
+    /// way. The same paint in patCopy lays down the pen colour.
+    #[test]
+    fn paint_in_blend_mode_weights_the_pen_against_the_destination() {
+        const DESTINATION: u8 = 10;
+        const HALFWAY: u8 = 20;
+        let (mut d, mut cpu, mut bus) = setup_with_port();
+        let (screen_base, row_bytes) = setup_color_polygon_surface(&mut d, &cpu, &mut bus);
+        let mut clut = [[0x0000, 0xFFFF, 0x0000]; 256];
+        clut[0] = [0xFFFF; 3];
+        clut[255] = [0x0000; 3];
+        clut[usize::from(DESTINATION)] = [0x8000, 0x4000, 0x2000];
+        // White blended half-and-half with the destination.
+        clut[usize::from(HALFWAY)] = [0xC000, 0xA000, 0x9000];
+        d.device_clut.replace(clut);
+        d.color_manager_clut.replace(clut);
+        let port = *d.current_port;
+        d.write_port_op_color(&mut bus, port, (0x8000, 0x8000, 0x8000));
+        d.fg_color = (0xFFFF, 0xFFFF, 0xFFFF);
+        d.pn_pat = [0xFF; 8];
+        let pixel = Rect {
+            top: 0,
+            left: 0,
+            bottom: 1,
+            right: 1,
+        };
+
+        for (mode, expected) in [(8, 0u8), (32, HALFWAY)] {
+            bus.write_byte(screen_base, DESTINATION);
+            d.pn_mode = mode;
+            d.draw_rect(&mut cpu, &mut bus, &pixel, ShapeOp::Paint);
+            assert_eq!(
+                read_surface_pixel(&bus, screen_base, row_bytes, 0, 0),
+                expected,
+                "pen mode {mode}"
+            );
+        }
+    }
+
     #[test]
     fn initfonts_procedure_call_preserves_stack_pointer() {
         let (mut d, mut cpu, mut bus) = setup();

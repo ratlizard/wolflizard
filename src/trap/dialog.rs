@@ -6522,6 +6522,26 @@ impl super::TrapDispatcher {
         );
     }
 
+    /// Replay a dialog's retained rendering. The retained pixels reach past
+    /// the content by the width of a standard dialog frame, which the Dialog
+    /// Manager draws and so may restore. A dialog framed by the application's
+    /// own WDEF is restored within its content only: the frame is the WDEF's,
+    /// drawn after the rendering was retained, and replaying the margin wiped
+    /// the inner edge of Cythera's braided border.
+    fn restore_retained_dialog_pixels(
+        &self,
+        bus: &mut MacMemoryBus,
+        dialog_ptr: u32,
+        bounds: (i16, i16, i16, i16),
+        saved: &SavedPixels,
+    ) {
+        if self.window_uses_custom_def_proc(bus, dialog_ptr) {
+            self.restore_dialog_content_pixels(bus, bounds, saved);
+        } else {
+            self.restore_dialog_pixels(bus, bounds, saved);
+        }
+    }
+
     /// Whether the application has installed a background pixel pattern on
     /// the dialog's port (BackPixPat, IM:V V-72), and so paints the dialog's
     /// background itself; a flat fill would discard it.
@@ -7278,7 +7298,7 @@ impl super::TrapDispatcher {
         let popup_draws = tracking.popup_draws.clone();
         let rendered_pixels = tracking.rendered_pixels.clone();
         if !rendered_pixels.is_empty() {
-            self.restore_dialog_pixels(bus, bounds, &rendered_pixels);
+            self.restore_retained_dialog_pixels(bus, dialog_ptr, bounds, &rendered_pixels);
         }
         self.redraw_standard_dialog_items(
             bus,
@@ -12522,7 +12542,12 @@ impl super::TrapDispatcher {
                                     .map(|t| t.rendered_pixels.clone())
                                     .unwrap_or_default();
                                 if !previous_rendered.is_empty() {
-                                    self.restore_dialog_pixels(bus, bounds, &previous_rendered);
+                                    self.restore_retained_dialog_pixels(
+                                        bus,
+                                        dialog_ptr,
+                                        bounds,
+                                        &previous_rendered,
+                                    );
                                 }
                                 if let Some(ref t) = self.dialog_tracking {
                                     if !t.game_managed {
@@ -13221,7 +13246,12 @@ impl super::TrapDispatcher {
                             .unwrap_or_else(|| self.save_dialog_pixels(bus, bounds));
                         if let Some(snapshot) = preserved_visible_snapshot {
                             if restored_visible_snapshot {
-                                self.restore_dialog_pixels(bus, snapshot.bounds, &snapshot.pixels);
+                                self.restore_retained_dialog_pixels(
+                                    bus,
+                                    dialog_ptr,
+                                    snapshot.bounds,
+                                    &snapshot.pixels,
+                                );
                             }
                         }
                         // ModalDialog gets and handles events; it does not

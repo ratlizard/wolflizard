@@ -26,6 +26,14 @@ and [licence notice](src/quickdraw/fonts/compatibility/OFL.txt). The GPL runtime
 embeds these separately licensed values while Coppet supplies the 9-point
 ASCII artwork and URW supplies the remaining fallback glyphs.
 
+The Chicago 12 ASCII advances, bearings and frame are further values from the
+same OFL source; see the same source record.
+
+Chicago Kare by Duane King, which supplies the glyph pixels for Chicago requests
+at 12 points, is distributed under the MIT License. See its
+[source record](src/quickdraw/fonts/chicago-kare/README.md) and
+[licence](src/quickdraw/fonts/chicago-kare/LICENSE).
+
 The Geneva 9 FontStruction by Kelsey Higham, which supplies the glyph pixels for
 Application and Geneva requests at 9 points, is distributed under the Creative
 Commons Attribution 3.0 licence. See its

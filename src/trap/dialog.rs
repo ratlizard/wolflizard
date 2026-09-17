@@ -6379,10 +6379,7 @@ impl super::TrapDispatcher {
         // with it -- but its DITL mixes controls and static text with its
         // userItems, so the all-userItems test above does not catch it and the
         // parchment was overwritten with white.
-        let app_owns_background = {
-            let pat = bus.read_long(dialog_ptr.wrapping_add(32));
-            pat != 0 && self.decode_raw_pixpat(bus, pat).is_some()
-        };
+        let app_owns_background = self.dialog_has_application_background(bus, dialog_ptr);
         let clear_background = (!game_managed || !app_painted) && !app_owns_background;
         let content_color = self.window_semantic_color(bus, dialog_ptr, 0);
         if clear_background {
@@ -6524,6 +6521,14 @@ impl super::TrapDispatcher {
             skip_pictures,
             dialog_ptr,
         );
+    }
+
+    /// Whether the application has installed a background pixel pattern on
+    /// the dialog's port (BackPixPat, IM:V V-72), and so paints the dialog's
+    /// background itself; a flat fill would discard it.
+    fn dialog_has_application_background(&self, bus: &MacMemoryBus, dialog_ptr: u32) -> bool {
+        let pat = bus.read_long(dialog_ptr.wrapping_add(32));
+        pat != 0 && self.decode_raw_pixpat(bus, pat).is_some()
     }
 
     /// A dialog is a window, so a dialog whose procID names the application's
@@ -7000,6 +7005,7 @@ impl super::TrapDispatcher {
         // redrawing live standard controls so retained composition cannot
         // drop the aDefItem outline.
         let auto_default_outline = true;
+        let app_background = self.dialog_has_application_background(bus, dialog_ptr);
         for (i, item) in items.iter().enumerate() {
             let item_num = (i + 1) as i16;
             let (it, il, ib, ir) = item.rect;
@@ -7211,7 +7217,10 @@ impl super::TrapDispatcher {
                             (abs_top, abs_left, abs_bottom, abs_right),
                             rgb,
                         );
-                    } else {
+                    } else if !app_background {
+                        // Redrawn in place over the application's own
+                        // background, the text needs no erase; a flat fill
+                        // would put a white box behind Cythera's prompts.
                         self.fill_dialog_content_rect(
                             bus,
                             dialog_ptr,

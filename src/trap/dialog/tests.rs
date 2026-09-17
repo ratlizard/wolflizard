@@ -788,6 +788,61 @@
         }
     }
 
+    /// The modal loop replays a dialog's retained rendering. It restores the
+    /// content either way, but the frame margin only when the Dialog Manager
+    /// drew the frame: an application WDEF's frame is left as the WDEF drew
+    /// it.
+    #[test]
+    fn retained_dialog_rendering_leaves_an_application_wdef_frame_alone() {
+        const LATER_INK: u8 = 0x77;
+        let bounds = (100, 100, 180, 300);
+        let margin_probe = (bounds.0 - 2) as u32 * 640 + 200;
+        let content_probe = (bounds.0 + 5) as u32 * 640 + 150;
+        for application_wdef in [false, true] {
+            let (mut disp, mut cpu, mut bus) = setup();
+            let screen = fill_test_screen(&mut disp, &mut bus, 0x2A);
+            let proc_id = if application_wdef {
+                disp.install_test_resource(&mut bus, *b"WDEF", 1000, &[0x4E, 0x56, 0, 0]);
+                (1000i16 << 4) | 1
+            } else {
+                1
+            };
+            let ditl = build_test_ditl_item(8, (10, 10, 30, 190), b"Prompt");
+            disp.install_test_resource(&mut bus, *b"DITL", 1971, &ditl);
+            disp.install_test_resource(
+                &mut bus,
+                *b"DLOG",
+                1970,
+                &build_visible_test_dlog(bounds, proc_id, 1971),
+            );
+            bus.write_long(TEST_SP, 0xFFFF_FFFF);
+            bus.write_long(TEST_SP + 4, 0);
+            bus.write_word(TEST_SP + 8, 1970);
+            disp.dispatch_dialog(true, 0x17C, &mut cpu, &mut bus).unwrap().unwrap();
+            let dialog_ptr = bus.read_long(TEST_SP + 10);
+
+            let retained = disp.save_dialog_pixels(&bus, bounds);
+            bus.write_byte(screen + margin_probe, LATER_INK);
+            bus.write_byte(screen + content_probe, LATER_INK);
+            disp.restore_retained_dialog_pixels(&mut bus, dialog_ptr, bounds, &retained);
+
+            assert_ne!(bus.read_byte(screen + content_probe), LATER_INK, "content is restored");
+            if application_wdef {
+                assert_eq!(
+                    bus.read_byte(screen + margin_probe),
+                    LATER_INK,
+                    "the WDEF's frame must not be overwritten"
+                );
+            } else {
+                assert_ne!(
+                    bus.read_byte(screen + margin_probe),
+                    LATER_INK,
+                    "a standard frame margin is still restored"
+                );
+            }
+        }
+    }
+
     /// A dialog item replaced by a control with the application's own CDEF
     /// is drawn by that CDEF. Neither DrawDialog nor the modal loop's
     /// redraw of standard items may paint a standard button over it; a

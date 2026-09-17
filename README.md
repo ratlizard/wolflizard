@@ -411,13 +411,13 @@ sudo pacman -S pkgconf alsa-lib                # Arch
 Systemless uses bundled URW Core 35 TrueType fonts by default. Skrifa hints
 outlines at the requested point size and Zeno rasterizes them, without relying
 on fonts installed on the host. Noto Sans Symbols 2 supplies missing menu symbols.
-For unresolved Application and Geneva requests at 9 points,
-[Coppet](src/quickdraw/fonts/coppet/README.md), an Inter-derived substitute tuned
-primarily for 9 pt text, supplies printable-ASCII artwork while a
-[compatibility table](src/quickdraw/fonts/compatibility/README.md) supplies the
-classic advances. Larger sizes and extended characters retain URW; further
-optical-size refinements are future work. Guest FONT/NFNT/sfnt resources and
-explicit local bitmap overrides take precedence.
+For unresolved Application and Geneva requests at 9 points, the
+[Geneva 9 FontStruction](src/quickdraw/fonts/fontstruct/README.md), a pixel-grid
+font drawn unhinted at its own grid size, supplies the raster masks and bearings,
+with URW for the characters it lacks, while a
+[separately sourced compatibility table](src/quickdraw/fonts/compatibility/README.md)
+supplies printable-ASCII advances. Guest FONT/NFNT/sfnt resources and explicit
+local bitmap overrides take precedence.
 
 The old hand-drawn font catalogue has been removed. Classic family names remain
 compatibility identifiers; except for the documented Geneva 9 ASCII advances,
@@ -434,8 +434,10 @@ depths and native PowerPC drawing use the logical font raster.
 
 ### Font licences
 
-The bundled fonts are distributed under the SIL Open Font License 1.1;
-their original licence and copyright notices are included beside each font.
+The bundled URW and Noto fonts are distributed under the SIL Open Font License
+1.1, and the Geneva 9 FontStruction under the Creative Commons Attribution 3.0
+licence; their original licence and copyright notices are included beside each
+font.
 The emulator code remains GPL-3.0-or-later. Systemless is not affiliated with
 Apple Inc.; classic font names identify compatibility requests only.
 

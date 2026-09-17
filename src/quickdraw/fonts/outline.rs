@@ -10,7 +10,8 @@ static FACES: LazyLock<Mutex<HashMap<(i16, i16), Faces>>> =
 #[derive(Clone, Copy)]
 struct Source {
     bytes: &'static [u8],
-    size: i16,
+    ppem: f32,
+    hinted: bool,
     id: skrifa::GlyphId,
 }
 static SOURCES: LazyLock<Mutex<HashMap<usize, Source>>> =
@@ -29,17 +30,22 @@ pub(super) fn face(font_id: i16, size: i16) -> Option<Faces> {
     if let Some(faces) = cache.get(&(font_id, size)) {
         return Some(*faces);
     }
-    let mut faces = rasterize(
+    let mut faces = rasterize_with_strike(
         font_id,
         size,
         bytes,
+        super::bundled::pixel_strike(font_id, size),
         super::compatibility::bundled_advances(font_id, size),
         super::compatibility::bundled_wid_max(font_id, size),
     )?;
     // Coppet is an optical-size-specific ASCII substitute. Retain the
     // established GetFontInfo metrics and extended Mac Roman fallback.
     // Guest resources and explicit overrides are resolved before this path.
-    if size == 9 && matches!(font_id, FONT_APPLICATION | FONT_GENEVA) {
+    // A bundled pixel strike (the Geneva 9 FontStruction) takes precedence.
+    if size == 9
+        && matches!(font_id, FONT_APPLICATION | FONT_GENEVA)
+        && super::bundled::pixel_strike(font_id, size).is_none()
+    {
         let (ascii, _) = rasterize(
             font_id,
             size,
@@ -156,6 +162,32 @@ pub(super) fn rasterize(
     compatibility_advances: Option<&'static [u8; 95]>,
     compatibility_wid_max: Option<i16>,
 ) -> Option<Faces> {
+    rasterize_with_strike(
+        font_id,
+        size,
+        bytes,
+        None,
+        compatibility_advances,
+        compatibility_wid_max,
+    )
+}
+
+/// Rasterize a face from `bytes`, taking each glyph instead from
+/// `pixel_strike` where that font has it.
+///
+/// A pixel-grid font is a bitmap strike stored as outlines: every edge lies on
+/// a grid, so drawn unhinted at the size where a grid square is a pixel, its
+/// coverage is exactly 0 or 255 and the threshold returns the designer's
+/// pixels. Hinting it at the nominal point size instead would scale the grid
+/// and lose them.
+fn rasterize_with_strike(
+    font_id: i16,
+    size: i16,
+    bytes: &'static [u8],
+    pixel_strike: Option<(&'static [u8], f32)>,
+    compatibility_advances: Option<&'static [u8; 95]>,
+    compatibility_wid_max: Option<i16>,
+) -> Option<Faces> {
     use skrifa::{
         instance::{LocationRef, Size},
         outline::{DrawSettings, HintingInstance, Target},
@@ -178,30 +210,80 @@ pub(super) fn rasterize(
     // stem positions and therefore loses strokes when thresholded. Mono fits
     // both axes to the pixel grid and returns matching adjusted advances.
     let hinter = HintingInstance::new(&outlines, ppem, location, Target::Mono).ok()?;
+    let strike = match pixel_strike {
+        Some((strike_bytes, strike_ppem)) => {
+            let strike_font = FontRef::new(strike_bytes).ok()?;
+            Some((
+                strike_bytes,
+                strike_ppem,
+                strike_font.charmap(),
+                strike_font.outline_glyphs(),
+                strike_font.glyph_metrics(Size::new(strike_ppem), location),
+                strike_font.metrics(Size::new(strike_ppem), location),
+            ))
+        }
+        None => None,
+    };
     let mut data = Vec::new();
-    let mut ids = Vec::new();
+    let mut sources = Vec::new();
     let mut glyph = |ch: char| {
-        let id = charmap
-            .map(ch)
-            .or_else(|| {
-                let code = crate::mac_roman::encode_mac_roman_char(ch)?;
-                let mapped = macintosh_cmap?.glyph_index(u32::from(code))?;
-                Some(skrifa::GlyphId::new(u32::from(mapped.0)))
-            })
-            .unwrap_or_default();
-        ids.push(id);
         let mut path = OutlinePath::default();
-        let adjusted = outlines.get(id).and_then(|outline| {
-            outline
-                .draw(DrawSettings::hinted(&hinter, false), &mut path)
-                .ok()
-        });
-        let advance = adjusted
-            .and_then(|metrics| metrics.advance_width)
-            .or_else(|| advances.advance_width(id))
-            .unwrap_or(0.0)
-            .round()
-            .clamp(0.0, 255.0) as u8;
+        let from_strike = strike.as_ref().and_then(
+            |(strike_bytes, strike_ppem, strike_charmap, strike_outlines, strike_advances, _)| {
+                let id = strike_charmap.map(ch).filter(|id| id.to_u32() != 0)?;
+                strike_outlines
+                    .get(id)?
+                    .draw(
+                        DrawSettings::unhinted(Size::new(*strike_ppem), location),
+                        &mut path,
+                    )
+                    .ok()?;
+                let advance = strike_advances.advance_width(id)?;
+                Some((
+                    Source {
+                        bytes: strike_bytes,
+                        ppem: *strike_ppem,
+                        hinted: false,
+                        id,
+                    },
+                    advance,
+                ))
+            },
+        );
+        let (source, advance) = match from_strike {
+            Some(found) => found,
+            None => {
+                path.0.clear();
+                let id = charmap
+                    .map(ch)
+                    .or_else(|| {
+                        let code = crate::mac_roman::encode_mac_roman_char(ch)?;
+                        let mapped = macintosh_cmap?.glyph_index(u32::from(code))?;
+                        Some(skrifa::GlyphId::new(u32::from(mapped.0)))
+                    })
+                    .unwrap_or_default();
+                let adjusted = outlines.get(id).and_then(|outline| {
+                    outline
+                        .draw(DrawSettings::hinted(&hinter, false), &mut path)
+                        .ok()
+                });
+                let advance = adjusted
+                    .and_then(|metrics| metrics.advance_width)
+                    .or_else(|| advances.advance_width(id))
+                    .unwrap_or(0.0);
+                (
+                    Source {
+                        bytes,
+                        ppem: f32::from(size),
+                        hinted: true,
+                        id,
+                    },
+                    advance,
+                )
+            }
+        };
+        sources.push(source);
+        let advance = advance.round().clamp(0.0, 255.0) as u8;
         let mut result = Glyph {
             width: 0,
             height: 0,
@@ -257,10 +339,26 @@ pub(super) fn rasterize(
             .iter()
             .chain(extended.iter().map(|entry| &entry.glyph))
     };
-    let ascent = (metrics.ascent.ceil() as i16)
-        .max(all().map(|g| -i16::from(g.origin_y)).max().unwrap_or(0));
-    let descent = ((-metrics.descent).ceil() as i16).max(
+    // A strike's own frame is the face's, as a bitmap font's ascent and
+    // descent are; only the substitute's glyphs may reach past theirs.
+    let (frame_ascent, frame_descent, frame_leading) = match &strike {
+        Some((.., strike_metrics)) => (
+            strike_metrics.ascent,
+            strike_metrics.descent,
+            strike_metrics.leading,
+        ),
+        None => (metrics.ascent, metrics.descent, metrics.leading),
+    };
+    let framed = || {
         all()
+            .zip(sources.iter())
+            .filter(|(_, source)| strike.is_none() || !source.hinted)
+            .map(|(glyph, _)| glyph)
+    };
+    let ascent = (frame_ascent.ceil() as i16)
+        .max(framed().map(|g| -i16::from(g.origin_y)).max().unwrap_or(0));
+    let descent = ((-frame_descent).ceil() as i16).max(
+        framed()
             .map(|g| i16::from(g.origin_y) + i16::from(g.height))
             .max()
             .unwrap_or(0),
@@ -287,7 +385,7 @@ pub(super) fn rasterize(
             ascent,
             descent,
             wid_max,
-            leading: metrics.leading.round().max(0.0) as i16,
+            leading: frame_leading.round().max(0.0) as i16,
         },
         glyphs: Box::leak(ascii.into_boxed_slice()),
         data,
@@ -298,14 +396,14 @@ pub(super) fn rasterize(
         glyphs: Box::leak(extended.into_boxed_slice()),
         data,
     }));
-    let mut sources = SOURCES.lock().ok()?;
-    for (glyph, id) in face
+    let mut registry = SOURCES.lock().ok()?;
+    for (glyph, source) in face
         .glyphs
         .iter()
         .chain(extended.glyphs.iter().map(|g| &g.glyph))
-        .zip(ids)
+        .zip(sources)
     {
-        sources.insert(glyph as *const Glyph as usize, Source { bytes, size, id });
+        registry.insert(glyph as *const Glyph as usize, source);
     }
     Some((face, extended))
 }
@@ -330,18 +428,29 @@ pub(crate) fn presentation_glyph(
     };
     let font = FontRef::new(source.bytes).ok()?;
     let outlines = font.outline_glyphs();
-    let hint = HintingInstance::new(
-        &outlines,
-        Size::new(source.size as f32 * scale as f32),
-        LocationRef::default(),
-        Target::from(SmoothMode::Normal),
-    )
-    .ok()?;
+    let presented = Size::new(source.ppem * scale as f32);
     let mut path = OutlinePath::default();
-    outlines
-        .get(source.id)?
-        .draw(DrawSettings::hinted(&hint, false), &mut path)
+    if source.hinted {
+        let hint = HintingInstance::new(
+            &outlines,
+            presented,
+            LocationRef::default(),
+            Target::from(SmoothMode::Normal),
+        )
         .ok()?;
+        outlines
+            .get(source.id)?
+            .draw(DrawSettings::hinted(&hint, false), &mut path)
+            .ok()?;
+    } else {
+        outlines
+            .get(source.id)?
+            .draw(
+                DrawSettings::unhinted(presented, LocationRef::default()),
+                &mut path,
+            )
+            .ok()?;
+    }
     let mut pixels = Vec::new();
     let placement = zeno::Mask::new(path.0.as_slice())
         .origin(zeno::Origin::BottomLeft)
@@ -421,7 +530,8 @@ pub(crate) fn unicode_glyph(font_id: i16, size: i16, ch: char) -> Option<Unicode
         glyph as *const Glyph as usize,
         Source {
             bytes: source_bytes,
-            size,
+            ppem: f32::from(size),
+            hinted: true,
             id,
         },
     );
@@ -545,29 +655,116 @@ mod tests {
         );
     }
 
-    #[test]
-    fn geneva9_coppet_preserves_extended_glyphs_and_font_metrics() {
-        let bytes = super::bytes(FONT_GENEVA).expect("bundled Geneva bytes");
-        let (raw, raw_extended) = super::rasterize(FONT_GENEVA, 9, bytes, None, None).unwrap();
-        let (bundled, bundled_extended) = super::face(FONT_GENEVA, 9).unwrap();
+    fn glyph_rows(face_data: &[u8], glyph: &Glyph) -> Vec<String> {
+        let width = usize::from(glyph.width);
+        (0..usize::from(glyph.height))
+            .map(|y| {
+                (0..width)
+                    .map(|x| {
+                        if face_data[glyph.data_offset + y * width + x] != 0 {
+                            '#'
+                        } else {
+                            '.'
+                        }
+                    })
+                    .collect()
+            })
+            .collect()
+    }
 
-        assert_ne!(raw.data, bundled.data, "ASCII artwork uses Coppet");
-        assert_eq!(raw_extended.data, bundled_extended.data);
-        assert_eq!(raw.metrics.ascent, bundled.metrics.ascent);
-        assert_eq!(raw.metrics.descent, bundled.metrics.descent);
-        assert_eq!(raw.metrics.leading, bundled.metrics.leading);
-        for (raw_glyph, bundled_glyph) in raw_extended.glyphs.iter().zip(bundled_extended.glyphs) {
-            assert_eq!(raw_glyph.mac_code, bundled_glyph.mac_code);
-            assert_same_glyph_except_advance(&raw_glyph.glyph, &bundled_glyph.glyph);
-            assert_eq!(raw_glyph.glyph.advance, bundled_glyph.glyph.advance);
-        }
-        let expected_wid_max = GENEVA9_ADVANCES
+    /// Geneva 9's pixels come from the pixel-grid recreation, its advances
+    /// still from the compatibility component, and its frame is a bitmap
+    /// strike's: ten above the baseline, two below, no leading.
+    #[test]
+    fn geneva9_draws_the_recreations_pixels_in_the_classic_frame() {
+        let (face, _) = super::face(FONT_GENEVA, 9).unwrap();
+        let glyph = |ch: u8| &face.glyphs[usize::from(ch - b' ')];
+        assert_eq!(
+            glyph_rows(face.data, glyph(b'H')),
+            ["#...#", "#...#", "#...#", "#####", "#...#", "#...#", "#...#"]
+        );
+        assert_eq!((glyph(b'H').origin_x, glyph(b'H').origin_y), (0, -7));
+        assert_eq!(
+            glyph_rows(face.data, glyph(b'/')),
+            ["...#", "...#", "..#.", "..#.", ".#..", ".#..", "#...", "#..."]
+        );
+        assert_eq!(
+            (
+                face.metrics.ascent,
+                face.metrics.descent,
+                face.metrics.leading
+            ),
+            (10, 2, 0)
+        );
+        let bytes = super::bytes(FONT_GENEVA).unwrap();
+        let (substitute, _) = super::rasterize(FONT_GENEVA, 9, bytes, None, None).unwrap();
+        assert_ne!(
+            glyph_rows(
+                substitute.data,
+                &substitute.glyphs[usize::from(b'/' - b' ')]
+            ),
+            glyph_rows(face.data, glyph(b'/')),
+            "the substitute outline must differ, or this test proves nothing"
+        );
+    }
+
+    /// A character the recreation does not have is still drawn, from the
+    /// substitute outline, rather than as the recreation's missing glyph.
+    #[test]
+    fn characters_missing_from_the_strike_fall_back_to_the_substitute() {
+        use skrifa::MetadataProvider;
+        let (strike_bytes, _) = super::super::bundled::pixel_strike(FONT_GENEVA, 9).unwrap();
+        let strike = skrifa::FontRef::new(strike_bytes).unwrap();
+        let (_, extended) = super::face(FONT_GENEVA, 9).unwrap();
+        let bytes = super::bytes(FONT_GENEVA).unwrap();
+        let (_, substitute) = super::rasterize(FONT_GENEVA, 9, bytes, None, None).unwrap();
+        let missing = extended
+            .glyphs
             .iter()
-            .copied()
-            .chain(raw_extended.glyphs.iter().map(|entry| entry.glyph.advance))
-            .max()
-            .unwrap();
-        assert_eq!(bundled.metrics.wid_max, i16::from(expected_wid_max));
+            .zip(substitute.glyphs)
+            .filter(|(entry, _)| {
+                let ch = crate::mac_roman::decode_mac_roman(&[entry.mac_code])
+                    .chars()
+                    .next()
+                    .unwrap();
+                strike.charmap().map(ch).is_none()
+            })
+            .collect::<Vec<_>>();
+        assert!(!missing.is_empty(), "the recreation covers every character");
+        for (ours, theirs) in missing {
+            assert_eq!(ours.mac_code, theirs.mac_code);
+            assert!(ours.glyph.width > 0 || ours.glyph.advance > 0);
+            assert_eq!(
+                glyph_rows(extended.data, &ours.glyph),
+                glyph_rows(substitute.data, &theirs.glyph)
+            );
+        }
+    }
+
+    /// The smooth presentation surface draws a strike glyph as whole pixels
+    /// enlarged, not as a re-hinted outline.
+    #[test]
+    fn strike_glyphs_present_as_enlarged_pixels() {
+        let (face, _) = super::face(FONT_GENEVA, 9).unwrap();
+        let glyph = &face.glyphs[usize::from(b'H' - b' ')];
+        let ink = face.data[glyph.data_offset
+            ..glyph.data_offset + usize::from(glyph.width) * usize::from(glyph.height)]
+            .iter()
+            .filter(|&&value| value != 0)
+            .count();
+        let presented = super::presentation_glyph(glyph, face.data, 4).unwrap();
+        assert!(presented
+            .pixels
+            .iter()
+            .all(|&alpha| alpha == 0 || alpha == 255));
+        assert_eq!(
+            presented
+                .pixels
+                .iter()
+                .filter(|&&alpha| alpha == 255)
+                .count(),
+            ink * 16
+        );
     }
 
     #[test]

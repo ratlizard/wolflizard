@@ -6873,7 +6873,7 @@
         write_pixmap_8(&mut bus, offscreen, scratch, 16, 16, 0);
         let rect = bus.alloc(8);
         write_rect(&mut bus, rect, 0, 0, 16, 16);
-        TrapDispatcher::fb_draw_string(&mut bus, base, 16, 8, 16, 16, 3, 10, "a", 3, 9);
+        TrapDispatcher::fb_draw_string(&mut bus, base, 16, 8, 16, 16, 3, 10, "a", 3, 10);
         let expected = bus.outline_presentation_rgb().unwrap().2;
         assert!(expected.iter().any(|&v| v > 0 && v < 255));
         for common in [false, true] {

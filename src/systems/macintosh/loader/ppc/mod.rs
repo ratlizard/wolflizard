@@ -106,6 +106,7 @@ use std::sync::OnceLock;
 
 mod store_update_compat;
 mod dispatch_cfm;
+mod dispatch_defproc;
 use dispatch_cfm::*;
 mod dispatch_apple_events;
 use dispatch_apple_events::*;

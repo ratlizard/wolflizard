@@ -851,6 +851,9 @@ pub(super) fn ppc_window_structure_bounds(
 }
 
 pub(super) fn ppc_window_proc_id(memory: &mut PpcSectionMem, window: u32) -> i16 {
+    if let Some(proc_id) = super::dispatch_defproc::ppc_app_wdef_window_proc_id(window) {
+        return proc_id;
+    }
     memory
         .read_u32_be(window.wrapping_add(PPC_CWINDOW_DEF_PROC_OFFSET))
         .filter(|handle| *handle != 0)
@@ -874,6 +877,14 @@ pub(super) fn ppc_update_window_manager_regions(
     let (Some(content_rgn), Some(structure_rgn)) = (content_rgn, structure_rgn) else {
         return Some(());
     };
+    // An application WDEF computes its own regions (wCalcRgns); ask it to,
+    // ahead of any draw queued for the same window.
+    if super::dispatch_defproc::ppc_app_wdef_window_proc_id(window).is_some() {
+        super::dispatch_defproc::ppc_note_app_wdef_message(
+            window,
+            super::dispatch_defproc::WDEF_CALC_REGIONS,
+        );
+    }
     let structure = ppc_window_structure_bounds(ppc_window_proc_id(memory, window), content);
     ppc_write_rgn_bbox(
         memory,
@@ -1202,6 +1213,17 @@ pub(super) fn ppc_new_cwindow(
         pixels_no_purge: true,
     });
     ppc_reorder_window(gworlds, window_list, port, behind, false);
+    // An application WDEF is told of the new window and computes its
+    // regions before anything draws it (Macintosh Toolbox Essentials (1992),
+    // pp. 4-127 to 4-129).
+    if super::dispatch_defproc::ppc_proc_id_names_app_wdef(proc_id as i16) {
+        use super::dispatch_defproc::*;
+        ppc_note_app_wdef_message(port, WDEF_NEW);
+        ppc_note_app_wdef_message(port, WDEF_CALC_REGIONS);
+        if visible {
+            ppc_note_app_wdef_message(port, WDEF_DRAW);
+        }
+    }
     if visible && proc_id == 1 {
         ppc_draw_existing_window_frame(memory, gworlds, window_list, port, false);
     }
@@ -1386,6 +1408,10 @@ pub(super) fn ppc_draw_existing_window_frame(
     let height = bottom.saturating_sub(top);
     let width = right.saturating_sub(left);
     let proc_id = ppc_window_proc_id(memory, window);
+    if super::dispatch_defproc::ppc_proc_id_names_app_wdef(proc_id) {
+        super::dispatch_defproc::ppc_note_app_wdef_draw(window);
+        return;
+    }
     // Macintosh Toolbox Essentials (1992), pp. 4-10--4-12: the standard
     // WDEF owns document-window frame pixels. Kiosk presentation suppresses
     // those host-synthesized pixels without changing the guest's window
@@ -3614,6 +3640,7 @@ pub(super) fn ppc_dispose_window(
             control,
         );
     }
+    let app_wdef = super::dispatch_defproc::ppc_forget_app_wdef_window(window);
     for offset in [
         PPC_CGRAF_PORT_VIS_RGN_OFFSET,
         PPC_CGRAF_PORT_CLIP_RGN_OFFSET,
@@ -3624,6 +3651,15 @@ pub(super) fn ppc_dispose_window(
         PPC_CWINDOW_TITLE_HANDLE_OFFSET,
         PPC_CWINDOW_STATE_HANDLE_OFFSET,
     ] {
+        // A window with an application WDEF holds that WDEF's resource
+        // handle in windowDefProc and the WDEF's own data in dataHandle;
+        // neither is the Window Manager's to release.
+        if app_wdef
+            && matches!(offset, PPC_CWINDOW_DEF_PROC_OFFSET | PPC_CWINDOW_STATE_HANDLE_OFFSET)
+        {
+            let _ = memory.write_u32_be(window.wrapping_add(offset), 0);
+            continue;
+        }
         let handle = memory.read_u32_be(window.wrapping_add(offset)).unwrap_or(0);
         let _ = allocator.dispose_handle(
             memory,

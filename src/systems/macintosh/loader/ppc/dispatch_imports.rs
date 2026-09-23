@@ -1721,6 +1721,9 @@ pub(crate) fn dispatch_supported_import(
         | PpcImportDispatcherTarget::GetPattern
         | PpcImportDispatcherTarget::GetIndPattern
         | PpcImportDispatcherTarget::GetPixPat
+        | PpcImportDispatcherTarget::NewPixPat
+        | PpcImportDispatcherTarget::PixPatChanged
+        | PpcImportDispatcherTarget::DisposePixPat
         | PpcImportDispatcherTarget::GetIntlResource => {
             unreachable!("resource imports return through dispatch_resource_import")
         }

@@ -60,12 +60,48 @@ pub(super) fn dispatch_file_import(context: PpcFileDispatchContext<'_>) -> Optio
     } = context;
 
     match binding.dispatcher_target {
-        PpcImportDispatcherTarget::FSClose => Some(PpcImportAction::Return(ppc_i16_result(
-            ppc_fs_close(cpu, files, writable_refnums),
+        PpcImportDispatcherTarget::FSClose => {
+            let ref_num = ppc_ref_num_from_gpr(cpu.gpr[3]);
+            ppc_release_resource_fork_file(ref_num, files, writable_refnums, vfs_files, vfs_resource_files);
+            Some(PpcImportAction::Return(ppc_i16_result(ppc_fs_close(cpu, files, writable_refnums))))
+        }
+        PpcImportDispatcherTarget::FSpOpenRF => Some(PpcImportAction::Return(ppc_i16_result(
+            ppc_fsp_open_rf(
+                cpu,
+                memory,
+                vfs_directories,
+                vfs_files,
+                vfs_resource_files,
+                vfs_resources,
+                files,
+                writable_refnums,
+                next_file_ref_num,
+            ),
         ))),
-        PpcImportDispatcherTarget::PBClose => Some(PpcImportAction::Return(ppc_i16_result(
+        PpcImportDispatcherTarget::FSpExchangeFiles => Some(PpcImportAction::Return(
+            ppc_i16_result(ppc_fsp_exchange_files(
+                cpu,
+                memory,
+                vfs_directories,
+                vfs_files,
+                vfs_resource_files,
+                vfs_resources,
+            )),
+        )),
+        PpcImportDispatcherTarget::PBClose => {
+            if let Some(ref_num) = memory.read_u16_be(cpu.gpr[3] + 24) {
+                ppc_release_resource_fork_file(
+                    ref_num as i16,
+                    files,
+                    writable_refnums,
+                    vfs_files,
+                    vfs_resource_files,
+                );
+            }
+            Some(PpcImportAction::Return(ppc_i16_result(
             ppc_pb_close(cpu, memory, files, writable_refnums),
-        ))),
+            )))
+        }
         PpcImportDispatcherTarget::PBFlushFile => Some(PpcImportAction::Return(ppc_i16_result(
             ppc_pb_flush_file(cpu, memory, files),
         ))),
@@ -1236,5 +1272,186 @@ pub(super) fn ppc_flush_vol(cpu: &mut PpcCpu, memory: &mut PpcSectionMem) -> i16
     if name_ptr != 0 && ppc_read_pstring_bytes(memory, name_ptr).is_none() {
         return PPC_PARAM_ERR;
     }
+    PPC_NO_ERR
+}
+
+/// The VFS entry that stands for a file's resource fork while it is open as a
+/// file, named as the 68K File Manager names it.
+fn ppc_resource_fork_file_key(path: &str) -> String {
+    format!("__rsrc__{path}")
+}
+
+fn ppc_resource_fork_bytes(
+    vfs_resource_files: &mut ProcessVfsResourceFileRecords,
+    vfs_resources: &[PpcVfsResourceRecord],
+    path: &str,
+) -> Vec<u8> {
+    ppc_publish_resource_fork_bytes(vfs_resource_files, vfs_resources, true);
+    let key = vfs_resource_files
+        .iter()
+        .find(|record| record.path.eq_ignore_ascii_case(path))
+        .map(|record| record.path.clone())
+        .unwrap_or_else(|| path.to_string());
+    vfs_resource_files.fork(&key).cloned().unwrap_or_default()
+}
+
+/// Make `bytes` a file's resource fork, as raw bytes that stand until the
+/// Resource Manager next changes one of its resources.
+fn ppc_store_resource_fork(
+    vfs_resource_files: &mut ProcessVfsResourceFileRecords,
+    vfs_files: &[PpcVfsFileRecord],
+    path: &str,
+    bytes: Vec<u8>,
+) {
+    let len = u32::try_from(bytes.len()).unwrap_or(u32::MAX);
+    if let Some(record) = vfs_resource_files
+        .iter_mut()
+        .find(|record| record.path.eq_ignore_ascii_case(path))
+    {
+        record.raw_data = Some(bytes.clone().into());
+        record.resource_len = len;
+        record.dirty = true;
+        let key = record.path.clone();
+        vfs_resource_files.update_fork(&key, &bytes);
+        return;
+    }
+    let (creator, file_type, finder_flags) = vfs_files
+        .iter()
+        .find(|file| file.path.eq_ignore_ascii_case(path))
+        .map_or((0, 0, 0), |file| (file.creator, file.file_type, file.finder_flags));
+    vfs_resource_files.push(PpcVfsResourceFileRecord {
+        path: path.to_string(),
+        creator,
+        file_type,
+        finder_flags,
+        resource_len: len,
+        raw_data: Some(bytes.into()),
+        map_attrs: 0,
+        dirty: true,
+    });
+}
+
+/// FSpOpenRF(spec, permission, refNum): Inside Macintosh: Files (1992),
+/// 2-152. The fork is opened as a file over a copy of its bytes; closing a
+/// writable one puts the bytes back as the file's resource fork.
+#[allow(clippy::too_many_arguments)]
+fn ppc_fsp_open_rf(
+    cpu: &mut PpcCpu,
+    memory: &mut PpcSectionMem,
+    vfs_directories: &[PpcVfsDirectory],
+    vfs_files: &mut ProcessVfsFileRecords,
+    vfs_resource_files: &mut ProcessVfsResourceFileRecords,
+    vfs_resources: &[PpcVfsResourceRecord],
+    files: &mut Vec<PpcFileRecord>,
+    writable_refnums: &mut HashSet<u16>,
+    next_file_ref_num: &mut i16,
+) -> i16 {
+    let spec_ptr = cpu.gpr[3];
+    let permission = cpu.gpr[4] as u8;
+    let ref_num_out_ptr = cpu.gpr[5];
+    if ref_num_out_ptr == 0 || !ppc_memory_can_write_bytes(memory, ref_num_out_ptr, 2) {
+        return PPC_PARAM_ERR;
+    }
+    let path = match ppc_existing_data_path_for_fsspec(memory, vfs_directories, vfs_files, spec_ptr) {
+        Ok(path) => path,
+        Err(err) => return err,
+    };
+    let Some(next_ref_num) = next_file_ref_num.checked_add(1) else {
+        return PPC_PARAM_ERR;
+    };
+    let key = ppc_resource_fork_file_key(&path);
+    if !files.iter().any(|file| file.path == key) {
+        let bytes = ppc_resource_fork_bytes(vfs_resource_files, vfs_resources, &path);
+        vfs_files.retain(|file| file.path != key);
+        vfs_files.push(PpcVfsFileRecord {
+            path: key.clone(),
+            data: bytes.into(),
+            creator: 0,
+            file_type: 0,
+            finder_flags: 0,
+            dirty: false,
+        });
+    }
+    let ref_num = *next_file_ref_num;
+    let _ = memory.write_u16_be(ref_num_out_ptr, ref_num as u16);
+    files.push(PpcFileRecord {
+        ref_num,
+        path: key,
+        position: 0,
+    });
+    if ppc_file_permission_allows_writing(permission) {
+        writable_refnums.insert(ref_num as u16);
+    }
+    *next_file_ref_num = next_ref_num;
+    PPC_NO_ERR
+}
+
+/// Before a refnum closes: if it is a resource fork opened as a file and was
+/// writable, its bytes become the resource fork; the stand-in entry goes once
+/// nothing else has it open.
+fn ppc_release_resource_fork_file(
+    ref_num: i16,
+    files: &[PpcFileRecord],
+    writable_refnums: &HashSet<u16>,
+    vfs_files: &mut ProcessVfsFileRecords,
+    vfs_resource_files: &mut ProcessVfsResourceFileRecords,
+) {
+    let Some(key) = files
+        .iter()
+        .find(|file| file.ref_num == ref_num)
+        .map(|file| file.path.clone())
+    else {
+        return;
+    };
+    let Some(path) = key.strip_prefix("__rsrc__") else {
+        return;
+    };
+    if writable_refnums.contains(&(ref_num as u16)) {
+        if let Some(bytes) = vfs_files
+            .iter()
+            .find(|file| file.path == key)
+            .map(|file| file.data.to_vec())
+        {
+            ppc_store_resource_fork(vfs_resource_files, vfs_files, path, bytes);
+        }
+    }
+    if !files.iter().any(|file| file.ref_num != ref_num && file.path == key) {
+        vfs_files.retain(|file| file.path != key);
+    }
+}
+
+/// FSpExchangeFiles(source, dest): Inside Macintosh: Files (1992), 2-180.
+/// The two files trade data and resource forks and keep their names.
+fn ppc_fsp_exchange_files(
+    cpu: &PpcCpu,
+    memory: &mut PpcSectionMem,
+    vfs_directories: &[PpcVfsDirectory],
+    vfs_files: &mut ProcessVfsFileRecords,
+    vfs_resource_files: &mut ProcessVfsResourceFileRecords,
+    vfs_resources: &[PpcVfsResourceRecord],
+) -> i16 {
+    let source = match ppc_existing_data_path_for_fsspec(memory, vfs_directories, vfs_files, cpu.gpr[3]) {
+        Ok(path) => path,
+        Err(err) => return err,
+    };
+    let dest = match ppc_existing_data_path_for_fsspec(memory, vfs_directories, vfs_files, cpu.gpr[4]) {
+        Ok(path) => path,
+        Err(err) => return err,
+    };
+    let (Some(source_index), Some(dest_index)) =
+        (ppc_vfs_file_index(vfs_files, &source), ppc_vfs_file_index(vfs_files, &dest))
+    else {
+        return PPC_FNF_ERR;
+    };
+    let source_data = vfs_files[source_index].data.to_vec();
+    let dest_data = vfs_files[dest_index].data.to_vec();
+    vfs_files[source_index].data.with_mut(|bytes| *bytes = dest_data);
+    vfs_files[dest_index].data.with_mut(|bytes| *bytes = source_data);
+    vfs_files[source_index].dirty = true;
+    vfs_files[dest_index].dirty = true;
+    let source_fork = ppc_resource_fork_bytes(vfs_resource_files, vfs_resources, &source);
+    let dest_fork = ppc_resource_fork_bytes(vfs_resource_files, vfs_resources, &dest);
+    ppc_store_resource_fork(vfs_resource_files, vfs_files, &source, dest_fork);
+    ppc_store_resource_fork(vfs_resource_files, vfs_files, &dest, source_fork);
     PPC_NO_ERR
 }

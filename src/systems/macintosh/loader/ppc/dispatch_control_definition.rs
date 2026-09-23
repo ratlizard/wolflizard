@@ -58,6 +58,13 @@ pub(super) fn ppc_control_definition_resource(
     if matches!(record.proc_id, 0 | 1 | 2 | 16) || (1008..=1023).contains(&record.proc_id) {
         return None;
     }
+    // A control whose definition the fork calls itself (dispatch_defproc:
+    // an application CDEF, resource ID 128 and up) is left to that path,
+    // which Cythera's controls are drawn and tracked through; this path
+    // takes the rest.
+    if super::dispatch_defproc::ppc_control_has_app_cdef(record.handle) {
+        return None;
+    }
     let handle = memory.read_u32_be(record.pointer + 24).unwrap_or(0);
     resources
         .iter()

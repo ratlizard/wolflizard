@@ -239,6 +239,10 @@ pub(crate) const PPC_MAIN_PIXMAP_HANDLE: u32 = 0x02f0_0300;
 pub(crate) const PPC_MAIN_PIXMAP: u32 = 0x02f0_0400;
 pub(crate) const PPC_GRAY_RGN_HANDLE: u32 = 0x02f0_0500;
 pub(crate) const PPC_GRAY_RGN: u32 = 0x02f0_0600;
+/// pnPat and bkPat in an old-style GrafPort (Inside Macintosh Volume I,
+/// I-148).
+pub(crate) const PPC_OLD_GRAF_PORT_PN_PAT_OFFSET: u32 = 58;
+pub(crate) const PPC_OLD_GRAF_PORT_BK_PAT_OFFSET: u32 = 32;
 /// Room for GrayRgn's region data, which lies outside the application heap:
 /// everything up to the next fixed record.
 pub(crate) const PPC_GRAY_RGN_CAPACITY: u32 = 0x100;

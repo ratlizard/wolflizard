@@ -1815,6 +1815,25 @@ pub(super) fn ppc_dispatch_quickdraw_compatibility(
             }
             PpcImportAction::ReturnPreserve
         }
+        // GetWMgrPort and GetCWMgrPort return the same colour port here. An
+        // application keeping the two in step, as Apple's sample SyncPorts
+        // does, passes the old-style port's pnPat (offset 58) and bkPat
+        // (offset 32), which in the colour port are the pattern handles.
+        // With one port there is nothing to copy; the port keeps its
+        // patterns. Cythera's plaques were framed in a pattern made of
+        // handle bytes, white where it should be black.
+        PpcQuickDrawCompatibilityOperation::PenPat | PpcQuickDrawCompatibilityOperation::BackPat
+            if cpu.gpr[3]
+                == PPC_MAIN_GWORLD.wrapping_add(
+                    if operation == PpcQuickDrawCompatibilityOperation::PenPat {
+                        PPC_OLD_GRAF_PORT_PN_PAT_OFFSET
+                    } else {
+                        PPC_OLD_GRAF_PORT_BK_PAT_OFFSET
+                    },
+                ) =>
+        {
+            PpcImportAction::ReturnPreserve
+        }
         PpcQuickDrawCompatibilityOperation::PenPat => {
             let mut pattern = [0; 8];
             if memory.read_bytes_into(cpu.gpr[3], &mut pattern).is_some() {

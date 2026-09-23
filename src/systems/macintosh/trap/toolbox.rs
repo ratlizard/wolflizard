@@ -1369,6 +1369,72 @@ pub(crate) fn queue_tune_stream(
     true
 }
 
+/// Where `StyledLineBreak` breaks one style run: its result code
+/// (smBreakWord 0, smBreakChar 1, smBreakOverflow 2), the new textOffset,
+/// and the width the run used. `text` is the script run from textPtr, which
+/// the caller starts at the beginning of the line; `width_of(start, end)`
+/// measures `text[start..end]` in the run's font.
+///
+/// Inside Macintosh: Text (1993), pp. 5-26--5-27 and 5-79--5-80: a run that
+/// fits returns smBreakOverflow; otherwise the break is the last word
+/// boundary that fits, spaces staying with the line they end. With no
+/// boundary in the run, a word in a later run on the line is moved whole to
+/// the next line, the break falling before its start even when that is
+/// before textStart; only a word that begins the line, or lies in its first
+/// run, is broken at a character.
+pub(crate) fn styled_line_break_offsets(
+    text: &[u8],
+    text_start: u32,
+    text_end: u32,
+    available: i32,
+    first_run_on_line: bool,
+    mut width_of: impl FnMut(u32, u32) -> i32,
+) -> (u8, u32, i32) {
+    let is_space = |offset: u32| {
+        matches!(
+            text.get(offset as usize),
+            Some(b' ' | b'\t' | b'\r' | b'\n')
+        )
+    };
+    let run_width = width_of(text_start, text_end);
+    if run_width <= available {
+        return (2, text_end, run_width);
+    }
+    let mut fit = text_start;
+    while fit < text_end && width_of(text_start, fit + 1) <= available {
+        fit += 1;
+    }
+    // A space that does not fit still ends the line it follows.
+    let mut word_break = None;
+    let mut offset = text_start;
+    while offset <= fit && offset < text_end {
+        if is_space(offset) {
+            let mut after = offset + 1;
+            while after < text_end && is_space(after) {
+                after += 1;
+            }
+            word_break = Some(after);
+            offset = after;
+        } else {
+            offset += 1;
+        }
+    }
+    if let Some(word_offset) = word_break {
+        return (0, word_offset, width_of(text_start, word_offset));
+    }
+    if !first_run_on_line {
+        let mut word_start = text_start;
+        while word_start > 0 && !is_space(word_start - 1) {
+            word_start -= 1;
+        }
+        if word_start > 0 {
+            return (0, word_start, 0);
+        }
+    }
+    let char_offset = fit.max(text_start + 1).min(text_end);
+    (1, char_offset, width_of(text_start, char_offset))
+}
+
 /// `read_tune_stream` over any memory: `read_long` reads one guest long.
 pub(crate) fn read_tune_stream_with(
     tune_ptr: u32,
@@ -4142,7 +4208,6 @@ impl super::TrapDispatcher {
         }
     }
 
-    #[cfg(test)]
     fn scriptutil_measure_text_range_width(
         &self,
         bus: &MacMemoryBus,
@@ -4185,28 +4250,31 @@ impl super::TrapDispatcher {
         };
         let available = crate::text_utils::fixed_to_pixels(width_raw).max(0);
 
-        let mut text_bytes = Vec::with_capacity(text_len as usize);
-        for offset in 0..text_len {
-            text_bytes.push(bus.read_byte(text_ptr.wrapping_add(offset)));
-        }
-
-        let (_, font_scale) = get_font_face_scaled(self.tx_font, self.tx_size);
-        let eval = crate::text_utils::evaluate_styled_line_break(
-            &text_bytes,
-            text_start_arg,
-            text_end_arg,
+        let text_start = text_start_arg.min(text_len);
+        let text_end = text_end_arg.max(text_start).min(text_len);
+        let text: Vec<u8> = (0..text_end)
+            .map(|offset| bus.read_byte(text_ptr.wrapping_add(offset)))
+            .collect();
+        let (result, output_offset, consumed_width) = styled_line_break_offsets(
+            &text,
+            text_start,
+            text_end,
             available,
             first_style_run_on_line,
-            |byte| self.scriptutil_text_byte_width(byte, font_scale),
+            |start, end| self.scriptutil_measure_text_range_width(bus, text_ptr, start, end),
         );
+        let result = u16::from(result);
 
         if text_offset_ptr != 0 {
-            bus.write_long(text_offset_ptr, eval.output_offset);
+            bus.write_long(text_offset_ptr, output_offset);
         }
         if text_width_ptr != 0 {
             bus.write_long(
                 text_width_ptr,
-                crate::text_utils::pixels_to_width_like(width_raw, eval.remaining_width),
+                crate::text_utils::pixels_to_width_like(
+                    width_raw,
+                    available.saturating_sub(consumed_width),
+                ),
             );
         }
         // StyledLineBreakCode is a Pascal enumerated type with three values
@@ -4226,8 +4294,8 @@ impl super::TrapDispatcher {
         // returns smBreakOverflow (2) for the empty run past the end of the
         // text. Reading 0 forever, it never leaves, and the intro text never
         // appears.
-        bus.write_word(sp + 32, eval.code << 8);
-        cpu.write_reg(Register::D0, u32::from(eval.code));
+        bus.write_word(sp + 32, result << 8);
+        cpu.write_reg(Register::D0, u32::from(result));
         cpu.write_reg(Register::A7, sp + 32);
         Ok(())
     }

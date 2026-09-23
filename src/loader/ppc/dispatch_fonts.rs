@@ -338,6 +338,12 @@ pub(super) fn dispatch_font_import(
                         .or_else(|| ppc_vfs_font_id_for_name(vfs_resources, &name))
                 })
                 .unwrap_or(0);
+            if std::env::var_os("SYSTEMLESS_TRACE_FONT_TRAPS").is_some() {
+                eprintln!(
+                    "[FONT] PPC GetFNum {:?} -> {font_id}",
+                    ppc_read_pstring_bytes(memory, cpu.gpr[3]).map(|name| decode_mac_roman(&name))
+                );
+            }
             if cpu.gpr[4] != 0 {
                 let _ = memory.write_u16_be(cpu.gpr[4], font_id as u16);
             }

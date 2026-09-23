@@ -505,6 +505,7 @@ fn ppc_decoded_file_playback_feeds_host_audio_buffer() {
         double_buffer_play_count: 0,
         last_double_buffer_channel: 0,
         last_double_buffer_header: 0,
+        tunes: Default::default(),
     });
     {
         let ppc_app = app.ppc.as_mut().expect("PPC app");
@@ -644,6 +645,7 @@ fn ppc_decoded_file_playback_waits_for_process_audio_cursor() {
         double_buffer_play_count: 0,
         last_double_buffer_channel: 0,
         last_double_buffer_header: 0,
+        tunes: Default::default(),
     });
     {
         let ppc_app = app.ppc.as_mut().expect("PPC app");

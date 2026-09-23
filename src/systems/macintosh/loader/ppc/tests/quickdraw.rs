@@ -5958,9 +5958,11 @@ fn qd_global_white_weak_import_copies_live_pattern_and_guards_destination() {
             assert_eq!(loaded.memory.read_u8(destination - 1), Some(0xA5));
             assert_eq!(loaded.memory.read_u8(destination + 8), Some(0xA5));
             // Reading precedes writing even when caller and global overlap.
+            // The last byte lands on thePort, which the fork rewrites with
+            // the current port after every import.
             loaded.cpu.gpr[3] = globals - 7;
             run_test_import(&mut loaded, target.clone());
-            assert_eq!(ppc_memory_read_bytes(&mut loaded.memory, globals - 7, 8), Some(pattern.to_vec()));
+            assert_eq!(ppc_memory_read_bytes(&mut loaded.memory, globals - 7, 7), Some(pattern[..7].to_vec()));
             let short = 0x70000000;
             loaded.memory.add_region(short, vec![0x5A; 7]);
             for invalid in [0, short, u32::MAX - 3] {

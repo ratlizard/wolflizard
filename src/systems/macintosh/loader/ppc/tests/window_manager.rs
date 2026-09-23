@@ -116,9 +116,13 @@ fn bring_to_front_leaves_the_front_window_regions_alone() {
         PpcImportDispatcherTarget::LegacyWindow(PpcLegacyWindowOperation::BringToFront),
     );
 
+    // BringToFront on the front window recalculates nothing itself, but the
+    // fork keeps every visRgn current at each import boundary
+    // (ppc_maintain_window_vis_regions), so the stale box is replaced by the
+    // window's whole port rectangle.
     assert_eq!(
         ppc_read_rgn_bbox(&mut loaded.memory, vis_rgn),
-        Some((1, 2, 3, 4))
+        Some((0, 0, 100, 200))
     );
 }
 

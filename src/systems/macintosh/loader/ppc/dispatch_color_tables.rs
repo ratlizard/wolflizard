@@ -116,6 +116,50 @@ pub(super) fn dispatch_color_table_import(
             }
             Some(PpcImportAction::ReturnPreserve)
         }
+        PpcImportDispatcherTarget::GetSubTable => {
+            // Imaging With QuickDraw (1994), p. 4-86: GetSubTable sets the
+            // value field of each entry in myColors to the index of the
+            // closest colour in targetTbl, or in the current GDevice's table
+            // when targetTbl is NIL.
+            let my_colors = memory.read_u32_be(cpu.gpr[3]).unwrap_or(0);
+            let target_handle = cpu.gpr[5];
+            let target: Vec<[u16; 3]> = if target_handle == 0 {
+                color_manager_clut.to_vec()
+            } else {
+                let table = memory.read_u32_be(target_handle).unwrap_or(0);
+                let size = memory.read_u16_be(table.wrapping_add(6)).unwrap_or(0) as u32;
+                (0..=size)
+                    .map(|index| {
+                        let entry = table.wrapping_add(8 + index * 8);
+                        [2, 4, 6].map(|offset| {
+                            memory.read_u16_be(entry.wrapping_add(offset)).unwrap_or(0)
+                        })
+                    })
+                    .collect()
+            };
+            if my_colors != 0 && !target.is_empty() {
+                let size = memory.read_u16_be(my_colors.wrapping_add(6)).unwrap_or(0) as u32;
+                for index in 0..=size {
+                    let entry = my_colors.wrapping_add(8 + index * 8);
+                    let rgb = [2, 4, 6]
+                        .map(|offset| memory.read_u16_be(entry.wrapping_add(offset)).unwrap_or(0));
+                    let best = target
+                        .iter()
+                        .enumerate()
+                        .min_by_key(|(_, color)| {
+                            (0..3)
+                                .map(|c| {
+                                    let d = u64::from(color[c].abs_diff(rgb[c]));
+                                    d * d
+                                })
+                                .sum::<u64>()
+                        })
+                        .map_or(0, |(best, _)| best as u16);
+                    let _ = memory.write_u16_be(entry, best);
+                }
+            }
+            Some(PpcImportAction::ReturnPreserve)
+        }
         PpcImportDispatcherTarget::ProtectEntry => {
             let index = cpu.gpr[3] as u16 as i16;
             let flags = ppc_device_clut_protected_mut(toolbox_startup, *current_gdevice);

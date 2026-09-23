@@ -2515,6 +2515,7 @@ pub(crate) fn dispatch_supported_import(
         | PpcImportDispatcherTarget::GetCTSeed
         | PpcImportDispatcherTarget::MakeITable
         | PpcImportDispatcherTarget::CTabChanged
+        | PpcImportDispatcherTarget::GetSubTable
         | PpcImportDispatcherTarget::ProtectEntry
         | PpcImportDispatcherTarget::ReserveEntry
         | PpcImportDispatcherTarget::SaveEntries

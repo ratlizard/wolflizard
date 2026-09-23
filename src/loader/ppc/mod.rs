@@ -20973,48 +20973,24 @@ fn ppc_styled_line_break(
         width_raw as i32
     }
     .max(0);
-    let byte = |memory: &mut PpcSectionMem, offset: u32| {
-        memory.read_u8(text_ptr.wrapping_add(offset)).unwrap_or(0)
-    };
-    let width_of = |memory: &mut PpcSectionMem, start: u32, end: u32| {
-        let bytes: Vec<u8> = (start..end).map(|offset| byte(memory, offset)).collect();
-        i32::from(ppc_text_width_bytes(font, size, style, &bytes))
-    };
-    let is_space = |value: u8| matches!(value, b' ' | b'\t' | b'\r' | b'\n');
-    let run_width = width_of(memory, text_start, text_end);
-    let (result, offset, consumed) = if run_width <= available {
-        (2u8, text_end, run_width)
-    } else {
-        let mut fit = text_start;
-        while fit < text_end && width_of(memory, text_start, fit + 1) <= available {
-            fit += 1;
-        }
-        let mut word_break = None;
-        let mut offset = text_start;
-        while offset < fit {
-            if is_space(byte(memory, offset)) {
-                let mut after = offset + 1;
-                while after < text_end && is_space(byte(memory, after)) {
-                    after += 1;
-                }
-                word_break = Some(after);
-                offset = after;
-            } else {
-                offset += 1;
-            }
-        }
-        if let Some(word_offset) = word_break {
-            (0, word_offset, width_of(memory, text_start, word_offset))
-        } else {
-            let char_offset = if first_run_on_line && fit > text_start {
-                fit
-            } else {
-                (text_start + 1).min(text_end)
-            };
-            let code = if first_run_on_line { 1 } else { 0 };
-            (code, char_offset, width_of(memory, text_start, char_offset))
-        }
-    };
+    let text: Vec<u8> = (0..text_end)
+        .map(|offset| memory.read_u8(text_ptr.wrapping_add(offset)).unwrap_or(0))
+        .collect();
+    let (result, offset, consumed) = crate::trap::styled_line_break_offsets(
+        &text,
+        text_start,
+        text_end,
+        available,
+        first_run_on_line,
+        |start, end| {
+            i32::from(ppc_text_width_bytes(
+                font,
+                size,
+                style,
+                &text[start as usize..end as usize],
+            ))
+        },
+    );
     if offset_ptr != 0 {
         let _ = memory.write_u32_be(offset_ptr, offset);
     }

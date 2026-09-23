@@ -911,3 +911,32 @@ fn write_u32(bytes: &mut [u8], offset: usize, value: u32) {
 fn write_u16(bytes: &mut [u8], offset: usize, value: u16) {
     bytes[offset..offset + 2].copy_from_slice(&value.to_be_bytes());
 }
+
+#[test]
+fn get_resource_searches_files_opened_before_the_current_one_first() {
+    let txst = u32::from_be_bytes(*b"TxSt");
+    let record = |ref_num: i16, path: &str| PpcVfsResourceRecord {
+        ref_num,
+        path: path.to_string(),
+        res_type: txst,
+        res_id: 128,
+        name: Vec::new(),
+        data: Vec::new(),
+        raw_data: None,
+        raw_attrs: None,
+        attrs: 0,
+        handle: 0,
+    };
+    // The application's fork, then 'Cythera Data' (128), the preferences
+    // (129) and a file opened later (130).
+    let resources = [
+        record(0, "Cythera"),
+        record(130, "Later"),
+        record(128, "Cythera Data"),
+    ];
+    let found = |current| ppc_vfs_resource_index(&resources, current, txst, 128, false);
+    assert_eq!(found(129), Some(2));
+    assert_eq!(found(128), Some(2));
+    assert_eq!(found(0), Some(0));
+    assert_eq!(ppc_vfs_resource_index(&resources, 129, txst, 128, true), None);
+}

@@ -28402,11 +28402,33 @@ pub(super) fn ppc_vfs_resource_index(
     if current_only || current_match.is_some() {
         return current_match;
     }
-    vfs_resources.iter().position(|record| {
-        record.ref_num != PPC_CLOSED_RESOURCE_REF_NUM
-            && record.res_type == res_type
-            && record.res_id == res_id
-    })
+    // Inside Macintosh: More Macintosh Toolbox (1993), pp. 1-10--1-12 and
+    // 1-73: after the current file, GetResource searches the files opened
+    // before it, most recent first, then the application's and the System
+    // file. Cythera relies on it: 'Cythera Data', opened after the
+    // application, overrides the application's text styles with Argos A
+    // Nouveau. File refnums rise in order of opening. Files opened after the
+    // current one are not in the chain; they are kept as a last resort.
+    let is_file = |ref_num: i16| ref_num >= PPC_FIRST_FILE_REF_NUM;
+    vfs_resources
+        .iter()
+        .enumerate()
+        .filter(|(_, record)| {
+            record.ref_num != PPC_CLOSED_RESOURCE_REF_NUM
+                && record.res_type == res_type
+                && record.res_id == res_id
+        })
+        .min_by_key(|(index, record)| {
+            let ref_num = i32::from(record.ref_num);
+            if is_file(record.ref_num) && record.ref_num < current_resource_refnum {
+                (0, -ref_num, *index)
+            } else if !is_file(record.ref_num) {
+                (1, 0, *index)
+            } else {
+                (2, -ref_num, *index)
+            }
+        })
+        .map(|(index, _)| index)
 }
 
 pub(super) fn ppc_write_pstring_bytes(memory: &mut PpcSectionMem, addr: u32, bytes: &[u8]) -> bool {

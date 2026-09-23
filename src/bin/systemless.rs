@@ -1016,6 +1016,8 @@ struct App {
     /// Set once a PowerPC application has taken its menu bar away by setting
     /// MBarHeight to zero; see `native_menu_bar_height`.
     guest_owns_menu_bar_rows: std::cell::Cell<bool>,
+    /// Keys pressed in the window and not yet released, as (key, char).
+    held_keys: Vec<(u8, u8)>,
     /// Force a Metal submission even if all visible guest inputs are
     /// unchanged, for native expose/resize events that need a fresh drawable.
     #[cfg(target_os = "macos")]
@@ -1177,6 +1179,7 @@ impl App {
             last_presented_guest_tick: None,
             force_next_render: true,
             guest_owns_menu_bar_rows: std::cell::Cell::new(false),
+            held_keys: Vec::new(),
             #[cfg(target_os = "macos")]
             force_gpu_present: true,
             start_fullscreen,
@@ -3382,10 +3385,26 @@ impl ApplicationHandler for App {
                     match event.state {
                         ElementState::Pressed => {
                             runner.push_key_down(mac_key, char_code);
+                            if !self.held_keys.iter().any(|(key, _)| *key == mac_key) {
+                                self.held_keys.push((mac_key, char_code));
+                            }
                         }
                         ElementState::Released => {
                             runner.push_key_up(mac_key, char_code);
+                            self.held_keys.retain(|(key, _)| *key != mac_key);
                         }
+                    }
+                }
+            }
+
+            // A key held when the window loses focus is released elsewhere,
+            // and the window never hears of it: Cmd-Shift-4 for a screenshot
+            // left Command and Shift down, and the next click in a list was
+            // taken as a shift-click. Release them here.
+            WindowEvent::Focused(false) => {
+                if let Some(runner) = self.runner.as_mut() {
+                    for (mac_key, char_code) in self.held_keys.drain(..) {
+                        runner.push_key_up(mac_key, char_code);
                     }
                 }
             }

@@ -1335,9 +1335,10 @@ fn hle_import_runner_set_depth_synchronizes_only_screen_backed_color_ports() {
                 ppc_main_screen_width() as i16,
             ))
         );
-        // OpenCPort selected cport before the depth change; SetDepth must
-        // preserve that selection in the application-visible global.
-        assert_eq!(loaded.memory.read_u32_be(global_ptr), Some(cport));
+        // QDGlobals.thePort follows the current port: the fork writes it at
+        // every import boundary.
+        let current_port = loaded.current_gworld.with_mut(|current_gworld| *current_gworld);
+        assert_eq!(loaded.memory.read_u32_be(global_ptr), Some(current_port));
 
         let red = PpcRgbColor {
             red: 0xffff,

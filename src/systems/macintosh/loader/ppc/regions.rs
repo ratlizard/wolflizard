@@ -1015,6 +1015,20 @@ pub(super) fn ppc_write_region_storage(
     rgn_handle: u32,
     storage: &[u8],
 ) -> i16 {
+    // GrayRgn is not a heap handle, so it cannot be resized, but an
+    // application may still change it: Cythera takes the menu bar out of it
+    // with DiffRgn and gives it back with UnionRgn when it shows and hides
+    // its menu bar.
+    if rgn_handle == PPC_GRAY_RGN_HANDLE
+        && memory.read_u32_be(rgn_handle) == Some(PPC_GRAY_RGN)
+        && storage.len() <= PPC_GRAY_RGN_CAPACITY as usize
+    {
+        return if memory.write_bytes(PPC_GRAY_RGN, storage).is_some() {
+            PPC_NO_ERR
+        } else {
+            PPC_PARAM_ERR
+        };
+    }
     let result = ppc_allocator_view_resize_handle(
         allocator,
         memory,

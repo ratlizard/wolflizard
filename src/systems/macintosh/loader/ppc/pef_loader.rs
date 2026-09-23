@@ -646,7 +646,7 @@ pub(crate) fn load_pef_application_with_config_and_optional_system_reservation(
     memory.add_region(PPC_MAIN_PIXMAP_HANDLE, vec![0u8; 4]);
     memory.add_region(PPC_MAIN_PIXMAP, vec![0u8; PPC_PIXMAP_SIZE as usize]);
     memory.add_region(PPC_GRAY_RGN_HANDLE, vec![0u8; 4]);
-    memory.add_region(PPC_GRAY_RGN, vec![0u8; 10]);
+    memory.add_region(PPC_GRAY_RGN, vec![0u8; PPC_GRAY_RGN_CAPACITY as usize]);
     memory.add_region(PPC_MAIN_DCE_HANDLE, vec![0u8; 4]);
     memory.add_region(PPC_MAIN_DCE, vec![0u8; 52]);
     memory.add_region(PPC_MAIN_CTABLE_HANDLE, vec![0u8; 4]);

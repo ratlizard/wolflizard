@@ -1378,6 +1378,7 @@ pub enum PpcLegacyWindowOperation {
     BringToFront,
     CalculateVisibleRegion,
     DisposeWindow,
+    DragGrayRgn,
     DragWindow,
     GetNewWindow,
     GetWindowTitle,
@@ -3454,6 +3455,7 @@ pub struct PpcToolboxStartupState {
     mixed_mode_m68k: SharedProcessMixedModeM68kState,
     go_away_tracking: Option<PpcGoAwayTrackingState>,
     drag_window_tracking: Option<PpcDragWindowTrackingState>,
+    drag_gray_rgn_tracking: Option<PpcDragGrayRgnTrackingState>,
     grow_window_tracking: Option<PpcGrowWindowTrackingState>,
     /// Retained native Standard File calls are resumed at the same import
     /// frame after the host supplies a mouse or keyboard event.
@@ -3523,6 +3525,7 @@ impl Default for PpcToolboxStartupState {
             mixed_mode_m68k: SharedProcessMixedModeM68kState::default(),
             go_away_tracking: None,
             drag_window_tracking: None,
+            drag_gray_rgn_tracking: None,
             grow_window_tracking: None,
             standard_file_get_filtering: None,
             standard_file_get_tracking: None,
@@ -16771,6 +16774,9 @@ fn dispatcher_target_for_import(
         ),
         ("InterfaceLib", "DragWindow") => PpcImportDispatcherTarget::LegacyWindow(
             PpcLegacyWindowOperation::DragWindow,
+        ),
+        ("InterfaceLib", "DragGrayRgn") => PpcImportDispatcherTarget::LegacyWindow(
+            PpcLegacyWindowOperation::DragGrayRgn,
         ),
         ("InterfaceLib", "GetNewWindow") => PpcImportDispatcherTarget::LegacyWindow(
             PpcLegacyWindowOperation::GetNewWindow,
@@ -62110,7 +62116,7 @@ fn ppc_empty_rgn(memory: &mut PpcSectionMem, rgn_handle: u32) -> bool {
     bottom <= top || right <= left
 }
 
-fn ppc_point_in_region(memory: &mut PpcSectionMem, rgn_handle: u32, v: i16, h: i16) -> bool {
+pub(super) fn ppc_point_in_region(memory: &mut PpcSectionMem, rgn_handle: u32, v: i16, h: i16) -> bool {
     let Some(storage) = ppc_region_storage(memory, rgn_handle) else {
         return false;
     };

@@ -55,6 +55,31 @@ pub(crate) struct PpcDragWindowTrackingState {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct PpcDragGrayRgnCall {
+    pub(crate) rgn: u32,
+    pub(crate) start_point: u32,
+    pub(crate) limit_ptr: u32,
+    pub(crate) slop_ptr: u32,
+    pub(crate) axis: i16,
+    pub(crate) stack_pointer: u32,
+    pub(crate) return_address: u32,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct PpcDragGrayRgnTrackingState {
+    pub(crate) call: PpcDragGrayRgnCall,
+    pub(crate) front_buffer: PpcFrontBuffer,
+    /// The port's boundary top-left: local = global + origin.
+    pub(crate) origin: (i16, i16),
+    /// The region's enclosing rectangle, global.
+    pub(crate) rgn_bounds: (i16, i16, i16, i16),
+    pub(crate) limit: (i16, i16, i16, i16),
+    pub(crate) slop: (i16, i16, i16, i16),
+    pub(crate) outline: Option<(i16, i16, i16, i16)>,
+    pub(crate) saved_pixels: crate::memory::SavedPixels<(i32, i32, u16)>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct PpcGrowWindowCall {
     pub(crate) window: u32,
     pub(crate) start_point: u32,
@@ -2570,6 +2595,23 @@ pub(super) fn ppc_find_window_at_point(
         else {
             continue;
         };
+        // FindWindow reports the window the point is in and which part of it
+        // (Macintosh Toolbox Essentials (1992), pp. 4-92--4-93). Where the
+        // window has a structure region, which an application's own window
+        // definition computes, the point must lie in it. Cythera's To Do and
+        // Journal plaques are windows with a one-pixel content area under a
+        // plaque, and a title bar assumed above the panel's content in front
+        // of them took their clicks.
+        let structure = memory
+            .read_u32_be(window.wrapping_add(PPC_CWINDOW_STRUCTURE_RGN_OFFSET))
+            .filter(|&rgn| {
+                ppc_read_rgn_bbox(memory, rgn).is_some_and(|(t, l, b, r)| t < b && l < r)
+            });
+        if let Some(rgn) = structure {
+            if !ppc_point_in_region(memory, rgn, v, h) {
+                continue;
+            }
+        }
         let is_front = front_window == Some(window);
         let proc_id = ppc_window_proc_id(memory, window);
         if is_front && matches!(proc_id, 0 | 8) {
@@ -3054,6 +3096,16 @@ pub(super) fn ppc_dispatch_legacy_window(
             event_queue,
             screen_clut,
             when,
+            input,
+        )),
+        PpcLegacyWindowOperation::DragGrayRgn => Some(ppc_dispatch_drag_gray_rgn(
+            cpu,
+            memory,
+            gworlds,
+            *current_gworld,
+            toolbox_startup,
+            event_queue,
+            screen_clut,
             input,
         )),
         PpcLegacyWindowOperation::GrowWindow => Some(ppc_dispatch_grow_window(
@@ -3700,16 +3752,55 @@ pub(super) fn ppc_restore_drag_window_outline(
     memory: &mut PpcSectionMem,
     state: &PpcDragWindowTrackingState,
 ) {
-    for (index, (x, y, pixel)) in state.saved_pixels.iter().copied().enumerate() {
-        let _ = ppc_quickdraw_write_raw_pixel(memory, state.front_buffer, (x, y), pixel);
-        ppc_restore_saved_detail(
-            memory,
-            state.front_buffer,
-            (x, y),
-            &state.saved_pixels,
-            index,
-        );
+    ppc_restore_drag_outline(memory, state.front_buffer, &state.saved_pixels);
+}
+
+fn ppc_restore_drag_outline(
+    memory: &mut PpcSectionMem,
+    front_buffer: PpcFrontBuffer,
+    saved_pixels: &crate::memory::SavedPixels<(i32, i32, u16)>,
+) {
+    for (index, (x, y, pixel)) in saved_pixels.iter().copied().enumerate() {
+        let _ = ppc_quickdraw_write_raw_pixel(memory, front_buffer, (x, y), pixel);
+        ppc_restore_saved_detail(memory, front_buffer, (x, y), saved_pixels, index);
     }
+}
+
+/// Save what lies under `outline` and draw it in a gray (alternate black
+/// and white) dotted line.
+fn ppc_draw_drag_outline(
+    memory: &mut PpcSectionMem,
+    screen_clut: &[[u16; 3]; 256],
+    front_buffer: PpcFrontBuffer,
+    outline: (i16, i16, i16, i16),
+) -> crate::memory::SavedPixels<(i32, i32, u16)> {
+    let mut saved_pixels: crate::memory::SavedPixels<(i32, i32, u16)> =
+        ppc_drag_outline_points(front_buffer, outline)
+            .into_iter()
+            .filter_map(|(x, y)| {
+                ppc_quickdraw_read_pixel(memory, front_buffer, (x, y)).map(|pixel| (x, y, pixel))
+            })
+            .collect::<Vec<_>>()
+            .into();
+    for index in 0..saved_pixels.len() {
+        let (x, y, _) = saved_pixels[index];
+        ppc_capture_saved_detail(memory, front_buffer, (x, y), &mut saved_pixels, index);
+    }
+    let (Some(black), Some(white)) = (
+        ppc_physical_screen_color_pixel(front_buffer, PPC_RGB_BLACK, screen_clut),
+        ppc_physical_screen_color_pixel(front_buffer, PPC_RGB_WHITE, screen_clut),
+    ) else {
+        return saved_pixels;
+    };
+    for (x, y, _) in saved_pixels.iter().copied() {
+        let pixel = if (x + y).rem_euclid(2) == 0 {
+            black
+        } else {
+            white
+        };
+        let _ = ppc_quickdraw_write_raw_pixel(memory, front_buffer, (x, y), pixel);
+    }
+    saved_pixels
 }
 
 pub(super) fn ppc_refresh_drag_window_outline(
@@ -3732,41 +3823,124 @@ pub(super) fn ppc_refresh_drag_window_outline(
     }
     ppc_restore_drag_window_outline(memory, state);
     state.outline = outline;
-    state.saved_pixels = ppc_drag_outline_points(state.front_buffer, state.outline)
-        .into_iter()
-        .filter_map(|(x, y)| {
-            ppc_quickdraw_read_pixel(memory, state.front_buffer, (x, y)).map(|pixel| (x, y, pixel))
-        })
-        .collect::<Vec<_>>()
-        .into();
-    for index in 0..state.saved_pixels.len() {
-        let (x, y, _) = state.saved_pixels[index];
-        ppc_capture_saved_detail(
-            memory,
-            state.front_buffer,
-            (x, y),
-            &mut state.saved_pixels,
-            index,
-        );
+    state.saved_pixels = ppc_draw_drag_outline(memory, screen_clut, state.front_buffer, outline);
+}
+
+/// DragGrayRgn's result for the pointer at `mouse` (local): the offset of
+/// the pointer, pinned inside limitRect, from startPt, vertical in the high
+/// word; `$80008000` outside slopRect. Macintosh Toolbox Essentials (1992),
+/// pp. 4-96--4-98.
+pub(super) fn ppc_drag_gray_rgn_offset(
+    start: (i16, i16),
+    mouse: (i16, i16),
+    limit: (i16, i16, i16, i16),
+    slop: (i16, i16, i16, i16),
+    axis: i16,
+) -> Option<(i16, i16)> {
+    if !ppc_point_in_rect(mouse, slop) {
+        return None;
     }
-    let Some(black) =
-        ppc_physical_screen_color_pixel(state.front_buffer, PPC_RGB_BLACK, screen_clut)
-    else {
-        return;
-    };
-    let Some(white) =
-        ppc_physical_screen_color_pixel(state.front_buffer, PPC_RGB_WHITE, screen_clut)
-    else {
-        return;
-    };
-    for (x, y, _) in state.saved_pixels.iter().copied() {
-        let pixel = if (x + y).rem_euclid(2) == 0 {
-            black
+    let pin = |value: i16, low: i16, high: i16| {
+        if high <= low {
+            low
         } else {
-            white
-        };
-        let _ = ppc_quickdraw_write_raw_pixel(memory, state.front_buffer, (x, y), pixel);
+            value.clamp(low, high - 1)
+        }
+    };
+    let v = pin(mouse.0, limit.0, limit.2);
+    let h = pin(mouse.1, limit.1, limit.3);
+    let (dv, dh) = (v.wrapping_sub(start.0), h.wrapping_sub(start.1));
+    Some(match axis {
+        1 => (0, dh),
+        2 => (dv, 0),
+        _ => (dv, dh),
+    })
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(super) fn ppc_dispatch_drag_gray_rgn(
+    cpu: &PpcCpu,
+    memory: &mut PpcSectionMem,
+    gworlds: &[PpcGWorldRecord],
+    current_gworld: u32,
+    startup: &mut PpcToolboxStartupState,
+    event_queue: &mut VecDeque<PpcQueuedEvent>,
+    screen_clut: &[[u16; 3]; 256],
+    input: PpcInputSnapshot,
+) -> PpcImportAction {
+    // DragGrayRgn keeps control until the button is released, moving a gray
+    // outline of the region with the pointer. It is resumed here at the same
+    // import frame while the button is down. The actionProc is not called.
+    let call = PpcDragGrayRgnCall {
+        rgn: cpu.gpr[3],
+        start_point: cpu.gpr[4],
+        limit_ptr: cpu.gpr[5],
+        slop_ptr: cpu.gpr[6],
+        axis: cpu.gpr[7] as u16 as i16,
+        stack_pointer: cpu.gpr[1],
+        return_address: cpu.lr,
+    };
+    let state = match startup.drag_gray_rgn_tracking.take() {
+        Some(state) if state.call == call => state,
+        stale => {
+            if let Some(stale) = stale {
+                ppc_restore_drag_outline(memory, stale.front_buffer, &stale.saved_pixels);
+            }
+            let origin = memory
+                .read_u32_be(current_gworld.wrapping_add(2))
+                .and_then(|pixmap| memory.read_u32_be(pixmap))
+                .and_then(|pixmap| ppc_read_rect(memory, pixmap.wrapping_add(6)))
+                .map_or((0, 0), |(top, left, _, _)| (top, left));
+            let (Some(rgn_local), Some(limit), Some(slop), Some(front_buffer)) = (
+                ppc_read_rgn_bbox(memory, call.rgn),
+                ppc_read_rect(memory, call.limit_ptr),
+                ppc_read_rect(memory, call.slop_ptr),
+                ppc_live_front_buffer_for_gworld(memory, gworlds, PPC_MAIN_GWORLD),
+            ) else {
+                return PpcImportAction::Return(0x8000_8000);
+            };
+            PpcDragGrayRgnTrackingState {
+                call,
+                front_buffer,
+                origin,
+                rgn_bounds: ppc_offset_rect_bounds(rgn_local, -origin.0, -origin.1),
+                limit,
+                slop,
+                outline: None,
+                saved_pixels: Vec::new().into(),
+            }
+        }
+    };
+    let mut state = state;
+    let start = (
+        (call.start_point >> 16) as u16 as i16,
+        call.start_point as u16 as i16,
+    );
+    let mouse = (
+        input.mouse_v.wrapping_add(state.origin.0),
+        input.mouse_h.wrapping_add(state.origin.1),
+    );
+    let offset = ppc_drag_gray_rgn_offset(start, mouse, state.limit, state.slop, call.axis);
+    if input.mouse_button {
+        let outline = offset.map(|(dv, dh)| ppc_offset_rect_bounds(state.rgn_bounds, dv, dh));
+        if outline != state.outline || state.saved_pixels.is_empty() {
+            ppc_restore_drag_outline(memory, state.front_buffer, &state.saved_pixels);
+            state.saved_pixels = match outline {
+                Some(rect) => ppc_draw_drag_outline(memory, screen_clut, state.front_buffer, rect),
+                None => Vec::new().into(),
+            };
+            state.outline = outline;
+        }
+        startup.drag_gray_rgn_tracking = Some(state);
+        return PpcImportAction::Yield(u64::MAX);
     }
+    ppc_restore_drag_outline(memory, state.front_buffer, &state.saved_pixels);
+    if let Some(index) = event_queue.iter().position(|event| event.what == 2) {
+        event_queue.remove(index);
+    }
+    PpcImportAction::Return(offset.map_or(0x8000_8000, |(dv, dh)| {
+        (u32::from(dv as u16) << 16) | u32::from(dh as u16)
+    }))
 }
 
 #[allow(clippy::too_many_arguments)]

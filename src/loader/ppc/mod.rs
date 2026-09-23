@@ -1832,6 +1832,8 @@ pub enum PpcImportDispatcherTarget {
     LGetSelect,
     LSetSelect,
     LSetCell,
+    LAddToCell,
+    LGetCellDataLocation,
     LGetCell,
     LClick,
     LActivate,
@@ -13133,6 +13135,10 @@ fn dispatcher_target_for_import(
         ("InterfaceLib", "LGetSelect") => PpcImportDispatcherTarget::LGetSelect,
         ("InterfaceLib", "LSetSelect") => PpcImportDispatcherTarget::LSetSelect,
         ("InterfaceLib", "LSetCell") => PpcImportDispatcherTarget::LSetCell,
+        ("InterfaceLib", "LAddToCell") => PpcImportDispatcherTarget::LAddToCell,
+        ("InterfaceLib", "LGetCellDataLocation") => {
+            PpcImportDispatcherTarget::LGetCellDataLocation
+        }
         ("InterfaceLib", "LGetCell") => PpcImportDispatcherTarget::LGetCell,
         ("InterfaceLib", "LClick") => PpcImportDispatcherTarget::LClick,
         ("InterfaceLib", "LActivate") => PpcImportDispatcherTarget::LActivate,
@@ -16048,6 +16054,8 @@ fn dispatch_supported_import(context: PpcDispatchContext<'_>) -> Option<PpcImpor
         | PpcImportDispatcherTarget::LGetSelect
         | PpcImportDispatcherTarget::LSetSelect
         | PpcImportDispatcherTarget::LSetCell
+        | PpcImportDispatcherTarget::LAddToCell
+        | PpcImportDispatcherTarget::LGetCellDataLocation
         | PpcImportDispatcherTarget::LGetCell
         | PpcImportDispatcherTarget::LClick
         | PpcImportDispatcherTarget::LActivate

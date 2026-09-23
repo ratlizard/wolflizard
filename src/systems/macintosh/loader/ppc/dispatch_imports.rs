@@ -3519,6 +3519,7 @@ pub(crate) fn dispatch_supported_import(
         | PpcImportDispatcherTarget::LMGetRndSeed
         | PpcImportDispatcherTarget::LMGetGhostWindow
         | PpcImportDispatcherTarget::LMGetCrsrBusy
+        | PpcImportDispatcherTarget::LMGetMenuHook
         | PpcImportDispatcherTarget::LMSetRndSeed
         | PpcImportDispatcherTarget::SetCurrentA5
         | PpcImportDispatcherTarget::SetA5

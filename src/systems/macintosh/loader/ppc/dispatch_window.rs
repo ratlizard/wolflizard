@@ -2372,6 +2372,10 @@ pub(super) fn ppc_draw_existing_window_frame(
                 proc_id,
             );
         }
+    } else if proc_id == 2 {
+        // plainDBox: a one-pixel black frame (Inside Macintosh Volume I,
+        // p. I-299), which Cythera's To Do and Journal plaques use.
+        ppc_draw_plain_box_frame(memory, gworlds, window, false);
     }
     if let Some(saved) = preserved_front_pixels {
         for (index, (x, y, pixel)) in saved.pixels.iter().copied().enumerate() {
@@ -2460,6 +2464,15 @@ pub(super) fn ppc_window_global_structure_bounds(
     gworlds: &[PpcGWorldRecord],
     window: u32,
 ) -> Option<(i16, i16, i16, i16)> {
+    // The structure region is the window definition's own answer; the
+    // proc-ID formula is only a stand-in for a window that has none yet.
+    if let Some(bounds) = memory
+        .read_u32_be(window.wrapping_add(PPC_CWINDOW_STRUCTURE_RGN_OFFSET))
+        .and_then(|rgn| ppc_read_rgn_bbox(memory, rgn))
+        .filter(|(top, left, bottom, right)| top < bottom && left < right)
+    {
+        return Some(bounds);
+    }
     let content = ppc_window_global_content_bounds(memory, gworlds, window)?;
     Some(ppc_window_structure_bounds(
         ppc_window_proc_id(memory, window),
@@ -3079,6 +3092,36 @@ pub(super) fn ppc_recalculate_vis_regions_behind(
         if let Some((top, left, _, _)) = pixmap.and_then(|ptr| ppc_read_rect(memory, ptr + 6)) {
             let _ = ppc_offset_rgn(memory, vis_rgn, left, top);
         }
+    }
+}
+
+/// plainDBox's one-pixel black frame around the content, and for
+/// altDBoxProc its two-pixel shadow to the right and below.
+fn ppc_draw_plain_box_frame(
+    memory: &mut PpcSectionMem,
+    gworlds: &[PpcGWorldRecord],
+    window: u32,
+    shadow: bool,
+) {
+    let Some((top, left, bottom, right)) = memory
+        .read_u32_be(window + PPC_CWINDOW_CONTENT_RGN_OFFSET)
+        .and_then(|region| ppc_read_rgn_bbox(memory, region))
+    else {
+        return;
+    };
+    let (t, l, b, r) = (top - 1, left - 1, bottom + 1, right + 1);
+    let mut rects = vec![
+        (t, l, t + 1, r),
+        (b - 1, l, b, r),
+        (t, l, b, l + 1),
+        (t, r - 1, b, r),
+    ];
+    if shadow {
+        rects.push((t + 2, r, b + 2, r + 2));
+        rects.push((b, l + 2, b + 2, r + 2));
+    }
+    for rect in rects {
+        let _ = ppc_paint_rect_bounds(memory, gworlds, PPC_MAIN_GWORLD, rect, PPC_RGB_BLACK, None);
     }
 }
 

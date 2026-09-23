@@ -2834,6 +2834,8 @@ pub(crate) fn dispatch_supported_import(
         | PpcImportDispatcherTarget::LMGetSFSaveDisk
         | PpcImportDispatcherTarget::LMSetSFSaveDisk
         | PpcImportDispatcherTarget::LMGetRndSeed
+        | PpcImportDispatcherTarget::LMGetHiliteMode
+        | PpcImportDispatcherTarget::LMSetHiliteMode
         | PpcImportDispatcherTarget::LMSetRndSeed
         | PpcImportDispatcherTarget::SetCurrentA5
         | PpcImportDispatcherTarget::SetA5

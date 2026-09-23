@@ -158,6 +158,9 @@ pub(super) fn dispatch_stdc_import(ctx: PpcStdCDispatchContext<'_>) -> Option<Pp
             );
             Some(PpcImportAction::Return(ptr))
         }
+        PpcImportDispatcherTarget::StdPascalString(op) => {
+            Some(PpcImportAction::Return(ppc_pascal_string_op(memory, op, cpu)))
+        }
         PpcImportDispatcherTarget::StdStrcpy => {
             let destination = cpu.gpr[3];
             let source = cpu.gpr[4];
@@ -1985,4 +1988,85 @@ pub(super) fn ppc_std_atoi(memory: &mut PpcSectionMem, string: u32) -> u32 {
     }
     let signed = if negative { -value } else { value };
     signed.clamp(i32::MIN as i64, i32::MAX as i64) as i32 as u32
+}
+
+fn ppc_read_pascal_string(memory: &mut PpcSectionMem, ptr: u32) -> Vec<u8> {
+    let len = memory.read_u8(ptr).unwrap_or(0);
+    (1..=u32::from(len))
+        .map(|offset| memory.read_u8(ptr.wrapping_add(offset)).unwrap_or(0))
+        .collect()
+}
+
+fn ppc_write_pascal_string(memory: &mut PpcSectionMem, ptr: u32, bytes: &[u8]) {
+    let bytes = &bytes[..bytes.len().min(255)];
+    let _ = memory.write_u8(ptr, bytes.len() as u8);
+    for (offset, byte) in bytes.iter().enumerate() {
+        let _ = memory.write_u8(ptr.wrapping_add(1 + offset as u32), *byte);
+    }
+}
+
+fn ppc_find_bytes(haystack: &[u8], needle: &[u8]) -> Option<usize> {
+    if needle.is_empty() {
+        return Some(0);
+    }
+    haystack.windows(needle.len()).position(|window| window == needle)
+}
+
+/// PLStringFuncs.h: the C string routines over Pascal strings. Pointer
+/// results point into the first string's characters, or are NULL.
+fn ppc_pascal_string_op(memory: &mut PpcSectionMem, op: PpcPascalStringOp, cpu: &PpcCpu) -> u32 {
+    let (a, b, n) = (cpu.gpr[3], cpu.gpr[4], cpu.gpr[5] as u16 as i16);
+    let first = ppc_read_pascal_string(memory, a);
+    let limit = |bytes: &[u8]| bytes.len().min(n.max(0) as usize);
+    let at = |index: Option<usize>| index.map_or(0, |index| a.wrapping_add(1 + index as u32));
+    let ordering = |x: &[u8], y: &[u8]| match x.cmp(y) {
+        std::cmp::Ordering::Less => ppc_i16_result(-1),
+        std::cmp::Ordering::Equal => 0,
+        std::cmp::Ordering::Greater => 1,
+    };
+    match op {
+        PpcPascalStringOp::Cmp => ordering(&first, &ppc_read_pascal_string(memory, b)),
+        PpcPascalStringOp::NCmp => {
+            let second = ppc_read_pascal_string(memory, b);
+            ordering(&first[..limit(&first)], &second[..limit(&second)])
+        }
+        PpcPascalStringOp::Cpy => {
+            let second = ppc_read_pascal_string(memory, b);
+            ppc_write_pascal_string(memory, a, &second);
+            a
+        }
+        PpcPascalStringOp::NCpy => {
+            let second = ppc_read_pascal_string(memory, b);
+            ppc_write_pascal_string(memory, a, &second[..limit(&second)]);
+            a
+        }
+        PpcPascalStringOp::Cat | PpcPascalStringOp::NCat => {
+            let second = ppc_read_pascal_string(memory, b);
+            let take = if op == PpcPascalStringOp::Cat { second.len() } else { limit(&second) };
+            let mut joined = first;
+            joined.extend_from_slice(&second[..take]);
+            ppc_write_pascal_string(memory, a, &joined);
+            a
+        }
+        PpcPascalStringOp::Chr => at(first.iter().position(|byte| *byte == b as u8)),
+        PpcPascalStringOp::RChr => at(first.iter().rposition(|byte| *byte == b as u8)),
+        PpcPascalStringOp::PBrk => {
+            let set = ppc_read_pascal_string(memory, b);
+            at(first.iter().position(|byte| set.contains(byte)))
+        }
+        PpcPascalStringOp::Spn => {
+            let set = ppc_read_pascal_string(memory, b);
+            first.iter().take_while(|byte| set.contains(byte)).count() as u32
+        }
+        PpcPascalStringOp::Str => at(ppc_find_bytes(&first, &ppc_read_pascal_string(memory, b))),
+        PpcPascalStringOp::Len => first.len() as u32,
+        PpcPascalStringOp::Pos => {
+            let second = ppc_read_pascal_string(memory, b);
+            if second.is_empty() {
+                0
+            } else {
+                ppc_find_bytes(&first, &second).map_or(0, |index| index as u32 + 1)
+            }
+        }
+    }
 }

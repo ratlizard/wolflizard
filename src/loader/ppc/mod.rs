@@ -1201,6 +1201,25 @@ pub enum PpcAppleEventCompatibilityOperation {
     Send,
 }
 
+/// StdCLib's Pascal string routines (Universal Interfaces
+/// PLStringFuncs.h).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PpcPascalStringOp {
+    Cmp,
+    NCmp,
+    Cpy,
+    NCpy,
+    Cat,
+    NCat,
+    Chr,
+    RChr,
+    PBrk,
+    Spn,
+    Str,
+    Len,
+    Pos,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PpcEventPollOperation {
     GetNextEvent,
@@ -1922,6 +1941,7 @@ pub enum PpcImportDispatcherTarget {
     StdCalloc,
     StdRealloc,
     StdStrcpy,
+    StdPascalString(PpcPascalStringOp),
     StdStrcat,
     StdStrncpy,
     StdStrncat,
@@ -12227,6 +12247,23 @@ fn dispatcher_target_for_import(
         ("StdCLib", "calloc") => PpcImportDispatcherTarget::StdCalloc,
         ("StdCLib", "realloc") => PpcImportDispatcherTarget::StdRealloc,
         ("StdCLib", "strcpy") => PpcImportDispatcherTarget::StdStrcpy,
+        ("StdCLib", symbol @ ("PLstrcmp" | "PLstrncmp" | "PLstrcpy" | "PLstrncpy" | "PLstrcat"
+            | "PLstrncat" | "PLstrchr" | "PLstrrchr" | "PLstrpbrk" | "PLstrspn" | "PLstrstr"
+            | "PLstrlen" | "PLpos")) => PpcImportDispatcherTarget::StdPascalString(match symbol {
+            "PLstrcmp" => PpcPascalStringOp::Cmp,
+            "PLstrncmp" => PpcPascalStringOp::NCmp,
+            "PLstrcpy" => PpcPascalStringOp::Cpy,
+            "PLstrncpy" => PpcPascalStringOp::NCpy,
+            "PLstrcat" => PpcPascalStringOp::Cat,
+            "PLstrncat" => PpcPascalStringOp::NCat,
+            "PLstrchr" => PpcPascalStringOp::Chr,
+            "PLstrrchr" => PpcPascalStringOp::RChr,
+            "PLstrpbrk" => PpcPascalStringOp::PBrk,
+            "PLstrspn" => PpcPascalStringOp::Spn,
+            "PLstrstr" => PpcPascalStringOp::Str,
+            "PLstrlen" => PpcPascalStringOp::Len,
+            _ => PpcPascalStringOp::Pos,
+        }),
         ("StdCLib", "strcat") => PpcImportDispatcherTarget::StdStrcat,
         ("StdCLib", "strncpy") => PpcImportDispatcherTarget::StdStrncpy,
         ("StdCLib", "strncat") => PpcImportDispatcherTarget::StdStrncat,
@@ -12695,6 +12732,11 @@ fn dispatcher_target_for_import(
         ("InterfaceLib", "FlashMenuBar") => PpcImportDispatcherTarget::FlashMenuBar,
         ("InterfaceLib", "HMGetHelpMenuHandle") => PpcImportDispatcherTarget::HMGetHelpMenuHandle,
         ("InterfaceLib", "HMGetBalloons") => PpcImportDispatcherTarget::HMGetBalloons,
+        // As the 68K Pack14 does: no balloons, so showing one reports
+        // hmHelpDisabled and removing one has nothing to remove
+        // (More Macintosh Toolbox (1993), pp. 3-100 and 3-105).
+        ("InterfaceLib", "HMShowBalloon") => PpcImportDispatcherTarget::ReturnError(-850),
+        ("InterfaceLib", "HMRemoveBalloon") => PpcImportDispatcherTarget::ReturnNoErr,
         ("InterfaceLib", "HiliteMenu") => PpcImportDispatcherTarget::HiliteMenu,
         ("InterfaceLib", "InvalMenuBar") => PpcImportDispatcherTarget::InvalMenuBar,
         ("InterfaceLib", "DrawGrowIcon") => PpcImportDispatcherTarget::DrawGrowIcon,
@@ -16153,6 +16195,7 @@ fn dispatch_supported_import(context: PpcDispatchContext<'_>) -> Option<PpcImpor
         | PpcImportDispatcherTarget::StdCalloc
         | PpcImportDispatcherTarget::StdRealloc
         | PpcImportDispatcherTarget::StdStrcpy
+        | PpcImportDispatcherTarget::StdPascalString(_)
         | PpcImportDispatcherTarget::StdStrncpy
         | PpcImportDispatcherTarget::StdStrcat
         | PpcImportDispatcherTarget::StdStrncat
@@ -26940,6 +26983,11 @@ fn ppc_draw_picture(
         .and_then(|ctable| memory.read_u32_be(ctable))
         .unwrap_or(0);
     let quilt_zero_is_opaque = ppc_quilt_picture_zero_is_opaque(vfs_resources, pic_handle);
+    // Imaging With QuickDraw (1994), pp. 2-20--2-21: drawing is limited to
+    // the port's clipRgn and visRgn. The picture is drawn whole, then what
+    // fell outside them is put back; Cythera draws each torch frame of the
+    // start board as a whole-board picture clipped to the torch.
+    let clip_restore = ppc_save_pixels_outside_port_regions(memory, surface, current_gworld, dst_rect);
     let drawn = ppc_draw_pict_bytes_to_16bpp(
         memory,
         front_buffer,
@@ -26949,6 +26997,11 @@ fn ppc_draw_picture(
         device_ct_seed,
         quilt_zero_is_opaque,
     );
+    if let Some(saved) = clip_restore {
+        for (address, value) in saved {
+            let _ = memory.write_u8(address, value);
+        }
+    }
     if ppc_hle_trace_enabled() {
         let (top, left, bottom, right) = dst_rect;
         eprintln!(
@@ -26965,6 +27018,61 @@ fn ppc_draw_picture(
         );
     }
     drawn
+}
+
+/// The bytes of the pixels in `rect` (surface coordinates) that lie outside
+/// the port's visRgn and clipRgn, to be written back after an unclipped
+/// draw. None when every pixel is inside, which is the usual case.
+fn ppc_save_pixels_outside_port_regions(
+    memory: &mut PpcSectionMem,
+    surface: PpcQuickDrawSurface,
+    port: u32,
+    (top, left, bottom, right): (i16, i16, i16, i16),
+) -> Option<Vec<(u32, u8)>> {
+    let front = surface.front_buffer;
+    if front.depth < 8 {
+        return None;
+    }
+    let storage = |memory: &mut PpcSectionMem, offset: u32| {
+        memory
+            .read_u32_be(port.wrapping_add(offset))
+            .and_then(|rgn| ppc_region_storage(memory, rgn))
+    };
+    let clip = storage(memory, PPC_CGRAF_PORT_CLIP_RGN_OFFSET);
+    let vis = storage(memory, PPC_CGRAF_PORT_VIS_RGN_OFFSET);
+    let (top, bottom) = (i32::from(top).max(0), i32::from(bottom).min(front.height as i32));
+    let (left, right) = (i32::from(left).max(0), i32::from(right).min(front.width as i32));
+    let port_rect = (
+        (top + i32::from(surface.top)) as i16,
+        (left + i32::from(surface.left)) as i16,
+        (bottom + i32::from(surface.top)) as i16,
+        (right + i32::from(surface.left)) as i16,
+    );
+    let covers = |storage: &Option<Vec<u8>>| {
+        storage.as_ref().is_none_or(|storage| {
+            storage.len() == 10
+                && ppc_region_storage_bbox(storage).is_some_and(|(t, l, b, r)| {
+                    t <= port_rect.0 && l <= port_rect.1 && b >= port_rect.2 && r >= port_rect.3
+                })
+        })
+    };
+    if top >= bottom || left >= right || (covers(&clip) && covers(&vis)) {
+        return None;
+    }
+    let bytes_per_pixel = front.depth / 8;
+    let mut saved = Vec::new();
+    for y in top..bottom {
+        for x in left..right {
+            if ppc_local_point_in_port_regions(surface, (x, y), vis.as_deref(), clip.as_deref()) {
+                continue;
+            }
+            let address = front.base_addr + y as u32 * front.row_bytes + x as u32 * bytes_per_pixel;
+            for byte in 0..bytes_per_pixel {
+                saved.push((address + byte, memory.read_u8(address + byte).unwrap_or(0)));
+            }
+        }
+    }
+    Some(saved)
 }
 
 fn ppc_quilt_picture_zero_is_opaque(
@@ -45867,6 +45975,16 @@ pub(super) fn ppc_resolve_alias(
         .or_else(|| {
             ppc_alias_record_from_handle(memory, handles, alias_handle, Some(vfs_directories))
         });
+    if ppc_hle_trace_enabled() {
+        eprintln!(
+            "[PPC-TRACE] ResolveAlias alias=${alias_handle:08X} -> {:?}",
+            alias.as_ref().map(|alias| (
+                alias.target_vref,
+                alias.target_dir_id,
+                String::from_utf8_lossy(&alias.target_name).into_owned()
+            ))
+        );
+    }
     let Some(alias) = alias else {
         return PPC_PARAM_ERR;
     };

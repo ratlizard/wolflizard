@@ -182,6 +182,26 @@ pub(super) fn dispatch_font_import(
             }
             let text_font = ppc_current_text_font(memory, current_gworld);
             let text_style = ppc_current_text_style(memory, current_gworld);
+            if std::env::var_os("SYSTEMLESS_TRACE_FONT_TRAPS").is_some() {
+                let bbox = |memory: &mut PpcSectionMem, offset: u32| {
+                    memory
+                        .read_u32_be(current_gworld.wrapping_add(offset))
+                        .and_then(|rgn| ppc_region_storage(memory, rgn))
+                        .and_then(|storage| ppc_region_storage_bbox(&storage))
+                };
+                eprintln!(
+                    "[FONT] PPC DrawText port=${:08X} pen=({},{}) font={} size={} mode={} clip={:?} vis={:?} text={:?}",
+                    current_gworld,
+                    *quickdraw_pen_h,
+                    *quickdraw_pen_v,
+                    text_font,
+                    *quickdraw_text_size,
+                    *quickdraw_text_mode,
+                    bbox(memory, PPC_CGRAF_PORT_CLIP_RGN_OFFSET),
+                    bbox(memory, PPC_CGRAF_PORT_VIS_RGN_OFFSET),
+                    decode_mac_roman(&bytes),
+                );
+            }
             let advance = ppc_draw_text_bytes_styled(
                 memory,
                 gworlds,

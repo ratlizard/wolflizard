@@ -492,6 +492,7 @@ pub enum PpcImportDispatcherTarget {
     QDError,
     QDDone,
     CTabChanged,
+    GetSubTable,
     ProtectEntry,
     ReserveEntry,
     SaveEntries,
@@ -3582,6 +3583,10 @@ pub(crate) fn dispatcher_target_for_import(
         ("InterfaceLib" | "AppearanceLib" | "DialogsLib" | "CarbonLib", "ErrorSound") => {
             PpcImportDispatcherTarget::ErrorSound
         }
+        // Imaging With QuickDraw (1994), p. 3-97: PortChanged tells QuickDraw
+        // a port's fields were changed directly. Drawing here reads the port's
+        // fields at each call, so there is nothing to refresh.
+        ("InterfaceLib", "PortChanged") => PpcImportDispatcherTarget::NoOpPreserve,
         ("InterfaceLib" | "AppearanceLib" | "CarbonLib", "ClearMenuBar" | "clearmenubar") => {
             PpcImportDispatcherTarget::ClearMenuBar
         }
@@ -3942,6 +3947,7 @@ pub(crate) fn dispatcher_target_for_import(
         ("InterfaceLib", "QDError") => PpcImportDispatcherTarget::QDError,
         ("InterfaceLib", "QDDone") => PpcImportDispatcherTarget::QDDone,
         ("InterfaceLib", "CTabChanged") => PpcImportDispatcherTarget::CTabChanged,
+        ("InterfaceLib", "GetSubTable") => PpcImportDispatcherTarget::GetSubTable,
         ("InterfaceLib", "ProtectEntry") => PpcImportDispatcherTarget::ProtectEntry,
         ("InterfaceLib", "ReserveEntry") => PpcImportDispatcherTarget::ReserveEntry,
         ("InterfaceLib", "SaveEntries") => PpcImportDispatcherTarget::SaveEntries,

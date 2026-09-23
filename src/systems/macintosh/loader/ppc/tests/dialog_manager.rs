@@ -7456,7 +7456,9 @@ fn set_dialog_item_text_redraws_only_its_visible_item_and_erases_shorter_text() 
         )
         .unwrap();
         let mut dlog = vec![0; 22];
-        dlog[4..6].copy_from_slice(&100i16.to_be_bytes());
+        // Below the menu bar, which is outside every window's visRgn.
+        dlog[0..2].copy_from_slice(&40i16.to_be_bytes());
+        dlog[4..6].copy_from_slice(&140i16.to_be_bytes());
         dlog[6..8].copy_from_slice(&200i16.to_be_bytes());
         dlog[10] = 1;
         dlog[18..20].copy_from_slice(&128i16.to_be_bytes());

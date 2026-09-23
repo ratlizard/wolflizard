@@ -989,6 +989,18 @@ pub(super) fn dispatch_quickdraw_import(
                     ppc_read_rect(memory, cpu.gpr[3]), pixpat,
                 );
             }
+            // Imaging With QuickDraw (1994), 4-73: EraseRect fills with the
+            // port's background pattern, which in a colour port is bkPixPat.
+            if let Some(rect) = ppc_read_rect(memory, cpu.gpr[3]) {
+                let back_pix_pat = memory
+                    .read_u32_be(current_gworld.wrapping_add(PPC_CGRAF_PORT_BK_PIXPAT_OFFSET))
+                    .unwrap_or(0);
+                if back_pix_pat != 0
+                    && ppc_fill_rect_with_pix_pat(memory, gworlds, current_gworld, rect, back_pix_pat)
+                {
+                    return Some(PpcImportAction::ReturnPreserve);
+                }
+            }
             if let Some(rect) = ppc_read_rect(memory, cpu.gpr[3]) {
                 let _ = ppc_erase_rect(
                     memory,
@@ -3291,3 +3303,4 @@ pub(super) fn ppc_dispatch_quickdraw_compatibility(
         | PpcQuickDrawCompatibilityOperation::Exp1To6 => PpcImportAction::ReturnPreserve,
     }
 }
+

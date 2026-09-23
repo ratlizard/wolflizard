@@ -625,6 +625,17 @@ pub(crate) fn ppc_apply_palette(
                         .map(|channel| rgb[channel].abs_diff(candidate[channel]))
                         .max()
                         .unwrap_or(0);
+                    // A slot that is another explicit entry's own index is
+                    // not free for this one: Inside Macintosh Volume VI
+                    // (1991), pp. 20-8--20-12, explicit entry n names device
+                    // index n. Taking it would push every later entry of a
+                    // full explicit palette one index along.
+                    let owned_by_explicit_entry = |slot: usize| {
+                        slot != entry
+                            && entries
+                                .get(slot)
+                                .is_some_and(|(_, usage, _)| usage & PM_EXPLICIT != 0)
+                    };
                     if difference <= tolerance {
                         entry_mappings[entry] = PpcPaletteEntryMapping::MatchOnly(closest);
                     } else if let Some((slot, stolen)) = (0..256)
@@ -632,6 +643,7 @@ pub(crate) fn ppc_apply_palette(
                             !device_protected[*slot]
                                 && !allocation_blocked[*slot]
                                 && !claimed[*slot]
+                                && !owned_by_explicit_entry(*slot)
                         })
                         .map(|slot| (slot, None))
                         .or_else(|| {

@@ -1725,10 +1725,11 @@ pub const DEFAULT_REALTIME_CPU_MHZ: f64 =
 /// <https://support.apple.com/en-hk/112050>
 pub const DEFAULT_REALTIME_PPC_CPU_MHZ: f64 =
     crate::machine_profile::DEFAULT_HOST_EXECUTION_POLICY.realtime_powerpc_cpu_mhz;
-/// Default direct-color display depth for native PowerPC applications.
-/// Imaging With QuickDraw (1994), p. 6-16, defines 16 bits per pixel as a
-/// supported Color QuickDraw screen and offscreen graphics-world depth.
-pub const DEFAULT_POWERPC_SCREEN_DEPTH: u32 = 16;
+/// Default display depth for native PowerPC applications: the reference
+/// machine's, as for 68K. Cythera's art and lighting are 256-colour, and on a
+/// deeper screen it asks at every launch to switch to 256 colours.
+pub const DEFAULT_POWERPC_SCREEN_DEPTH: u32 =
+    crate::machine_profile::REFERENCE_MACHINE_PROFILE.screen_depth as u32;
 /// Default 68K realtime CPU budget used by scripted realtime mode and by GUI
 /// sessions that do not load a PowerPC executable.
 pub const DEFAULT_REALTIME_INSTRUCTIONS_PER_SECOND: f64 = DEFAULT_REALTIME_CPU_MHZ * 1_000_000.0;

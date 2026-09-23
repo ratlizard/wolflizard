@@ -1516,7 +1516,10 @@
     fn runner_config_preserves_architecture_defaults_until_depth_is_explicit() {
         let default_runner = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());
         assert_eq!(default_runner.configured_screen_depth(), 8);
-        assert_eq!(default_runner.configured_powerpc_screen_depth(), 16);
+        assert_eq!(
+            default_runner.configured_powerpc_screen_depth(),
+            DEFAULT_POWERPC_SCREEN_DEPTH
+        );
 
         for depth in [1, 2, 4, 8] {
             let config = FixtureRunnerConfig::default()
@@ -1525,7 +1528,7 @@
             let mut runner = FixtureRunner::new(8 * 1024 * 1024, config);
             assert_eq!(
                 runner.configured_powerpc_screen_depth(),
-                16,
+                DEFAULT_POWERPC_SCREEN_DEPTH,
                 "68K config depth {depth} must not become an implicit PPC override"
             );
             runner
@@ -1542,7 +1545,10 @@
                 ..FixtureRunnerConfig::default()
             },
         );
-        assert_eq!(direct_nondefault.configured_powerpc_screen_depth(), 16);
+        assert_eq!(
+            direct_nondefault.configured_powerpc_screen_depth(),
+            DEFAULT_POWERPC_SCREEN_DEPTH
+        );
 
         let mut explicit_eight =
             FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());

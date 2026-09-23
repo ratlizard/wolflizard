@@ -2626,7 +2626,8 @@ pub(crate) fn dispatch_supported_import(
                 handles,
             )
         }
-        PpcImportDispatcherTarget::LegacyControl(_) => {
+        PpcImportDispatcherTarget::LegacyControl(_)
+        | PpcImportDispatcherTarget::AppearanceControl(_) => {
             unreachable!("control imports return through dispatch_control_import")
         }
         PpcImportDispatcherTarget::LegacyWindow(_) => {

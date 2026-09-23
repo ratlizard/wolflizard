@@ -71,17 +71,23 @@ pub(super) fn dispatch_appearance_import(
                 return Some(PpcImportAction::Return(ppc_i16_result(PPC_PARAM_ERR)));
             }
             let active = binding.dispatcher_target == PpcImportDispatcherTarget::ActivateControl;
-            if let Some(record) = controls.iter_mut().find(|record| record.handle == handle) {
-                record.active = active;
-                let _ = ppc_draw_control(
-                    memory,
-                    handles,
-                    controls,
-                    gworlds,
-                    vfs_resources,
-                    current_resource_refnum,
-                    handle,
-                );
+            // The control and everything embedded in it: an application that
+            // made a root control (Cythera's Preferences) activates the whole
+            // window through it. Mac OS 8 Control Manager Reference,
+            // ActivateControl.
+            for member in super::appearance_controls::ppc_control_family(handle) {
+                if let Some(record) = controls.iter_mut().find(|record| record.handle == member) {
+                    record.active = active;
+                    let _ = ppc_draw_control(
+                        memory,
+                        handles,
+                        controls,
+                        gworlds,
+                        vfs_resources,
+                        current_resource_refnum,
+                        member,
+                    );
+                }
             }
             Some(PpcImportAction::Return(ppc_i16_result(PPC_NO_ERR)))
         }

@@ -1641,7 +1641,11 @@ impl PpcLoadedApp {
                         | PpcImportDispatcherTarget::Rave(_)
                         | PpcImportDispatcherTarget::GetKeys
                 );
-                let action = if !is_glm_rave_or_getkeys {
+                let action = if let Some(resumed) =
+                    dispatch_defproc::ppc_resume_def_proc_calls(cpu, memory)
+                {
+                    Some(resumed)
+                } else if !is_glm_rave_or_getkeys {
                     None
                 } else if binding.dispatcher_target == PpcImportDispatcherTarget::GlmPageFreeAll {
                     let pending = (cpu.lr == cpu.pc)
@@ -2588,6 +2592,14 @@ impl PpcLoadedApp {
                     });
                     action
                 };
+                let action = process_file_system.resource_manager.with_mut(|resource_manager| {
+                    dispatch_defproc::ppc_begin_pending_def_procs(
+                        cpu,
+                        memory,
+                        &resource_manager.vfs_resources,
+                        action,
+                    )
+                });
 
                 let cursor_device_move = matches!(
                     binding.dispatcher_target,

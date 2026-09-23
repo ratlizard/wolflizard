@@ -254,6 +254,7 @@ mod qd3d;
 mod menu_manager;
 pub(crate) use menu_manager::*;
 mod window_manager;
+use window_manager::create_test_cwindow;
 mod mixed_mode;
 pub(crate) use mixed_mode::*;
 mod quicktime;
@@ -1039,4 +1040,102 @@ fn calc_mask_keeps_what_paint_from_the_edges_cannot_reach() {
     // The box and its inside are kept; the lone pixel has paint all
     // round it and is kept as itself.
     assert_eq!(mask, [0, 0x3E00, 0x3E08, 0x3E00, 0]);
+}
+
+#[test]
+fn appearance_root_control_embeds_and_deactivates_what_it_holds() {
+    use super::appearance_controls::PpcAppearanceControlOperation as Op;
+    let pef = synthetic_pef_with_import(b"CreateRootControl");
+    let mut loaded = load_pef_application(&pef).unwrap();
+    let scratch = PPC_DATA_BASE + 0x1000;
+    loaded.memory.add_region(scratch, vec![0; 0x100]);
+    let window = create_test_cwindow(&mut loaded, scratch, (40, 40, 200, 300), 0, true, u32::MAX);
+    let out = scratch + 0x40;
+
+    loaded.cpu.gpr[3] = window;
+    loaded.cpu.gpr[4] = out;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::AppearanceControl(Op::CreateRootControl));
+    assert_eq!(loaded.cpu.gpr[3], 0);
+    let root = loaded.memory.read_u32_be(out).unwrap();
+    assert_ne!(root, 0);
+
+    ppc_write_rect(&mut loaded.memory, scratch + 0x50, 10, 10, 30, 122).unwrap();
+    loaded.cpu.gpr[3] = window;
+    loaded.cpu.gpr[4] = scratch + 0x50;
+    loaded.cpu.gpr[5] = 0;
+    loaded.cpu.gpr[6] = 1;
+    loaded.cpu.gpr[7] = 5;
+    loaded.cpu.gpr[8] = 0;
+    loaded.cpu.gpr[9] = 10;
+    loaded.cpu.gpr[10] = 48;
+    run_test_import(
+        &mut loaded,
+        PpcImportDispatcherTarget::LegacyControl(PpcLegacyControlOperation::NewControl),
+    );
+    let slider = loaded.cpu.gpr[3];
+    assert_ne!(slider, 0);
+
+    loaded.cpu.gpr[3] = slider;
+    loaded.cpu.gpr[4] = root;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::AppearanceControl(Op::EmbedControl));
+    assert_eq!(loaded.cpu.gpr[3], 0);
+
+    loaded.cpu.gpr[3] = root;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::AppearanceControl(Op::DeactivateControl));
+    let slider_ptr = loaded.memory.read_u32_be(slider).unwrap();
+    assert_eq!(loaded.memory.read_u8(slider_ptr + PPC_CONTROL_HILITE_OFFSET), Some(255));
+
+    // A second root is refused, and the first still handed back.
+    loaded.memory.write_u32_be(out, 0).unwrap();
+    loaded.cpu.gpr[3] = window;
+    loaded.cpu.gpr[4] = out;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::AppearanceControl(Op::CreateRootControl));
+    assert_eq!(loaded.cpu.gpr[3] as u16 as i16, -30587);
+    assert_eq!(loaded.memory.read_u32_be(out), Some(root));
+
+    // Active again, the slider is all indicator; the root pane is
+    // invisible and not hit.
+    loaded.cpu.gpr[3] = root;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::AppearanceControl(Op::ActivateControl));
+    assert_eq!(loaded.memory.read_u8(slider_ptr + PPC_CONTROL_HILITE_OFFSET), Some(0));
+    loaded.cpu.gpr[3] = (20 << 16) | 60;
+    loaded.cpu.gpr[4] = window;
+    loaded.cpu.gpr[5] = scratch + 0x60;
+    run_test_import(
+        &mut loaded,
+        PpcImportDispatcherTarget::AppearanceControl(Op::FindControlUnderMouse),
+    );
+    assert_eq!(loaded.cpu.gpr[3], slider);
+    assert_eq!(loaded.memory.read_u16_be(scratch + 0x60), Some(129));
+}
+
+#[test]
+fn slider_value_follows_the_pointer_along_the_track() {
+    use super::appearance_controls::ppc_slider_value_at;
+    // 112 wide less a 12-pixel thumb: 100 pixels of travel.
+    let rect = (0, 0, 20, 112);
+    assert_eq!(ppc_slider_value_at(rect, (10, 0), 0, 10), 0);
+    assert_eq!(ppc_slider_value_at(rect, (10, 56), 0, 10), 5);
+    assert_eq!(ppc_slider_value_at(rect, (10, 200), 0, 10), 10);
+    assert_eq!(ppc_slider_value_at((0, 0, 112, 20), (106, 10), 0, 2), 2);
+}
+
+#[test]
+fn appearance_window_types_draw_as_their_classic_equivalents() {
+    for (appearance, classic) in [
+        (1024, 4),
+        (1025, 0),
+        (1030, 12),
+        (1031, 8),
+        (1040, 2),
+        (1041, 3),
+        (1042, 1),
+        (1043, 5),
+        (1044, 1),
+        (1045, 5),
+        (1057, 4),
+        (5, 5),
+    ] {
+        assert_eq!(ppc_classic_window_proc_id(appearance), classic, "{appearance}");
+    }
 }

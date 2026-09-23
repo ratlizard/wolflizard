@@ -917,13 +917,44 @@ pub(super) fn ppc_window_proc_id(memory: &mut PpcSectionMem, window: u32) -> i16
     if let Some(proc_id) = super::dispatch_defproc::ppc_app_wdef_window_proc_id(window) {
         return proc_id;
     }
-    memory
-        .read_u32_be(window.wrapping_add(PPC_CWINDOW_DEF_PROC_OFFSET))
-        .filter(|handle| *handle != 0)
-        .and_then(|handle| memory.read_u32_be(handle))
-        .filter(|data| *data != 0)
-        .and_then(|data| memory.read_u16_be(data))
-        .unwrap_or(0) as i16
+    ppc_classic_window_proc_id(
+        memory
+            .read_u32_be(window.wrapping_add(PPC_CWINDOW_DEF_PROC_OFFSET))
+            .filter(|handle| *handle != 0)
+            .and_then(|handle| memory.read_u32_be(handle))
+            .filter(|data| *data != 0)
+            .and_then(|data| memory.read_u16_be(data))
+            .unwrap_or(0) as i16,
+    )
+}
+
+/// The classic window type standing for one of the Appearance Manager's
+/// window definitions, which this host draws with the classic frames:
+/// WDEF 64 is the document windows (kWindowDocumentProc 1024 onward, bit 0
+/// adding the size box, the higher variants a zoom box), WDEF 65 the
+/// dialogs (1040 plain, 1041 shadow, 1042 modal, 1043 movable modal, 1044
+/// alert, 1045 movable alert, 1046 movable modal with a size box), WDEF 66
+/// the floating windows, given a plain title bar. The numbering is
+/// MacWindows.h's (Universal Interfaces 3.x) as recalled, not checked
+/// against a copy on this machine. Cythera's Preferences window is 1042.
+pub(super) fn ppc_classic_window_proc_id(proc_id: i16) -> i16 {
+    let variant = proc_id & 0x0F;
+    match proc_id >> 4 {
+        64 => match (variant & 1 != 0, variant >= 2) {
+            (true, true) => 8,
+            (true, false) => 0,
+            (false, true) => 12,
+            (false, false) => 4,
+        },
+        65 => match variant {
+            0 => 2,
+            1 => 3,
+            3 | 5 | 6 => 5,
+            _ => 1,
+        },
+        66 => 4,
+        _ => proc_id,
+    }
 }
 
 pub(super) fn ppc_update_window_manager_regions(
@@ -4858,10 +4889,21 @@ pub(super) fn ppc_erase_shown_window_with_back_pix_pat(
     let back_pix_pat = memory
         .read_u32_be(window.wrapping_add(PPC_CGRAF_PORT_BK_PIXPAT_OFFSET))
         .unwrap_or(0);
-    if back_pix_pat == 0 {
+    let Some(port_rect) = ppc_read_rect(memory, window.wrapping_add(16)) else {
+        return;
+    };
+    if back_pix_pat != 0 {
+        let _ = ppc_fill_rect_with_pix_pat(memory, gworlds, window, port_rect, back_pix_pat);
         return;
     }
-    if let Some(port_rect) = ppc_read_rect(memory, window.wrapping_add(16)) {
-        let _ = ppc_fill_rect_with_pix_pat(memory, gworlds, window, port_rect, back_pix_pat);
+    // Without a background pattern the exposed content is erased to the
+    // port's background colour before its update event, as PaintOne does
+    // (Macintosh Toolbox Essentials (1992), p. 4-117). Windows whose own
+    // definition draws the content are left to it.
+    if super::dispatch_defproc::ppc_app_wdef_window_proc_id(window).is_some() {
+        return;
+    }
+    if let Some(color) = ppc_read_rgb_color(memory, window + PPC_CGRAF_PORT_RGB_BK_COLOR_OFFSET) {
+        let _ = ppc_paint_rect_bounds(memory, gworlds, window, port_rect, color, None);
     }
 }

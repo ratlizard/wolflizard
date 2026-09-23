@@ -147,6 +147,8 @@ use dispatch_apple_events::*;
 mod dispatch_bit_transfers;
 mod dispatch_color_tables;
 mod dispatch_collection;
+mod appearance_controls;
+pub use appearance_controls::PpcAppearanceControlOperation;
 mod dispatch_control;
 mod dispatch_cursor;
 mod dispatch_desk;
@@ -2323,6 +2325,7 @@ pub enum PpcImportDispatcherTarget {
     SlotVRemove,
     LegacyMemoryUtility(PpcLegacyMemoryUtilityOperation),
     LegacyControl(PpcLegacyControlOperation),
+    AppearanceControl(PpcAppearanceControlOperation),
     LegacyWindow(PpcLegacyWindowOperation),
     AppleEventCompatibility(PpcAppleEventCompatibilityOperation),
     DialogCompatibility(PpcDialogCompatibilityOperation),
@@ -13162,6 +13165,13 @@ fn dispatcher_target_for_import(
         ("InterfaceLib", "NewDialog")
         | ("InterfaceLib", "NewColorDialog")
         | ("InterfaceLib", "NewCDialog") => PpcImportDispatcherTarget::NewDialog,
+        ("AppearanceLib" | "InterfaceLib", symbol)
+            if appearance_controls::ppc_appearance_control_symbol_op(symbol).is_some() =>
+        {
+            PpcImportDispatcherTarget::AppearanceControl(
+                appearance_controls::ppc_appearance_control_symbol_op(symbol).expect("checked"),
+            )
+        }
         // Gestalt('appr') reports the Appearance Manager, so clients register;
         // registration has no effect this runtime needs to model.
         ("AppearanceLib" | "InterfaceLib", "RegisterAppearanceClient")
@@ -16669,7 +16679,8 @@ fn dispatch_supported_import(context: PpcDispatchContext<'_>) -> Option<PpcImpor
                 handles,
             )
         }
-        PpcImportDispatcherTarget::LegacyControl(_) => {
+        PpcImportDispatcherTarget::LegacyControl(_)
+        | PpcImportDispatcherTarget::AppearanceControl(_) => {
             unreachable!("control imports return through dispatch_control_import")
         }
         PpcImportDispatcherTarget::LegacyWindow(_) => {

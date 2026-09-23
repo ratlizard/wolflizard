@@ -174,6 +174,109 @@ pub(super) fn dispatch_control_import(
             current_resource_refnum,
             last_resource_error,
         ),
+        PpcImportDispatcherTarget::AppearanceControl(operation) => {
+            use super::appearance_controls::*;
+            use PpcAppearanceControlOperation as Op;
+            let result = |err: i16| Some(PpcImportAction::Return(ppc_i16_result(err)));
+            match operation {
+                Op::CreateRootControl => {
+                    let mut allocator = PpcProcessAllocatorView {
+                        memory_manager: process_memory_manager,
+                    };
+                    let err = ppc_create_root_control(
+                        cpu,
+                        Some(&mut allocator),
+                        memory,
+                        heap_cursor,
+                        heap_limit,
+                        last_mem_error,
+                        handles,
+                        controls,
+                    );
+                    result(err)
+                }
+                Op::EmbedControl => result(ppc_embed_control(memory, cpu.gpr[3], cpu.gpr[4])),
+                Op::ActivateControl | Op::DeactivateControl => {
+                    let active = operation == Op::ActivateControl;
+                    match ppc_set_control_family_active(memory, cpu.gpr[3], active) {
+                        Ok(family) => {
+                            for handle in family {
+                                let _ = ppc_draw_control(
+                                    memory,
+                                    handles,
+                                    controls,
+                                    gworlds,
+                                    vfs_resources,
+                                    current_resource_refnum,
+                                    handle,
+                                );
+                            }
+                            result(PPC_NO_ERR)
+                        }
+                        Err(err) => result(err),
+                    }
+                }
+                // FindControlUnderMouse(inWhere, inWindow, VAR outPart):
+                // ControlHandle, the part code in the VAR parameter.
+                Op::FindControlUnderMouse => {
+                    let v = (cpu.gpr[3] >> 16) as u16 as i16;
+                    let h = cpu.gpr[3] as u16 as i16;
+                    let (handle, part) =
+                        ppc_find_control_at_point(memory, controls, cpu.gpr[4], v, h)
+                            .unwrap_or((0, 0));
+                    if cpu.gpr[5] != 0 {
+                        let _ = memory.write_u16_be(cpu.gpr[5], part as u16);
+                    }
+                    Some(PpcImportAction::Return(handle))
+                }
+                // HandleControlClick(inControl, inWhere, inModifiers,
+                // inAction) is TrackControl with a modifiers word; no control
+                // modelled here reads the modifiers.
+                Op::HandleControlClick => {
+                    cpu.gpr[5] = cpu.gpr[6];
+                    ppc_dispatch_legacy_control(
+                        PpcLegacyControlOperation::TrackControl,
+                        cpu,
+                        process_memory_manager,
+                        memory,
+                        heap_cursor,
+                        heap_limit,
+                        last_mem_error,
+                        handles,
+                        controls,
+                        gworlds,
+                        screen_clut,
+                        toolbox_startup,
+                        input,
+                        vfs_resources,
+                        current_resource_refnum,
+                        last_resource_error,
+                    )
+                }
+                Op::HandleControlKey => result(0),
+                Op::IdleControls => Some(PpcImportAction::ReturnPreserve),
+                Op::GetKeyboardFocus => {
+                    if cpu.gpr[4] != 0 {
+                        let _ = memory.write_u32_be(cpu.gpr[4], 0);
+                    }
+                    result(PPC_NO_ERR)
+                }
+                Op::SetControlData => result(ppc_set_control_data(memory, cpu)),
+                Op::GetControlData => result(ppc_get_control_data(memory, cpu)),
+                // SetThemeWindowBackground(inWindow, inBrush, inUpdate): the
+                // window's background becomes the theme's, which later erases
+                // use. Only the window background is distinguished here.
+                Op::SetThemeWindowBackground => {
+                    let window = cpu.gpr[3];
+                    if window != 0 {
+                        let color = ppc_theme_rgb(ppc_ui_theme(gworlds).provider().palette().window_background);
+                        let _ = ppc_write_rgb_color(memory, window + PPC_CGRAF_PORT_RGB_BK_COLOR_OFFSET, color);
+                        let _ = memory.write_u32_be(window + PPC_CGRAF_PORT_BK_PIXPAT_OFFSET, 0);
+                    }
+                    result(PPC_NO_ERR)
+                }
+            }
+        }
         _ => None,
     }
 }
@@ -704,6 +807,50 @@ pub(super) fn ppc_dispatch_legacy_control(
                     return Some(action);
                 }
             }
+            let slider = controls
+                .iter()
+                .find(|record| record.handle == cpu.gpr[3])
+                .is_some_and(|record| {
+                    super::appearance_controls::ppc_is_slider_proc_id(record.proc_id & 0x0fff)
+                });
+            if part == 129 && slider {
+                // The thumb follows the pointer while the button is down and
+                // the value is left where it is released.
+                if let Some(control) = ppc_control_ptr(memory, cpu.gpr[3]) {
+                    let owner = memory.read_u32_be(control + PPC_CONTROL_OWNER_OFFSET).unwrap_or(0);
+                    let origin = memory
+                        .read_u32_be(owner.wrapping_add(2))
+                        .and_then(|pixmap| memory.read_u32_be(pixmap))
+                        .and_then(|pixmap| ppc_read_rect(memory, pixmap.wrapping_add(6)))
+                        .map_or((0, 0), |(top, left, _, _)| (top, left));
+                    let pointer = (
+                        input.mouse_v.wrapping_add(origin.0),
+                        input.mouse_h.wrapping_add(origin.1),
+                    );
+                    if let Some(rect) = ppc_read_rect(memory, control + PPC_CONTROL_RECT_OFFSET) {
+                        let min = memory.read_u16_be(control + PPC_CONTROL_MIN_OFFSET).unwrap_or(0) as i16;
+                        let max = memory.read_u16_be(control + PPC_CONTROL_MAX_OFFSET).unwrap_or(0) as i16;
+                        let value =
+                            super::appearance_controls::ppc_slider_value_at(rect, pointer, min, max);
+                        if memory.read_u16_be(control + PPC_CONTROL_VALUE_OFFSET) != Some(value as u16) {
+                            let _ = memory.write_u16_be(control + PPC_CONTROL_VALUE_OFFSET, value as u16);
+                            let _ = ppc_draw_control(
+                                memory,
+                                handles,
+                                controls,
+                                gworlds,
+                                vfs_resources,
+                                current_resource_refnum,
+                                cpu.gpr[3],
+                            );
+                        }
+                    }
+                    if input.mouse_button {
+                        return Some(PpcImportAction::Yield(u64::MAX));
+                    }
+                }
+                return Some(PpcImportAction::Return(ppc_i16_result(129)));
+            }
             if part == 129 {
                 if let Some(control) = ppc_control_ptr(memory, cpu.gpr[3]) {
                     if let Some((top, left, bottom, right)) =
@@ -1049,6 +1196,7 @@ pub(super) fn ppc_dispose_control(
     controls: &mut Vec<PpcControlRecord>,
     handle: u32,
 ) {
+    super::appearance_controls::ppc_forget_appearance_control(handle);
     let Some(control) = ppc_control_ptr(memory, handle) else {
         return;
     };
@@ -1132,6 +1280,13 @@ fn ppc_control_part_at_point(
         .iter()
         .find(|record| record.handle == handle)
         .map_or(0, |record| record.proc_id);
+    if super::appearance_controls::ppc_is_passive_appearance_proc_id(proc_id & 0x0fff) {
+        return None;
+    }
+    if super::appearance_controls::ppc_is_slider_proc_id(proc_id & 0x0fff) {
+        // An Appearance slider is all indicator.
+        return Some(129);
+    }
     match proc_id & 0x0fff {
         0 => Some(10),
         1 | 2 => Some(11),
@@ -1430,6 +1585,24 @@ pub(super) fn ppc_draw_control_inner(
     let palette = ppc_ui_theme(gworlds).provider().palette();
     let record = controls.iter().find(|record| record.handle == handle);
     let proc_id = record.map_or(0, |record| record.proc_id) & 0x0fff;
+    if matches!(proc_id, 256 | 304 | 305 | 320 | 321) {
+        // A user pane draws nothing of its own. Picture and icon controls
+        // name a resource this host does not draw yet; nothing is better
+        // than a stand-in, as on the 68K path.
+        return true;
+    }
+    if matches!(proc_id, 160 | 161 | 288)
+        || super::appearance_controls::ppc_is_slider_proc_id(proc_id)
+    {
+        return ppc_draw_appearance_control(
+            memory,
+            gworlds,
+            owner,
+            control,
+            proc_id,
+            (top, left, bottom, right),
+        );
+    }
     let mut frame_cpu = PpcCpu::new();
     frame_cpu.gpr[3] = control + PPC_CONTROL_RECT_OFFSET;
     let is_default = ppc_ui_theme(gworlds) != UiThemeId::ClassicSystem7
@@ -1933,4 +2106,140 @@ pub(super) fn ppc_draw_control_inner(
         );
     }
     framed
+}
+
+/// Group boxes, static text and sliders, drawn as the 68K path draws them
+/// (`draw_group_box_control`, `draw_static_text_control`,
+/// `draw_slider_control` in `trap/control.rs`).
+fn ppc_draw_appearance_control(
+    memory: &mut PpcSectionMem,
+    gworlds: &[PpcGWorldRecord],
+    owner: u32,
+    control: u32,
+    proc_id: i16,
+    (top, left, bottom, right): (i16, i16, i16, i16),
+) -> bool {
+    let ink = ppc_theme_rgb(ppc_ui_theme(gworlds).provider().palette().frame_dark);
+    let paper = PPC_RGB_WHITE;
+    let line = |memory: &mut PpcSectionMem, from: (i16, i16), to: (i16, i16)| {
+        ppc_line_to(memory, gworlds, owner, from, to, ink, None)
+    };
+    let border = |memory: &mut PpcSectionMem, (t, l, b, r): (i16, i16, i16, i16)| {
+        if b > t && r > l {
+            line(memory, (l, t), (r - 1, t));
+            line(memory, (r - 1, t), (r - 1, b - 1));
+            line(memory, (r - 1, b - 1), (l, b - 1));
+            line(memory, (l, b - 1), (l, t));
+        }
+    };
+    let title = ppc_read_pstring_bytes(memory, control + PPC_CONTROL_TITLE_OFFSET).unwrap_or_default();
+    let metrics = get_font_metrics(PPC_QD_TEXT_FONT_DEFAULT, PPC_QD_TEXT_SIZE_SYSTEM);
+    let text = |memory: &mut PpcSectionMem, pen: (i16, i16)| {
+        ppc_draw_text_bytes(
+            memory,
+            gworlds,
+            owner,
+            pen,
+            PPC_QD_TEXT_FONT_DEFAULT,
+            PPC_QD_TEXT_SIZE_SYSTEM,
+            PPC_QD_TEXT_MODE_SRC_OR,
+            ink,
+            None,
+            &title,
+        )
+    };
+    match proc_id {
+        // Static text: the title at the top left, no frame, no fill.
+        288 => {
+            if !title.is_empty() {
+                text(memory, (left, top + metrics.ascent));
+            }
+        }
+        // A titled group box: a one-pixel frame whose top edge runs through
+        // the title's midline, broken behind the title.
+        160 | 161 => {
+            let frame_top = top + (metrics.ascent + metrics.descent) / 2;
+            if title.is_empty() {
+                border(memory, (frame_top, left, bottom, right));
+            } else {
+                let text_left = left + 8;
+                let width = text(memory, (text_left, top + metrics.ascent));
+                line(memory, (left, frame_top), (left, bottom - 1));
+                line(memory, (right - 1, frame_top), (right - 1, bottom - 1));
+                line(memory, (left, bottom - 1), (right - 1, bottom - 1));
+                line(memory, (left, frame_top), (text_left - 3, frame_top));
+                line(memory, ((text_left + width + 3).min(right - 1), frame_top), (right - 1, frame_top));
+            }
+        }
+        // A slider: a groove along the long axis, a tick per value when the
+        // variant asks for them and the range is small, and the thumb at
+        // the value.
+        _ => {
+            let read = |memory: &mut PpcSectionMem, offset: u32| {
+                memory.read_u16_be(control + offset).unwrap_or(0) as i16
+            };
+            let (value, min, max) = (
+                read(memory, PPC_CONTROL_VALUE_OFFSET),
+                read(memory, PPC_CONTROL_MIN_OFFSET),
+                read(memory, PPC_CONTROL_MAX_OFFSET),
+            );
+            let hilite = memory.read_u8(control + PPC_CONTROL_HILITE_OFFSET).unwrap_or(0);
+            let inactive = hilite == 255 || min >= max;
+            let fill = |memory: &mut PpcSectionMem, rect: (i16, i16, i16, i16)| {
+                if rect.2 > rect.0 && rect.3 > rect.1 {
+                    ppc_paint_rect_bounds(memory, gworlds, owner, rect, paper, None);
+                }
+            };
+            fill(memory, (top, left, bottom, right));
+            let vertical = bottom - top > right - left;
+            let thumb = super::appearance_controls::PPC_SLIDER_THUMB_SIZE;
+            let (start, end) = if vertical { (top, bottom) } else { (left, right) };
+            let travel = (end - start - thumb).max(0);
+            let range = i32::from(max) - i32::from(min);
+            let relative = if range > 0 {
+                (i32::from(value.clamp(min, max)) - i32::from(min)) * i32::from(travel) / range
+            } else {
+                0
+            };
+            let thumb_at = start + relative as i16;
+            let (across_a, across_b) = if vertical {
+                ((left + right) / 2 - 2, (left + right) / 2 + 2)
+            } else {
+                ((top + bottom) / 2 - 2, (top + bottom) / 2 + 2)
+            };
+            let groove = if vertical {
+                (start + thumb / 2, across_a, end - thumb / 2, across_b)
+            } else {
+                (across_a, start + thumb / 2, across_b, end - thumb / 2)
+            };
+            border(memory, groove);
+            if !inactive {
+                if proc_id & 2 != 0 && range > 0 && range <= 16 {
+                    for step in 0..=range {
+                        let at = start + thumb / 2 + (step * i32::from(travel) / range) as i16;
+                        if vertical {
+                            line(memory, (across_b + 2, at), ((across_b + 5).min(right), at));
+                        } else {
+                            line(memory, (at, across_b + 2), (at, (across_b + 5).min(bottom)));
+                        }
+                    }
+                }
+                let knob = if vertical {
+                    (thumb_at, left, thumb_at + thumb, right.min(across_b + 1).max(left + 4))
+                } else {
+                    (top, thumb_at, bottom.min(across_b + 1).max(top + 4), thumb_at + thumb)
+                };
+                fill(memory, knob);
+                border(memory, knob);
+                if vertical {
+                    let middle = (knob.0 + knob.2) / 2;
+                    line(memory, (knob.1 + 2, middle), (knob.3 - 3, middle));
+                } else {
+                    let middle = (knob.1 + knob.3) / 2;
+                    line(memory, (middle, knob.0 + 2), (middle, knob.2 - 3));
+                }
+            }
+        }
+    }
+    true
 }

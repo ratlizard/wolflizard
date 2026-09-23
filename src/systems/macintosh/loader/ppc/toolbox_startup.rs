@@ -33,6 +33,7 @@ pub struct PpcToolboxStartupState {
     pub(crate) go_away_tracking: Option<PpcGoAwayTrackingState>,
     pub(crate) drag_window_tracking: Option<PpcDragWindowTrackingState>,
     pub(crate) drag_hilite: Option<PpcDragHilite>,
+    pub(crate) drag_gray_rgn_tracking: Option<PpcDragGrayRgnTrackingState>,
     pub(crate) grow_window_tracking: Option<PpcGrowWindowTrackingState>,
     /// Retained native Standard File calls are resumed at the same import
     /// frame after the host supplies a mouse or keyboard event.
@@ -147,6 +148,7 @@ impl Default for PpcToolboxStartupState {
             go_away_tracking: None,
             drag_window_tracking: None,
             drag_hilite: None,
+            drag_gray_rgn_tracking: None,
             grow_window_tracking: None,
             standard_file_get_filtering: None,
             standard_file_get_tracking: None,

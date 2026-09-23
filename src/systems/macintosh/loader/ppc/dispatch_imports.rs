@@ -2923,7 +2923,33 @@ pub(crate) fn dispatch_supported_import(
                 .then_some(PpcImportAction::ReturnPreserve)
         }
         PpcImportDispatcherTarget::NoOpPreserve => Some(PpcImportAction::ReturnPreserve),
-        PpcImportDispatcherTarget::ExitToShell => Some(PpcImportAction::Halt),
+        PpcImportDispatcherTarget::ExitToShell => {
+            // One line on the way out, so an exit nobody asked for can be
+            // placed: the caller and the saved return addresses up the
+            // stack's back chain (a PowerPC frame keeps its caller's LR at
+            // 8 bytes into the caller's frame).
+            let mut returns = Vec::new();
+            let mut frame = memory.read_u32_be(cpu.gpr[1]).unwrap_or(0);
+            while frame != 0 && returns.len() < 12 {
+                match memory.read_u32_be(frame.wrapping_add(8)) {
+                    Some(saved_lr) => returns.push(format!("${saved_lr:08X}")),
+                    None => break,
+                }
+                let next = memory.read_u32_be(frame).unwrap_or(0);
+                if next <= frame {
+                    break;
+                }
+                frame = next;
+            }
+            eprintln!(
+                "[PPC] {}:{} called from ${:08X}; returns {}",
+                binding.library_name,
+                binding.symbol_name,
+                cpu.lr,
+                returns.join(" ")
+            );
+            Some(PpcImportAction::Halt)
+        }
         PpcImportDispatcherTarget::GlmSetMode
         | PpcImportDispatcherTarget::GlmSetFunc
         | PpcImportDispatcherTarget::GlmMalloc

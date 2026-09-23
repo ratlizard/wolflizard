@@ -294,6 +294,71 @@ pub(super) fn dispatch_list_import(context: PpcListDispatchContext<'_>) -> Optio
             });
             Some(PpcImportAction::ReturnPreserve)
         }
+        // More Macintosh Toolbox (1993), pp. 4-83 and 4-91: LAddColumn and
+        // LDelColumn are LAddRow and LDelRow across the other axis.
+        PpcImportDispatcherTarget::LAddColumn | PpcImportDispatcherTarget::LDelColumn => {
+            let adding = binding.dispatcher_target == PpcImportDispatcherTarget::LAddColumn;
+            let count = cpu.gpr[3] as u16 as i16;
+            let column = cpu.gpr[4] as u16 as i16;
+            let mut result_column = column;
+            list_manager.with_record_mut(cpu.gpr[5], |record| {
+                let changed = if adding {
+                    let at = column.clamp(record.data_bounds.1, record.data_bounds.3);
+                    result_column = at;
+                    ppc_list_insert_columns(record, at, count)
+                } else {
+                    ppc_list_delete_columns(record, column, count)
+                };
+                if !changed {
+                    return;
+                }
+                ppc_list_recompute_visible(record);
+                let mut allocator = PpcProcessAllocatorView {
+                    memory_manager: process_memory_manager,
+                };
+                *last_mem_error = ppc_list_sync_guest_storage(
+                    Some(&mut allocator),
+                    memory,
+                    heap_cursor,
+                    heap_limit,
+                    last_mem_error,
+                    handles,
+                    record,
+                );
+                if record.draw_enabled {
+                    ppc_list_redraw(
+                        memory,
+                        handles,
+                        controls,
+                        gworlds,
+                        vfs_resources,
+                        current_resource_refnum,
+                        record,
+                    );
+                }
+            });
+            if adding {
+                Some(PpcImportAction::Return(ppc_i16_result(result_column)))
+            } else {
+                Some(PpcImportAction::ReturnPreserve)
+            }
+        }
+        // LRect(cellRect, theCell, lHandle): the cell's rectangle in the
+        // rView's local coordinates, clipped to the view, and empty for a
+        // cell outside the visible range (Inside Macintosh Volume IV, IV-273).
+        PpcImportDispatcherTarget::LRect => {
+            let rect_ptr = cpu.gpr[3];
+            let v = (cpu.gpr[4] >> 16) as u16 as i16;
+            let h = cpu.gpr[4] as u16 as i16;
+            let rect = list_manager
+                .with_record_mut(cpu.gpr[5], |record| ppc_list_cell_rect(record, v, h))
+                .flatten()
+                .unwrap_or((0, 0, 0, 0));
+            if rect_ptr != 0 {
+                let _ = ppc_write_rect(memory, rect_ptr, rect.0, rect.1, rect.2, rect.3);
+            }
+            Some(PpcImportAction::ReturnPreserve)
+        }
         PpcImportDispatcherTarget::LGetSelect => {
             let next = cpu.gpr[3] != 0;
             let cell_ptr = cpu.gpr[4];
@@ -1333,10 +1398,9 @@ pub(super) fn ppc_list_draw(
     let port = memory
         .read_u32_be(list_ptr + PPC_LIST_PORT_OFFSET)
         .unwrap_or(PPC_MAIN_GWORLD);
-    let Some(surface) = ppc_live_quickdraw_surface(memory, gworlds, port) else {
+    if ppc_live_quickdraw_surface(memory, gworlds, port).is_none() {
         return;
-    };
-    let front = surface.front_buffer;
+    }
     let font = ppc_current_text_font(memory, port);
     let size = memory
         .read_u16_be(port.wrapping_add(PPC_CGRAF_PORT_TX_SIZE_OFFSET))
@@ -1354,12 +1418,12 @@ pub(super) fn ppc_list_draw(
             // List view coordinates are local to the list's port. Imaging
             // With QuickDraw (1994), pp. 2-9--2-10: map them through the
             // port's PixMap boundary before writing the backing pixels.
-            let rect = surface.local_rect_i16((
+            let port_rect = (
                 top,
                 left,
                 top.saturating_add(cell_v).min(view_bottom),
                 left.saturating_add(cell_h).min(view_right),
-            ));
+            );
             let selected = active && record.selected.contains(&(row, column));
             let background = if selected {
                 PPC_RGB_BLACK
@@ -1371,7 +1435,10 @@ pub(super) fn ppc_list_draw(
             } else {
                 PPC_RGB_BLACK
             };
-            let _ = ppc_fill_front_rect(memory, front, rect, background);
+            // Imaging With QuickDraw (1994), pp. 2-20--2-21: the cell is
+            // painted within the port's visRgn and clipRgn, so a cell wider
+            // than its window stops at the window's edge.
+            let _ = ppc_paint_rect_bounds(memory, gworlds, port, port_rect, background, None);
             let _ = ppc_draw_text_bytes(
                 memory,
                 gworlds,
@@ -1428,4 +1495,71 @@ fn ppc_list_redraw(
             control_handle,
         );
     }
+}
+
+fn ppc_list_cell_rect(record: &PpcListRecord, v: i16, h: i16) -> Option<(i16, i16, i16, i16)> {
+    ppc_list_cell_index(record, v, h)?;
+    let visible = record.visible;
+    if v < visible.0 || v >= visible.2 || h < visible.1 || h >= visible.3 {
+        return None;
+    }
+    let (cell_v, cell_h) = (record.cell_size.0.max(1), record.cell_size.1.max(1));
+    let top = record.view_rect.0 + (v - visible.0) * cell_v;
+    let left = record.view_rect.1 + (h - visible.1) * cell_h;
+    let bottom = (top + cell_v).min(record.view_rect.2);
+    let right = (left + cell_h).min(record.view_rect.3);
+    (bottom > top && right > left).then_some((top, left, bottom, right))
+}
+
+/// Insert `count` empty columns before `at`, moving cells and selection.
+fn ppc_list_insert_columns(record: &mut PpcListRecord, at: i16, count: i16) -> bool {
+    if count <= 0 {
+        return false;
+    }
+    let shift = |column: i16| if column >= at { column.saturating_add(count) } else { column };
+    record.cells = record
+        .cells
+        .drain()
+        .map(|((row, column), bytes)| ((row, shift(column)), bytes))
+        .collect();
+    record.selected = record.selected.iter().map(|&(row, column)| (row, shift(column))).collect();
+    record.data_bounds.3 = record.data_bounds.3.saturating_add(count);
+    true
+}
+
+/// Delete `count` columns from `column`; zero deletes them all.
+fn ppc_list_delete_columns(record: &mut PpcListRecord, column: i16, count: i16) -> bool {
+    let (columns, _) = ppc_list_dimensions(record.data_bounds);
+    if count != 0 && !(column >= record.data_bounds.1 && column < record.data_bounds.3) {
+        return false;
+    }
+    let (first, delete) = if count == 0 {
+        (record.data_bounds.1, columns)
+    } else {
+        let offset = usize::try_from(column - record.data_bounds.1).unwrap_or(0);
+        (column, usize::try_from(count.max(0)).unwrap_or(0).min(columns - offset))
+    };
+    let after = first.saturating_add(delete as i16);
+    let keep = |column: i16| !(first..after).contains(&column);
+    let shift = |column: i16| {
+        if column >= after {
+            column.saturating_sub(delete as i16)
+        } else {
+            column
+        }
+    };
+    record.cells = record
+        .cells
+        .drain()
+        .filter(|((_, column), _)| keep(*column))
+        .map(|((row, column), bytes)| ((row, shift(column)), bytes))
+        .collect();
+    record.selected = record
+        .selected
+        .iter()
+        .filter(|(_, column)| keep(*column))
+        .map(|&(row, column)| (row, shift(column)))
+        .collect();
+    record.data_bounds.3 = record.data_bounds.3.saturating_sub(delete.min(i16::MAX as usize) as i16);
+    true
 }

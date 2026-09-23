@@ -522,11 +522,18 @@ fn tune_player_imports_resolve_and_report_a_bad_component_instance() {
         "TuneTask",
         "TuneUnroll",
     ] {
-        assert_eq!(
-            dispatcher_target_for_import("Apple;Carbon;Multimedia", name),
-            PpcImportDispatcherTarget::SystemCompatibility(
-                PpcSystemCompatibilityOperation::TunePlayerCall
-            ),
+        // The fork's tune player (Cythera's music) takes these calls, so they
+        // do not reach the compatibility stub; a bad instance still answers
+        // badComponentInstance.
+        // The calls the tune player lacks (TuneSetHeaderWithSize, TuneTask)
+        // still do.
+        let target = dispatcher_target_for_import("Apple;Carbon;Multimedia", name);
+        assert!(
+            matches!(target, PpcImportDispatcherTarget::QuickTimeMusic(_))
+                || target
+                    == PpcImportDispatcherTarget::SystemCompatibility(
+                        PpcSystemCompatibilityOperation::TunePlayerCall
+                    ),
             "{name}"
         );
         let pef = synthetic_pef_with_library_import(b"QuickTimeLib", name.as_bytes());

@@ -20337,3 +20337,33 @@
         assert_eq!(cpu.read_reg(Register::D0) as i16, -50);
         assert_eq!(cpu.read_reg(Register::A7), sp + 4);
     }
+
+/// One pixel a byte, so offsets and widths read the same.
+fn line_break(text: &str, start: u32, end: u32, available: i32, first: bool) -> (u8, u32, i32) {
+    super::styled_line_break_offsets(text.as_bytes(), start, end, available, first, |s, e| {
+        (e - s) as i32
+    })
+}
+
+#[test]
+fn styled_line_break_moves_a_later_runs_word_to_the_next_line() {
+    // Cythera's conversation: the keyword "bond" is its own style run after
+    // "...a special ", and did not fit. It was split as "b" / "ond".
+    assert_eq!(line_break("a special bond with", 10, 14, 2, false), (0, 10, 0));
+    // A word begun in an earlier run on the line breaks before its start.
+    assert_eq!(line_break("xx abcdef", 6, 9, 1, false), (0, 3, 0));
+}
+
+#[test]
+fn styled_line_break_splits_a_word_only_where_it_begins_the_line() {
+    assert_eq!(line_break("a special bond", 10, 14, 2, true), (1, 12, 2));
+    assert_eq!(line_break("abcdef", 3, 6, 1, false), (1, 4, 1));
+    assert_eq!(line_break("abcdef", 3, 6, 0, true), (1, 4, 1));
+}
+
+#[test]
+fn styled_line_break_keeps_spaces_with_the_line_they_end() {
+    assert_eq!(line_break("abc  def", 0, 8, 3, true), (0, 5, 5));
+    assert_eq!(line_break("ab cd ef", 0, 8, 6, true), (0, 6, 6));
+    assert_eq!(line_break("ab cd", 0, 5, 9, true), (2, 5, 5));
+}

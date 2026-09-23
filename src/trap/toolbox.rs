@@ -1446,6 +1446,72 @@ pub(crate) fn queue_tune_stream(
     true
 }
 
+/// Where `StyledLineBreak` breaks one style run: its result code
+/// (smBreakWord 0, smBreakChar 1, smBreakOverflow 2), the new textOffset,
+/// and the width the run used. `text` is the script run from textPtr, which
+/// the caller starts at the beginning of the line; `width_of(start, end)`
+/// measures `text[start..end]` in the run's font.
+///
+/// Inside Macintosh: Text (1993), pp. 5-26--5-27 and 5-79--5-80: a run that
+/// fits returns smBreakOverflow; otherwise the break is the last word
+/// boundary that fits, spaces staying with the line they end. With no
+/// boundary in the run, a word in a later run on the line is moved whole to
+/// the next line, the break falling before its start even when that is
+/// before textStart; only a word that begins the line, or lies in its first
+/// run, is broken at a character.
+pub(crate) fn styled_line_break_offsets(
+    text: &[u8],
+    text_start: u32,
+    text_end: u32,
+    available: i32,
+    first_run_on_line: bool,
+    mut width_of: impl FnMut(u32, u32) -> i32,
+) -> (u8, u32, i32) {
+    let is_space = |offset: u32| {
+        matches!(
+            text.get(offset as usize),
+            Some(b' ' | b'\t' | b'\r' | b'\n')
+        )
+    };
+    let run_width = width_of(text_start, text_end);
+    if run_width <= available {
+        return (2, text_end, run_width);
+    }
+    let mut fit = text_start;
+    while fit < text_end && width_of(text_start, fit + 1) <= available {
+        fit += 1;
+    }
+    // A space that does not fit still ends the line it follows.
+    let mut word_break = None;
+    let mut offset = text_start;
+    while offset <= fit && offset < text_end {
+        if is_space(offset) {
+            let mut after = offset + 1;
+            while after < text_end && is_space(after) {
+                after += 1;
+            }
+            word_break = Some(after);
+            offset = after;
+        } else {
+            offset += 1;
+        }
+    }
+    if let Some(word_offset) = word_break {
+        return (0, word_offset, width_of(text_start, word_offset));
+    }
+    if !first_run_on_line {
+        let mut word_start = text_start;
+        while word_start > 0 && !is_space(word_start - 1) {
+            word_start -= 1;
+        }
+        if word_start > 0 {
+            return (0, word_start, 0);
+        }
+    }
+    let char_offset = fit.max(text_start + 1).min(text_end);
+    (1, char_offset, width_of(text_start, char_offset))
+}
+
 /// `read_tune_stream` over any memory: `read_long` reads one guest long.
 pub(crate) fn read_tune_stream_with(
     tune_ptr: u32,
@@ -4221,39 +4287,6 @@ impl super::TrapDispatcher {
         }
     }
 
-    fn scriptutil_is_roman_break_space(byte: u8) -> bool {
-        matches!(byte, b' ' | b'\t' | b'\r' | b'\n')
-    }
-
-    fn scriptutil_last_space_break(
-        bus: &MacMemoryBus,
-        text_ptr: u32,
-        start: u32,
-        fit_end: u32,
-        text_end: u32,
-    ) -> Option<u32> {
-        let mut break_offset = None;
-        let mut offset = start;
-        while offset < fit_end {
-            let byte = bus.read_byte(text_ptr.wrapping_add(offset));
-            if Self::scriptutil_is_roman_break_space(byte) {
-                let mut after_spaces = offset + 1;
-                while after_spaces < text_end
-                    && Self::scriptutil_is_roman_break_space(
-                        bus.read_byte(text_ptr.wrapping_add(after_spaces)),
-                    )
-                {
-                    after_spaces += 1;
-                }
-                break_offset = Some(after_spaces);
-                offset = after_spaces;
-            } else {
-                offset += 1;
-            }
-        }
-        break_offset
-    }
-
     fn handle_scriptutil_styled_line_break<C: CpuOps>(
         &mut self,
         bus: &mut MacMemoryBus,
@@ -4282,65 +4315,18 @@ impl super::TrapDispatcher {
         };
         let available = Self::scriptutil_fixed_to_pixels(width_raw).max(0);
 
-        let run_width =
-            self.scriptutil_measure_text_range_width(bus, text_ptr, text_start, text_end);
-        let (result, output_offset, consumed_width) = if run_width <= available {
-            (2u16, text_end, run_width)
-        } else {
-            let (_, font_scale) = get_font_face_scaled(self.tx_font, self.tx_size);
-            let mut width = 0i32;
-            let mut fit_offset = text_start;
-            for offset in text_start..text_end {
-                let byte_width = self.scriptutil_text_byte_width(
-                    bus.read_byte(text_ptr.wrapping_add(offset)),
-                    font_scale,
-                );
-                if width.saturating_add(byte_width) > available {
-                    break;
-                }
-                width = width.saturating_add(byte_width);
-                fit_offset = offset + 1;
-            }
-
-            if let Some(word_offset) =
-                Self::scriptutil_last_space_break(bus, text_ptr, text_start, fit_offset, text_end)
-            {
-                let word_width = self.scriptutil_measure_text_range_width(
-                    bus,
-                    text_ptr,
-                    text_start,
-                    word_offset,
-                );
-                (0u16, word_offset, word_width)
-            } else if first_style_run_on_line {
-                let char_offset = if fit_offset > text_start {
-                    fit_offset
-                } else {
-                    (text_start + 1).min(text_end)
-                };
-                let char_width = self.scriptutil_measure_text_range_width(
-                    bus,
-                    text_ptr,
-                    text_start,
-                    char_offset,
-                );
-                (1u16, char_offset, char_width)
-            } else {
-                // Break after at least one character even when this is not the
-                // first style run on the line. Returning text_start unchanged
-                // reports "nothing fits" without advancing, and a caller that
-                // lays text out by looping until the offset moves never
-                // terminates -- Cythera's message log adds a row per attempt.
-                //
-                // Inside Macintosh does not settle the case; Executor's
-                // src/script.c StyledLineBreak always moves the offset, in
-                // both of its first-word branches.
-                let char_offset = (text_start + 1).min(text_end);
-                let char_width =
-                    self.scriptutil_measure_text_range_width(bus, text_ptr, text_start, char_offset);
-                (0u16, char_offset, char_width)
-            }
-        };
+        let text: Vec<u8> = (0..text_end)
+            .map(|offset| bus.read_byte(text_ptr.wrapping_add(offset)))
+            .collect();
+        let (result, output_offset, consumed_width) = styled_line_break_offsets(
+            &text,
+            text_start,
+            text_end,
+            available,
+            first_style_run_on_line,
+            |start, end| self.scriptutil_measure_text_range_width(bus, text_ptr, start, end),
+        );
+        let result = u16::from(result);
 
         if text_offset_ptr != 0 {
             bus.write_long(text_offset_ptr, output_offset);

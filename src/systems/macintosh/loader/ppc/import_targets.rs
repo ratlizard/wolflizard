@@ -134,6 +134,7 @@ pub enum PpcImportDispatcherTarget {
     GetPattern,
     GetIndPattern,
     GetPixPat,
+    PixPatChanged,
     GetPictInfo,
     DrawPicture,
     KillPicture,
@@ -3291,6 +3292,7 @@ pub(crate) fn dispatcher_target_for_import(
         ("InterfaceLib", "GetPicture") => PpcImportDispatcherTarget::GetPicture,
         ("InterfaceLib", "GetIndPattern") => PpcImportDispatcherTarget::GetIndPattern,
         ("InterfaceLib", "GetPixPat") => PpcImportDispatcherTarget::GetPixPat,
+        ("InterfaceLib", "PixPatChanged") => PpcImportDispatcherTarget::PixPatChanged,
         ("InterfaceLib", "GetPictInfo") => PpcImportDispatcherTarget::GetPictInfo,
         ("InterfaceLib", "DrawPicture") => PpcImportDispatcherTarget::DrawPicture,
         ("InterfaceLib", "KillPicture") => PpcImportDispatcherTarget::KillPicture,
@@ -4499,6 +4501,16 @@ pub(crate) fn dispatcher_target_for_import(
         ("InterfaceLib", "FSpSetFInfo") => PpcImportDispatcherTarget::FSpSetFInfo,
         ("InterfaceLib", "HSetFInfo") => PpcImportDispatcherTarget::HSetFInfo,
         ("InterfaceLib", "StandardGetFile") => PpcImportDispatcherTarget::StandardGetFile,
+        // Inside Macintosh: QuickTime (1993), chapter 3: StandardGetFilePreview
+        // takes exactly StandardGetFile's arguments and adds a preview pane.
+        ("QuickTimeLib" | "InterfaceLib", "StandardGetFilePreview") => {
+            PpcImportDispatcherTarget::StandardGetFile
+        }
+        // File previews and thumbnails are cosmetic and nothing reads them
+        // back; decline them the way a missing codec does (codecUnimpErr).
+        ("QuickTimeLib" | "InterfaceLib", "MakeFilePreview" | "AddFilePreview" | "MakeThumbnailFromPixMap") => {
+            PpcImportDispatcherTarget::ReturnError(-8962)
+        }
         ("InterfaceLib", "GetScrap") => PpcImportDispatcherTarget::GetScrap,
         ("InterfaceLib", "InfoScrap") => PpcImportDispatcherTarget::InfoScrap,
         ("InterfaceLib", "PutScrap") => PpcImportDispatcherTarget::PutScrap,

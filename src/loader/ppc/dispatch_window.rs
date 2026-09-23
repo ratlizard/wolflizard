@@ -545,6 +545,11 @@ pub(super) fn dispatch_window_import(
             let window = ppc_front_visible_process_window(memory, window_list).unwrap_or(0);
             Some(PpcImportAction::Return(window))
         }
+        // WindowList ($9D6): the first window in the list, visible or not.
+        PpcImportDispatcherTarget::LMGetWindowList => {
+            let window = window_list.with_ref(|windows| windows.first().copied()).unwrap_or(0);
+            Some(PpcImportAction::Return(window))
+        }
         PpcImportDispatcherTarget::SetWinColor => {
             let window = cpu.gpr[3];
             let color_table = cpu.gpr[4];

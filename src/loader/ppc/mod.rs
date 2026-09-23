@@ -1742,6 +1742,7 @@ pub enum PpcImportDispatcherTarget {
     CloseWindow,
     SelectWindow,
     FrontWindow,
+    LMGetWindowList,
     SetWinColor,
     PaintOne,
     PaintBehind,
@@ -15820,6 +15821,7 @@ fn dispatcher_target_for_import(
         ("InterfaceLib", "CloseWindow") => PpcImportDispatcherTarget::CloseWindow,
         ("InterfaceLib", "SelectWindow") => PpcImportDispatcherTarget::SelectWindow,
         ("InterfaceLib", "FrontWindow") => PpcImportDispatcherTarget::FrontWindow,
+        ("InterfaceLib", "LMGetWindowList") => PpcImportDispatcherTarget::LMGetWindowList,
         ("InterfaceLib", "SetWinColor") => PpcImportDispatcherTarget::SetWinColor,
         ("InterfaceLib", "PaintOne") => PpcImportDispatcherTarget::PaintOne,
         ("InterfaceLib", "PaintBehind") => PpcImportDispatcherTarget::PaintBehind,
@@ -16084,6 +16086,12 @@ fn dispatcher_target_for_import(
         ("InterfaceLib", "NewDialog")
         | ("InterfaceLib", "NewColorDialog")
         | ("InterfaceLib", "NewCDialog") => PpcImportDispatcherTarget::NewDialog,
+        // Gestalt('appr') reports the Appearance Manager, so clients register;
+        // registration has no effect this runtime needs to model.
+        ("AppearanceLib" | "InterfaceLib", "RegisterAppearanceClient")
+        | ("AppearanceLib" | "InterfaceLib", "UnregisterAppearanceClient") => {
+            PpcImportDispatcherTarget::ReturnNoErr
+        }
         ("AppearanceLib", "NewFeaturesDialog") | ("InterfaceLib", "NewFeaturesDialog") => {
             PpcImportDispatcherTarget::NewFeaturesDialog
         }
@@ -16221,7 +16229,7 @@ fn dispatcher_target_for_import(
         ("InterfaceLib", "ReadLocation") => PpcImportDispatcherTarget::ReadLocation,
         ("InterfaceLib", "GetTime") => PpcImportDispatcherTarget::GetTime,
         ("InterfaceLib", "Delay") => PpcImportDispatcherTarget::Delay,
-        ("InterfaceLib", "GetDblTime") => PpcImportDispatcherTarget::GetDblTime,
+        ("InterfaceLib", "GetDblTime" | "LMGetDoubleTime") => PpcImportDispatcherTarget::GetDblTime,
         ("InterfaceLib", "LMGetTime") => PpcImportDispatcherTarget::LMGetTime,
         ("InterfaceLib", "LMGetUTableBase") => PpcImportDispatcherTarget::LMGetUTableBase,
         ("InterfaceLib", "LMGetCurDirStore") => PpcImportDispatcherTarget::LMGetCurDirStore,
@@ -16269,7 +16277,7 @@ fn dispatcher_target_for_import(
             PpcImportDispatcherTarget::C2PStr
         }
         ("InterfaceLib", "UpperText") => PpcImportDispatcherTarget::UpperText,
-        ("InterfaceLib", "GetCurrentThread" | "MacGetCurrentThread") => {
+        ("InterfaceLib" | "ThreadsLib", "GetCurrentThread" | "MacGetCurrentThread") => {
             PpcImportDispatcherTarget::GetCurrentThread
         }
         ("InterfaceLib", "GetThreadCurrentTaskRef") => {
@@ -16281,8 +16289,8 @@ fn dispatcher_target_for_import(
         ("InterfaceLib", "SetThreadReadyGivenTaskRef") => {
             PpcImportDispatcherTarget::SetThreadReadyGivenTaskRef
         }
-        ("InterfaceLib", "GetThreadState") => PpcImportDispatcherTarget::GetThreadState,
-        ("InterfaceLib", "SetThreadState") => PpcImportDispatcherTarget::SetThreadState,
+        ("InterfaceLib" | "ThreadsLib", "GetThreadState") => PpcImportDispatcherTarget::GetThreadState,
+        ("InterfaceLib" | "ThreadsLib", "SetThreadState") => PpcImportDispatcherTarget::SetThreadState,
         ("InterfaceLib", "SetThreadStateEndCritical") => {
             PpcImportDispatcherTarget::SetThreadStateEndCritical
         }
@@ -16297,10 +16305,14 @@ fn dispatcher_target_for_import(
         ("InterfaceLib", "ThreadCurrentStackSpace") => {
             PpcImportDispatcherTarget::ThreadCurrentStackSpace
         }
-        ("InterfaceLib", "NewThread") => PpcImportDispatcherTarget::NewThread,
-        ("InterfaceLib", "YieldToThread") => PpcImportDispatcherTarget::YieldToThread,
-        ("InterfaceLib", "YieldToAnyThread") => PpcImportDispatcherTarget::YieldToAnyThread,
-        ("InterfaceLib", "DisposeThread") => PpcImportDispatcherTarget::DisposeThread,
+        ("InterfaceLib" | "ThreadsLib", "NewThread") => PpcImportDispatcherTarget::NewThread,
+        // Trial: the scheduler procedure is accepted and never called.
+        ("InterfaceLib" | "ThreadsLib", "SetThreadScheduler") => {
+            PpcImportDispatcherTarget::ReturnNoErr
+        }
+        ("InterfaceLib" | "ThreadsLib", "YieldToThread") => PpcImportDispatcherTarget::YieldToThread,
+        ("InterfaceLib" | "ThreadsLib", "YieldToAnyThread") => PpcImportDispatcherTarget::YieldToAnyThread,
+        ("InterfaceLib" | "ThreadsLib", "DisposeThread") => PpcImportDispatcherTarget::DisposeThread,
         ("InterfaceLib", "ThreadBeginCritical") => PpcImportDispatcherTarget::ThreadBeginCritical,
         ("InterfaceLib", "ThreadEndCritical") => PpcImportDispatcherTarget::ThreadEndCritical,
         ("InterfaceLib", "GetCurrentProcess" | "GetFrontProcess") => {
@@ -17313,6 +17325,18 @@ fn dispatch_supported_import(context: PpcDispatchContext<'_>) -> Option<PpcImpor
         event_queue,
         draw_sprocket,
     } = context;
+    // Trial trace: every import from a given tick on.
+    if let Some(from) = std::env::var("SYSTEMLESS_PPC_TRACE_IMPORTS_FROM_TICK")
+        .ok()
+        .and_then(|value| value.parse::<u32>().ok())
+    {
+        if *tick_count >= from {
+            eprintln!(
+                "[PPC-IMPORT] tick={} {}:{} r3=${:08X} lr=${:08X}",
+                *tick_count, binding.library_name, binding.symbol_name, cpu.gpr[3], cpu.lr
+            );
+        }
+    }
     let _menu_root = (matches!(
         binding.dispatcher_target,
         PpcImportDispatcherTarget::MenuSelect | PpcImportDispatcherTarget::PopUpMenuSelect
@@ -18854,6 +18878,7 @@ fn dispatch_supported_import(context: PpcDispatchContext<'_>) -> Option<PpcImpor
             unreachable!("dialog imports return through dispatch_dialog_import")
         }
         PpcImportDispatcherTarget::FrontWindow
+        | PpcImportDispatcherTarget::LMGetWindowList
         | PpcImportDispatcherTarget::SetWinColor
         | PpcImportDispatcherTarget::PaintOne
         | PpcImportDispatcherTarget::PaintBehind
@@ -19643,7 +19668,18 @@ fn dispatch_supported_import(context: PpcDispatchContext<'_>) -> Option<PpcImpor
         PpcImportDispatcherTarget::ReturnOne => Some(PpcImportAction::Return(1)),
         PpcImportDispatcherTarget::NoOpPreserve => Some(PpcImportAction::ReturnPreserve),
         PpcImportDispatcherTarget::ExitToShell => Some(PpcImportAction::Halt),
-        PpcImportDispatcherTarget::UnresolvedWeak | PpcImportDispatcherTarget::Unsupported => None,
+        PpcImportDispatcherTarget::UnresolvedWeak | PpcImportDispatcherTarget::Unsupported => {
+            // Trial survey switch: log the import and return 0 instead of
+            // stopping, so one run lists every unsupported import it reaches.
+            if std::env::var_os("SYSTEMLESS_PPC_CONTINUE_UNSUPPORTED").is_some() {
+                eprintln!(
+                    "[PPC-SKIP] {}:{} r3=${:08X} lr=${:08X}",
+                    binding.library_name, binding.symbol_name, cpu.gpr[3], cpu.lr
+                );
+                return Some(PpcImportAction::Return(0));
+            }
+            None
+        }
     }
 }
 
@@ -38436,10 +38472,17 @@ fn ppc_gestalt_response(selector: u32) -> Option<(u32, i16)> {
         b"fs  " => Some(((1 << 0) | (1 << 1), PPC_NO_ERR)),
         b"fold" => Some((1, PPC_NO_ERR)),
         b"qtim" => Some((PPC_QUICKTIME_VERSION, PPC_NO_ERR)),
+        // gestaltQuickTimeFeatures: gestaltPPCQuickTimeLibPresent (bit 0),
+        // since QuickTimeLib's imports are bound here.
+        b"qtrs" => Some((1, PPC_NO_ERR)),
         b"drag" => Some((0, PPC_NO_ERR)),
         b"os  " => Some((0x00FF, PPC_NO_ERR)),
         b"powr" => Some((0, PPC_NO_ERR)),
         b"appr" => Some((1, PPC_NO_ERR)),
+        // gestaltThreadMgrPresent (bit 0) and gestaltThreadsLibraryPresent
+        // (bit 2): the thread routines are bound from ThreadsLib as well as
+        // InterfaceLib.
+        b"thds" => Some(((1 << 0) | (1 << 2), PPC_NO_ERR)),
         b"addr" => Some((0b111, PPC_NO_ERR)),
         b"sdev" => Some((0, PPC_NO_ERR)),
         b"stdf" => Some((1, PPC_NO_ERR)),

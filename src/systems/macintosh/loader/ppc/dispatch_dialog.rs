@@ -5111,7 +5111,13 @@ fn ppc_modal_dialog(
         None => {
             // ModalDialog offers every event, null events included, to the
             // application's filter before handling it itself.
-            let event = event_queue.pop_front();
+            // ModalDialog's event loop does not take high-level events; an
+            // 'oapp' queued behind a dialog shown at launch waits for the
+            // application's own event loop instead of being consumed here.
+            let event = event_queue
+                .iter()
+                .position(|event| event.what != 23)
+                .and_then(|index| event_queue.remove(index));
             if let Some(launch) = ppc_prepare_modal_filter(
                 cpu,
                 memory,

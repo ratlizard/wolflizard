@@ -2521,6 +2521,36 @@ fn presentation_layout(content: ContentRect, frame_width: u32) -> metal_present:
 }
 
 #[cfg(target_os = "macos")]
+/// The guest rows the native menu bar stands in for, which the presentation
+/// leaves out. A PowerPC application that sets MBarHeight to zero has taken
+/// the whole screen, and one that brings its own menu bar back while the
+/// pointer is at the top (Cythera does) would otherwise resize the picture
+/// each time; after the first zero its rows stay in the picture.
+fn native_menu_bar_height(
+    runner: &FixtureRunner,
+    native_integrations: bool,
+    guest_owns_menu_bar_rows: &std::cell::Cell<bool>,
+) -> u32 {
+    use systemless::memory::MemoryBus;
+    if !native_integrations {
+        return 0;
+    }
+    let height = u32::from(
+        runner
+            .bus()
+            .read_word(systemless::memory::globals::addr::MBAR_HEIGHT),
+    );
+    if height == 0 && runner.is_powerpc_app() {
+        guest_owns_menu_bar_rows.set(true);
+    }
+    if guest_owns_menu_bar_rows.get() {
+        0
+    } else {
+        height
+    }
+}
+
+#[cfg(target_os = "macos")]
 fn presentation_content_rect(
     base: ContentRect,
     transient_bounds: Option<(i16, i16, i16, i16)>,
@@ -6022,6 +6052,24 @@ mod tests {
             driver.capture_state(&mut app.guest_state, false);
             assert_eq!(app.guest_state.hidden_menu_height, 0);
         }
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn native_menu_bar_height_keeps_a_powerpc_games_rows_once_it_hides_the_bar() {
+        use systemless::memory::{globals::addr::MBAR_HEIGHT, MemoryBus};
+        let mut runner = FixtureRunner::new(8 * 1024 * 1024, Default::default());
+        runner.bus_mut().write_word(MBAR_HEIGHT, 24);
+        let owns = std::cell::Cell::new(false);
+        assert_eq!(native_menu_bar_height(&runner, true, &owns), 24);
+        assert_eq!(native_menu_bar_height(&runner, false, &owns), 0);
+        assert_eq!(runner.bus().read_word(MBAR_HEIGHT), 24);
+        runner.bus_mut().write_word(MBAR_HEIGHT, 0);
+        assert_eq!(native_menu_bar_height(&runner, true, &owns), 0);
+        // A 68K application's rows follow MBarHeight back.
+        runner.bus_mut().write_word(MBAR_HEIGHT, 24);
+        assert_eq!(native_menu_bar_height(&runner, true, &owns), 24);
+        assert!(!owns.get());
     }
 
     #[cfg(target_os = "macos")]

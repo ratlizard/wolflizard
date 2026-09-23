@@ -43168,6 +43168,7 @@ fn ppc_materialize_resource_records_for_path(
         .filter(|resource| resource.path.eq_ignore_ascii_case(path))
         .map(|resource| (resource.res_type, resource.res_id))
         .collect::<std::collections::HashSet<_>>();
+    let first_new = vfs_resources.len();
     for resource in sorted_resources {
         let res_type = u32::from_be_bytes(resource.res_type);
         if !existing_keys.insert((res_type, resource.id)) {
@@ -43185,6 +43186,12 @@ fn ppc_materialize_resource_records_for_path(
             attrs: u16::from(resource.attrs),
             handle: 0,
         });
+    }
+    // Fonts in a file the application opens are usable once it is open, as
+    // the application's own are from launch. Cythera's Argos A Nouveau is in
+    // 'Cythera Data', as 'sfnt' 7289 under 'FOND' 1046.
+    if vfs_resources.len() > first_new {
+        ppc_register_vfs_resource_fonts(&vfs_resources[first_new..]);
     }
 }
 

@@ -202,19 +202,29 @@ pub(super) fn dispatch_font_import(
                     decode_mac_roman(&bytes),
                 );
             }
-            let advance = ppc_draw_text_bytes_styled(
-                memory,
-                gworlds,
-                current_gworld,
-                (*quickdraw_pen_h, *quickdraw_pen_v),
-                text_font,
-                *quickdraw_text_size,
-                *quickdraw_text_mode,
-                *quickdraw_fore_color,
-                quickdraw_fore_indices.get(&current_gworld).copied(),
-                text_style,
-                &bytes,
-            );
+            // While a picture is open, DrawText is recorded like DrawString
+            // rather than drawn. Cythera lays a note's text out into a
+            // picture with DrawText, and the note came out blank.
+            let advance = if let Some(commands) =
+                ppc_open_picture_commands(toolbox_startup, current_gworld)
+            {
+                pict::recording_push_long_text(commands, *quickdraw_pen_v, *quickdraw_pen_h, &bytes);
+                ppc_text_width_bytes(text_font, *quickdraw_text_size, text_style, &bytes)
+            } else {
+                ppc_draw_text_bytes_styled(
+                    memory,
+                    gworlds,
+                    current_gworld,
+                    (*quickdraw_pen_h, *quickdraw_pen_v),
+                    text_font,
+                    *quickdraw_text_size,
+                    *quickdraw_text_mode,
+                    *quickdraw_fore_color,
+                    quickdraw_fore_indices.get(&current_gworld).copied(),
+                    text_style,
+                    &bytes,
+                )
+            };
             *quickdraw_pen_h = (*quickdraw_pen_h).saturating_add(advance);
             ppc_sync_gworld_pen(memory, current_gworld, *quickdraw_pen_h, *quickdraw_pen_v);
             Some(PpcImportAction::ReturnPreserve)

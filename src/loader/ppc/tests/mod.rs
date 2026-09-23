@@ -956,3 +956,87 @@ fn drag_gray_rgn_pins_the_offset_to_limit_rect_and_gives_up_outside_slop_rect() 
     assert_eq!(ppc_drag_gray_rgn_offset(start, (403, 200), limit, slop, 1), Some((0, 40)));
     assert_eq!(ppc_drag_gray_rgn_offset(start, (403, 200), limit, slop, 2), Some((-60, 0)));
 }
+
+#[test]
+fn draw_text_is_recorded_into_an_open_picture() {
+    let pef = synthetic_pef_with_import(b"OpenPicture");
+    let mut loaded = load_pef_application(&pef).unwrap();
+    let scratch = PPC_DATA_BASE + 0x1800;
+    loaded.memory.add_region(scratch, vec![0; 64]);
+    ppc_write_rect(&mut loaded.memory, scratch, 0, 0, 40, 40).unwrap();
+    loaded.memory.write_bytes(scratch + 16, b"Human").unwrap();
+    let surface =
+        ppc_live_quickdraw_surface(&mut loaded.memory, &loaded.gworlds, *loaded.current_gworld)
+            .unwrap();
+    let before = ppc_quickdraw_read_pixel(
+        &mut loaded.memory,
+        surface.front_buffer,
+        surface.local_point((8, 20)),
+    );
+    loaded.cpu.gpr[3] = scratch;
+    run_test_import(
+        &mut loaded,
+        PpcImportDispatcherTarget::QuickDrawCompatibility(
+            PpcQuickDrawCompatibilityOperation::OpenPicture,
+        ),
+    );
+    let handle = loaded.cpu.gpr[3];
+    loaded.cpu.gpr[3] = 4;
+    loaded.cpu.gpr[4] = 20;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::MoveTo);
+    loaded.cpu.gpr[3] = scratch + 16;
+    loaded.cpu.gpr[4] = 0;
+    loaded.cpu.gpr[5] = 5;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::DrawText);
+    assert_eq!(
+        ppc_quickdraw_read_pixel(
+            &mut loaded.memory,
+            surface.front_buffer,
+            surface.local_point((8, 20)),
+        ),
+        before,
+        "recording must not paint into the live port"
+    );
+    run_test_import(
+        &mut loaded,
+        PpcImportDispatcherTarget::QuickDrawCompatibility(
+            PpcQuickDrawCompatibilityOperation::ClosePicture,
+        ),
+    );
+    let picture =
+        ppc_handle_bytes(&mut loaded.memory, &test_handle_records!(loaded), handle).unwrap();
+    // LongText: the opcode, the pen at (20, 4), the count, the text.
+    let record = [&[0x00, 0x28, 0x00, 0x14, 0x00, 0x04, 0x05][..], b"Human"].concat();
+    assert!(
+        picture.windows(record.len()).any(|window| window == record),
+        "DrawText should record a LongText"
+    );
+}
+
+#[test]
+fn calc_mask_keeps_what_paint_from_the_edges_cannot_reach() {
+    let pef = synthetic_pef_with_import(b"CalcMask");
+    let mut loaded = load_pef_application(&pef).unwrap();
+    let (src, dst) = (PPC_DATA_BASE + 0x1800, PPC_DATA_BASE + 0x1900);
+    loaded.memory.add_region(src, vec![0; 0x200]);
+    // One word wide, five rows: a closed box at columns 2..=6, rows 1..=3,
+    // and a lone pixel at column 12 on row 2.
+    let rows: [u16; 5] = [0, 0x3E00, 0x2208, 0x3E00, 0];
+    for (row, bits) in rows.iter().enumerate() {
+        loaded.memory.write_u16_be(src + row as u32 * 2, *bits).unwrap();
+        loaded.memory.write_u16_be(dst + row as u32 * 2, 0xFFFF).unwrap();
+    }
+    loaded.cpu.gpr[3] = src;
+    loaded.cpu.gpr[4] = dst;
+    loaded.cpu.gpr[5] = 2;
+    loaded.cpu.gpr[6] = 2;
+    loaded.cpu.gpr[7] = 5;
+    loaded.cpu.gpr[8] = 1;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::CalcMask);
+    let mask: Vec<u16> = (0..5)
+        .map(|row| loaded.memory.read_u16_be(dst + row * 2).unwrap())
+        .collect();
+    // The box and its inside are kept; the lone pixel has paint all
+    // round it and is kept as itself.
+    assert_eq!(mask, [0, 0x3E00, 0x3E08, 0x3E00, 0]);
+}

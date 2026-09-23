@@ -1435,6 +1435,7 @@ pub enum PpcImportDispatcherTarget {
     RGB2HSL,
     HSL2RGB,
     SeedFill,
+    CalcMask,
     RGB2HSV,
     HSV2RGB,
     FixRatio,
@@ -12681,6 +12682,7 @@ fn dispatcher_target_for_import(
         ("InterfaceLib", "RGB2HSL") => PpcImportDispatcherTarget::RGB2HSL,
         ("InterfaceLib", "HSL2RGB") => PpcImportDispatcherTarget::HSL2RGB,
         ("InterfaceLib", "SeedFill") => PpcImportDispatcherTarget::SeedFill,
+        ("InterfaceLib", "CalcMask") => PpcImportDispatcherTarget::CalcMask,
         ("InterfaceLib", "RGB2HSV") => PpcImportDispatcherTarget::RGB2HSV,
         ("InterfaceLib", "HSV2RGB") => PpcImportDispatcherTarget::HSV2RGB,
         ("InterfaceLib", "FixRatio") => PpcImportDispatcherTarget::FixRatio,
@@ -15869,6 +15871,7 @@ fn dispatch_supported_import(context: PpcDispatchContext<'_>) -> Option<PpcImpor
         | PpcImportDispatcherTarget::RGB2HSL
         | PpcImportDispatcherTarget::HSL2RGB
         | PpcImportDispatcherTarget::SeedFill
+        | PpcImportDispatcherTarget::CalcMask
         | PpcImportDispatcherTarget::RGB2HSV
         | PpcImportDispatcherTarget::HSV2RGB
         | PpcImportDispatcherTarget::SetRect

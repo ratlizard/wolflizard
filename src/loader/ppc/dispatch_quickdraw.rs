@@ -331,6 +331,18 @@ pub(super) fn dispatch_quickdraw_import(
             );
             Some(PpcImportAction::ReturnPreserve)
         }
+        PpcImportDispatcherTarget::CalcMask => {
+            ppc_calc_mask(
+                memory,
+                cpu.gpr[3],
+                cpu.gpr[4],
+                cpu.gpr[5] as u16 as i16,
+                cpu.gpr[6] as u16 as i16,
+                cpu.gpr[7] as u16 as i16,
+                cpu.gpr[8] as u16 as i16,
+            );
+            Some(PpcImportAction::ReturnPreserve)
+        }
         PpcImportDispatcherTarget::RGB2HSV => {
             ppc_rgb2hsv(memory, cpu.gpr[3], cpu.gpr[4]);
             Some(PpcImportAction::ReturnPreserve)
@@ -1019,6 +1031,83 @@ fn ppc_seed_fill(
     for y in 0..height {
         for (byte, value) in mask[y * width / 8..(y + 1) * width / 8].iter().enumerate() {
             let _ = memory.write_u8(dst_ptr.wrapping_add(y as u32 * dst_row + byte as u32), *value);
+        }
+    }
+}
+
+/// CalcMask(srcPtr, dstPtr, srcRow, dstRow, height, words). Inside
+/// Macintosh Volume IV (1986), p. IV-22: the destination gets 1s only
+/// where paint could not leak in from any of the outer edges, like the
+/// MacPaint lasso. Paint runs through the source's 0 bits from every edge
+/// pixel that is 0; everything it does not reach, the 1 bits included, is
+/// in the mask. Cythera's MyPMToRegion builds the region of an item's
+/// shape with it, as when its note window opens.
+fn ppc_calc_mask(
+    memory: &mut PpcSectionMem,
+    src_ptr: u32,
+    dst_ptr: u32,
+    src_row: i16,
+    dst_row: i16,
+    height: i16,
+    words: i16,
+) {
+    if src_ptr == 0 || dst_ptr == 0 || src_row <= 0 || dst_row <= 0 || height <= 0 || words <= 0 {
+        return;
+    }
+    let width = words as usize * 16;
+    let height = height as usize;
+    let (src_row, dst_row) = (src_row as u32, dst_row as u32);
+    if src_row < words as u32 * 2 || dst_row < words as u32 * 2 || width * height > 4 << 20 {
+        return;
+    }
+    let mut ink = Vec::with_capacity(width * height);
+    for y in 0..height {
+        for x in 0..width {
+            ink.push(
+                memory
+                    .read_u8(src_ptr.wrapping_add(y as u32 * src_row + (x / 8) as u32))
+                    .is_some_and(|byte| byte & (0x80 >> (x % 8)) != 0),
+            );
+        }
+    }
+    let mut leaked = vec![false; width * height];
+    let mut stack = Vec::new();
+    for x in 0..width {
+        stack.push((x, 0));
+        stack.push((x, height - 1));
+    }
+    for y in 0..height {
+        stack.push((0, y));
+        stack.push((width - 1, y));
+    }
+    while let Some((x, y)) = stack.pop() {
+        let index = y * width + x;
+        if leaked[index] || ink[index] {
+            continue;
+        }
+        leaked[index] = true;
+        if x > 0 {
+            stack.push((x - 1, y));
+        }
+        if x + 1 < width {
+            stack.push((x + 1, y));
+        }
+        if y > 0 {
+            stack.push((x, y - 1));
+        }
+        if y + 1 < height {
+            stack.push((x, y + 1));
+        }
+    }
+    for y in 0..height {
+        for byte in 0..width / 8 {
+            let mut value = 0u8;
+            for bit in 0..8 {
+                if !leaked[y * width + byte * 8 + bit] {
+                    value |= 0x80 >> bit;
+                }
+            }
+            let _ = memory.write_u8(dst_ptr.wrapping_add(y as u32 * dst_row + byte as u32), value);
         }
     }
 }

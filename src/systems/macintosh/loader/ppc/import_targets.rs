@@ -1485,6 +1485,7 @@ pub enum PpcImportDispatcherTarget {
     SlotVRemove,
     LegacyMemoryUtility(PpcLegacyMemoryUtilityOperation),
     LegacyControl(PpcLegacyControlOperation),
+    AppearanceControl(PpcAppearanceControlOperation),
     LegacyWindow(PpcLegacyWindowOperation),
     AppleEventCompatibility(PpcAppleEventCompatibilityOperation),
     DialogCompatibility(PpcDialogCompatibilityOperation),
@@ -4767,6 +4768,13 @@ pub(crate) fn dispatcher_target_for_import(
             "InterfaceLib" | "AppearanceLib" | "DialogsLib" | "CarbonLib",
             "NewDialog" | "NewColorDialog" | "NewCDialog",
         ) => PpcImportDispatcherTarget::NewDialog,
+        ("AppearanceLib" | "InterfaceLib", symbol)
+            if appearance_controls::ppc_appearance_control_symbol_op(symbol).is_some() =>
+        {
+            PpcImportDispatcherTarget::AppearanceControl(
+                appearance_controls::ppc_appearance_control_symbol_op(symbol).expect("checked"),
+            )
+        }
         ("InterfaceLib" | "AppearanceLib", "RegisterAppearanceClient") => {
             PpcImportDispatcherTarget::RegisterAppearanceClient
         }

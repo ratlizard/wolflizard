@@ -36341,6 +36341,38 @@ fn ppc_draw_tracked_menu(
     >,
     selected: i16,
 ) {
+    // The Menu Manager draws a menu in the Window Manager port with the
+    // whole screen open to it, whatever clipRgn an application left there.
+    // Cythera sets that port's clipRgn to the menu bar strip when it shows
+    // and hides its menu bar, and every item's text was clipped away.
+    let clip_addr = PPC_MAIN_GWORLD + PPC_CGRAF_PORT_CLIP_RGN_OFFSET;
+    let vis_addr = PPC_MAIN_GWORLD + PPC_CGRAF_PORT_VIS_RGN_OFFSET;
+    let saved = (memory.read_u32_be(clip_addr), memory.read_u32_be(vis_addr));
+    let _ = memory.write_u32_be(clip_addr, 0);
+    let _ = memory.write_u32_be(vis_addr, 0);
+    ppc_draw_tracked_menu_in_open_port(memory, gworlds, screen_clut, menu_colors, kind, state, selected);
+    if let Some(clip) = saved.0 {
+        let _ = memory.write_u32_be(clip_addr, clip);
+    }
+    if let Some(vis) = saved.1 {
+        let _ = memory.write_u32_be(vis_addr, vis);
+    }
+}
+
+fn ppc_draw_tracked_menu_in_open_port(
+    memory: &mut PpcSectionMem,
+    gworlds: &[PpcGWorldRecord],
+    screen_clut: &[[u16; 3]; 256],
+    menu_colors: MenuColorTable<'_>,
+    kind: StandardMenuPaneKind,
+    state: &impl TrackedMenuPaneView<
+        MenuRef = u32,
+        Surface = Option<MenuTrackingSurface>,
+        Pixel = u16,
+        Appearance = PpcTrackedMenuItemAppearance,
+    >,
+    selected: i16,
+) {
     let Some((front, background, black)) =
         ppc_draw_tracked_menu_chrome(memory, gworlds, screen_clut, menu_colors, kind, state)
     else {

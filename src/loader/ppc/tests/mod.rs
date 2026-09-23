@@ -1150,3 +1150,45 @@ fn menu_hook_low_memory_accessors_round_trip() {
     run_test_import(&mut loaded, PpcImportDispatcherTarget::LMGetMenuHook);
     assert_eq!(loaded.cpu.gpr[3], 0x0100_ABC0);
 }
+
+#[test]
+fn menu_items_are_drawn_whatever_clip_the_application_left_in_the_window_manager_port() {
+    // The same menu held open twice: once with the port's clipRgn wide open
+    // and once clipped to the menu bar strip, as Cythera leaves it. The
+    // menu must come out the same.
+    let draw = |strip_clip: bool| {
+        let pef = synthetic_pef_with_import(b"MenuSelect");
+        let mut loaded = load_pef_application(&pef).unwrap();
+        install_test_menu(&mut loaded, PPC_DATA_BASE + 0x1000, 129, b"File", b"Quit;Save");
+        let clip = loaded
+            .memory
+            .read_u32_be(PPC_MAIN_GWORLD + PPC_CGRAF_PORT_CLIP_RGN_OFFSET)
+            .unwrap();
+        if strip_clip {
+            ppc_write_rgn_bbox(&mut loaded.memory, clip, 0, 0, 20, 640).unwrap();
+        }
+        loaded.cpu.gpr[3] = (10u32 << 16) | 12;
+        loaded.set_input_snapshot(PpcInputSnapshot {
+            mouse_button: true,
+            mouse_v: 10,
+            mouse_h: 12,
+            ..PpcInputSnapshot::default()
+        });
+        let tick = loaded.current_tick().wrapping_add(1);
+        loaded.set_tick_count(tick);
+        let _ = loaded.run_with_hle_imports(256);
+        assert_eq!(
+            loaded
+                .memory
+                .read_u32_be(PPC_MAIN_GWORLD + PPC_CGRAF_PORT_CLIP_RGN_OFFSET),
+            Some(clip),
+            "the port's clipRgn is put back"
+        );
+        let front = ppc_front_buffer_for_gworld(&loaded.gworlds, PPC_MAIN_GWORLD).unwrap();
+        (21..80)
+            .flat_map(|y| (0..200).map(move |x| (x, y)))
+            .map(|(x, y)| ppc_quickdraw_read_pixel(&mut loaded.memory, front, (x, y)))
+            .collect::<Vec<_>>()
+    };
+    assert!(draw(false) == draw(true), "the clipped port lost the menu's items");
+}

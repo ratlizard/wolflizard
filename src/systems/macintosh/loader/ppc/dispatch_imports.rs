@@ -1839,6 +1839,7 @@ pub(crate) fn dispatch_supported_import(
         | PpcImportDispatcherTarget::YieldToThread
         | PpcImportDispatcherTarget::MpYield
         | PpcImportDispatcherTarget::YieldToAnyThread
+        | PpcImportDispatcherTarget::SetThreadScheduler
         | PpcImportDispatcherTarget::DisposeThread
         | PpcImportDispatcherTarget::ThreadBeginCritical
         | PpcImportDispatcherTarget::ThreadEndCritical => {

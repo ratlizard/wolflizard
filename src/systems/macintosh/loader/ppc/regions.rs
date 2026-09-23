@@ -35,36 +35,46 @@ pub(super) fn ppc_set_port_origin(memory: &mut PpcSectionMem, port: u32, h: i16,
     if port == 0 {
         return None;
     }
+    // Inside Macintosh: Imaging With QuickDraw (1994), Basic QuickDraw
+    // p. 2-45: SetOrigin redefines the local coordinates of the portRect
+    // without moving the underlying pixels or clipping region. The
+    // portRect, portBits.bounds and visRgn move by the difference between
+    // the new origin and the old; a window's bounds keep its place on the
+    // screen, which setting them to the origin would lose.
+    let (port_top, port_left, port_bottom, port_right) =
+        ppc_read_rect(memory, port.checked_add(16)?)?;
+    let dh = h.wrapping_sub(port_left);
+    let dv = v.wrapping_sub(port_top);
+    if dh == 0 && dv == 0 {
+        return Some(());
+    }
     let pixmap_handle = memory.read_u32_be(port.checked_add(2)?)?;
     let pixmap = memory.read_u32_be(pixmap_handle)?;
     let (pixel_top, pixel_left, pixel_bottom, pixel_right) =
         ppc_read_rect(memory, pixmap.checked_add(6)?)?;
-    let pixel_height = pixel_bottom.wrapping_sub(pixel_top);
-    let pixel_width = pixel_right.wrapping_sub(pixel_left);
     ppc_write_rect(
         memory,
         pixmap + 6,
-        v,
-        h,
-        v.wrapping_add(pixel_height),
-        h.wrapping_add(pixel_width),
+        pixel_top.wrapping_add(dv),
+        pixel_left.wrapping_add(dh),
+        pixel_bottom.wrapping_add(dv),
+        pixel_right.wrapping_add(dh),
     )?;
-
-    let (port_top, port_left, port_bottom, port_right) =
-        ppc_read_rect(memory, port.checked_add(16)?)?;
-    let port_height = port_bottom.wrapping_sub(port_top);
-    let port_width = port_right.wrapping_sub(port_left);
-    // Inside Macintosh: Imaging With QuickDraw (1994), Basic QuickDraw
-    // p. 2-45: SetOrigin redefines the local coordinates of the portRect
-    // without moving the underlying pixels or clipping region.
     ppc_write_rect(
         memory,
         port + 16,
-        v,
-        h,
-        v.wrapping_add(port_height),
-        h.wrapping_add(port_width),
-    )
+        port_top.wrapping_add(dv),
+        port_left.wrapping_add(dh),
+        port_bottom.wrapping_add(dv),
+        port_right.wrapping_add(dh),
+    )?;
+    let vis_rgn = memory
+        .read_u32_be(port.wrapping_add(PPC_CGRAF_PORT_VIS_RGN_OFFSET))
+        .unwrap_or(0);
+    if vis_rgn != 0 {
+        let _ = ppc_offset_rgn(memory, vis_rgn, dh, dv);
+    }
+    Some(())
 }
 
 pub(super) fn ppc_open_region_include_point(startup: &mut PpcToolboxStartupState, h: i16, v: i16) {

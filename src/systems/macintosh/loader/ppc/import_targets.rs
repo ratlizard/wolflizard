@@ -714,6 +714,7 @@ pub enum PpcImportDispatcherTarget {
     AbsoluteToNanoseconds,
     SysEnvirons,
     TextWidth,
+    VisibleLength,
     StringWidth,
     TruncString,
     CharWidth,
@@ -4002,6 +4003,10 @@ pub(crate) fn dispatcher_target_for_import(
         ("InterfaceLib", "LMGetTicks") => PpcImportDispatcherTarget::TickCount,
         ("InterfaceLib", "SysEnvirons") => PpcImportDispatcherTarget::SysEnvirons,
         ("InterfaceLib", "TextWidth") => PpcImportDispatcherTarget::TextWidth,
+        ("InterfaceLib", "VisibleLength") => PpcImportDispatcherTarget::VisibleLength,
+        // Inside Macintosh Volume V (1986), p. V-77: CharExtra widens every
+        // character but the space. The text drawing here has no per-character extra yet.
+        ("InterfaceLib", "CharExtra") => PpcImportDispatcherTarget::NoOpPreserve,
         ("InterfaceLib", "StringWidth") => PpcImportDispatcherTarget::StringWidth,
         ("InterfaceLib", "TruncString") => PpcImportDispatcherTarget::TruncString,
         ("InterfaceLib", "CharWidth") => PpcImportDispatcherTarget::CharWidth,

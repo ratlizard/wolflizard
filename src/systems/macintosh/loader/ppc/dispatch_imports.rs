@@ -2842,6 +2842,21 @@ pub(crate) fn dispatch_supported_import(
         PpcImportDispatcherTarget::QuickTimeMusic(_) => {
             unreachable!("tune imports return through dispatch_tune_import")
         }
+        // VisibleLength: the length of the text with trailing white space
+        // excluded, as the 68K ScriptUtil selector answers it. Cythera lays out its narration by advancing by
+        // this; a zero never advances.
+        PpcImportDispatcherTarget::VisibleLength => {
+            let (text, mut visible) = (cpu.gpr[3], cpu.gpr[4]);
+            while visible > 0
+                && matches!(
+                    memory.read_u8(text.wrapping_add(visible - 1)),
+                    Some(b' ' | b'\t' | b'\r' | b'\n')
+                )
+            {
+                visible -= 1;
+            }
+            Some(PpcImportAction::Return(visible))
+        }
         PpcImportDispatcherTarget::ReturnError(error) => {
             Some(PpcImportAction::Return(ppc_i16_result(error)))
         }

@@ -773,6 +773,7 @@ const PPC_CONTROL_HILITE_OFFSET: u32 = 17;
 const PPC_CONTROL_VALUE_OFFSET: u32 = 18;
 const PPC_CONTROL_MIN_OFFSET: u32 = 20;
 const PPC_CONTROL_MAX_OFFSET: u32 = 22;
+const PPC_CONTROL_ACTION_OFFSET: u32 = 32;
 const PPC_CONTROL_REF_CON_OFFSET: u32 = 36;
 const PPC_CONTROL_TITLE_OFFSET: u32 = 40;
 const PPC_KEY_MAP_SIZE: u32 = 16;
@@ -1135,6 +1136,10 @@ pub enum PpcLegacyWindowOperation {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PpcLegacyControlOperation {
+    GetControlReference,
+    SetControlReference,
+    GetControlAction,
+    SetControlAction,
     DisposeControl,
     DrawOneControl,
     FindControl,
@@ -1395,6 +1400,7 @@ pub enum PpcImportDispatcherTarget {
     Color2Index,
     Index2Color,
     RGB2HSL,
+    HSL2RGB,
     RGB2HSV,
     HSV2RGB,
     FixRatio,
@@ -12521,6 +12527,7 @@ fn dispatcher_target_for_import(
         ("InterfaceLib", "Color2Index") => PpcImportDispatcherTarget::Color2Index,
         ("InterfaceLib", "Index2Color") => PpcImportDispatcherTarget::Index2Color,
         ("InterfaceLib", "RGB2HSL") => PpcImportDispatcherTarget::RGB2HSL,
+        ("InterfaceLib", "HSL2RGB") => PpcImportDispatcherTarget::HSL2RGB,
         ("InterfaceLib", "RGB2HSV") => PpcImportDispatcherTarget::RGB2HSV,
         ("InterfaceLib", "HSV2RGB") => PpcImportDispatcherTarget::HSV2RGB,
         ("InterfaceLib", "FixRatio") => PpcImportDispatcherTarget::FixRatio,
@@ -13414,6 +13421,18 @@ fn dispatcher_target_for_import(
         ("InterfaceLib", "GetControlTitle") => PpcImportDispatcherTarget::LegacyControl(
             PpcLegacyControlOperation::GetControlTitle,
         ),
+        ("InterfaceLib", "GetControlReference" | "GetCRefCon") => {
+            PpcImportDispatcherTarget::LegacyControl(PpcLegacyControlOperation::GetControlReference)
+        }
+        ("InterfaceLib", "SetControlReference" | "SetCRefCon") => {
+            PpcImportDispatcherTarget::LegacyControl(PpcLegacyControlOperation::SetControlReference)
+        }
+        ("InterfaceLib", "GetControlAction" | "GetCtlAction") => {
+            PpcImportDispatcherTarget::LegacyControl(PpcLegacyControlOperation::GetControlAction)
+        }
+        ("InterfaceLib", "SetControlAction" | "SetCtlAction") => {
+            PpcImportDispatcherTarget::LegacyControl(PpcLegacyControlOperation::SetControlAction)
+        }
         ("InterfaceLib", "GetControlValue") => PpcImportDispatcherTarget::LegacyControl(
             PpcLegacyControlOperation::GetControlValue,
         ),
@@ -15648,6 +15667,7 @@ fn dispatch_supported_import(context: PpcDispatchContext<'_>) -> Option<PpcImpor
         | PpcImportDispatcherTarget::Color2Index
         | PpcImportDispatcherTarget::Index2Color
         | PpcImportDispatcherTarget::RGB2HSL
+        | PpcImportDispatcherTarget::HSL2RGB
         | PpcImportDispatcherTarget::RGB2HSV
         | PpcImportDispatcherTarget::HSV2RGB
         | PpcImportDispatcherTarget::SetRect
@@ -23001,6 +23021,122 @@ pub(super) fn ppc_paint_rect_bounds(
     wrote
 }
 
+/// FillCRect with a full-colour PixPat: tile the pattern's pixels over the
+/// rectangle. Imaging With QuickDraw (1994), 4-73 and 4-99 to 4-104: patType 1
+/// is a full-colour pattern whose image is patData laid out by patMap, and a
+/// pattern is aligned to the port's local coordinate origin. A PixPat copied
+/// from a 'ppat' resource (GetPixPat here) keeps patMap and patData as offsets
+/// within its own block; one made by NewPixPat keeps handles. Only an 8-bit
+/// pattern onto an 8-bit surface is drawn, copying colour indices; anything
+/// else returns false and the caller falls back to a solid fill.
+pub(super) fn ppc_fill_rect_with_pix_pat(
+    memory: &mut PpcSectionMem,
+    gworlds: &[PpcGWorldRecord],
+    current_gworld: u32,
+    rect: (i16, i16, i16, i16),
+    pix_pat: u32,
+) -> bool {
+    let Some(pattern) = memory.read_u32_be(pix_pat).filter(|ptr| *ptr != 0) else {
+        return false;
+    };
+    if memory.read_u16_be(pattern) != Some(1) {
+        return false;
+    }
+    let (Some(pat_map), Some(pat_data)) = (
+        memory.read_u32_be(pattern.wrapping_add(2)),
+        memory.read_u32_be(pattern.wrapping_add(6)),
+    ) else {
+        return false;
+    };
+    let resolve = |memory: &mut PpcSectionMem, field: u32| -> Option<u32> {
+        if field < 0x0001_0000 {
+            Some(pattern.wrapping_add(field))
+        } else {
+            memory.read_u32_be(field).filter(|ptr| *ptr != 0)
+        }
+    };
+    let (Some(map), Some(data)) = (resolve(memory, pat_map), resolve(memory, pat_data)) else {
+        return false;
+    };
+    let (Some(row_bytes), Some(bounds), Some(pixel_size)) = (
+        memory.read_u16_be(map.wrapping_add(4)),
+        ppc_read_rect(memory, map.wrapping_add(6)),
+        memory.read_u16_be(map.wrapping_add(32)),
+    ) else {
+        return false;
+    };
+    let pat_row_bytes = u32::from(row_bytes & 0x3FFF);
+    let pat_width = i32::from(bounds.3) - i32::from(bounds.1);
+    let pat_height = i32::from(bounds.2) - i32::from(bounds.0);
+    if pixel_size != 8 || pat_width <= 0 || pat_height <= 0 || pat_row_bytes == 0 {
+        return false;
+    }
+    let Some(surface) = ppc_live_quickdraw_surface(memory, gworlds, current_gworld) else {
+        return false;
+    };
+    let front_buffer = surface.front_buffer;
+    if front_buffer.depth != 8 {
+        return false;
+    }
+    let mut image = vec![0u8; (pat_row_bytes * pat_height as u32) as usize];
+    if memory.read_bytes_into(data, &mut image).is_none() {
+        return false;
+    }
+    let (top, left, bottom, right) = surface.local_rect(rect);
+    let left = left.max(0).min(front_buffer.width as i32);
+    let top = top.max(0).min(front_buffer.height as i32);
+    let right = right.max(0).min(front_buffer.width as i32);
+    let bottom = bottom.max(0).min(front_buffer.height as i32);
+    if left >= right || top >= bottom {
+        return false;
+    }
+    let clip_storage = memory
+        .read_u32_be(current_gworld.wrapping_add(PPC_CGRAF_PORT_CLIP_RGN_OFFSET))
+        .and_then(|clip_rgn| ppc_region_storage(memory, clip_rgn));
+    let vis_storage = memory
+        .read_u32_be(current_gworld.wrapping_add(PPC_CGRAF_PORT_VIS_RGN_OFFSET))
+        .and_then(|vis_rgn| ppc_region_storage(memory, vis_rgn));
+    let (Ok(port_top), Ok(port_bottom)) = (
+        i16::try_from(top + i32::from(surface.top)),
+        i16::try_from(bottom + i32::from(surface.top)),
+    ) else {
+        return false;
+    };
+    let (Ok(port_left), Ok(port_right)) = (
+        i16::try_from(left + i32::from(surface.left)),
+        i16::try_from(right + i32::from(surface.left)),
+    ) else {
+        return false;
+    };
+    let mut rows = vec![vec![port_left, port_right]; (port_bottom as i32 - port_top as i32) as usize];
+    for storage in [vis_storage.as_deref(), clip_storage.as_deref()]
+        .into_iter()
+        .flatten()
+    {
+        let Some(clip_rows) = ppc_region_rows_for_band(storage, port_top, port_bottom) else {
+            return false;
+        };
+        for (row, clip) in rows.iter_mut().zip(clip_rows) {
+            *row = ppc_region_intersect_rows(row, &clip);
+        }
+    }
+    let mut wrote = false;
+    for (dy, row) in rows.iter().enumerate() {
+        let port_y = i32::from(port_top) + dy as i32;
+        let y = port_y - i32::from(surface.top);
+        let pattern_row = port_y.rem_euclid(pat_height) as u32 * pat_row_bytes;
+        for pair in row.chunks_exact(2) {
+            let bytes: Vec<u8> = (i32::from(pair[0])..i32::from(pair[1]))
+                .map(|port_x| image[(pattern_row + port_x.rem_euclid(pat_width) as u32) as usize])
+                .collect();
+            let x = i32::from(pair[0]) - i32::from(surface.left);
+            let address = front_buffer.base_addr + y as u32 * front_buffer.row_bytes + x as u32;
+            wrote |= memory.write_bytes(address, &bytes).is_some();
+        }
+    }
+    wrote
+}
+
 fn ppc_invert_rect(
     cpu: &PpcCpu,
     memory: &mut PpcSectionMem,
@@ -26345,6 +26481,60 @@ fn ppc_restore_process_port_draw_state(
     if let Some(value) = memory.read_u16_be(port.wrapping_add(PPC_CGRAF_PORT_TX_SIZE_OFFSET)) {
         *text_size = value as i16;
     }
+}
+
+fn ppc_hsl2rgb(memory: &mut PpcSectionMem, hsl_ptr: u32, rgb_ptr: u32) -> bool {
+    // Inside Macintosh Volume VI (1991), pp. 19-10--19-11: the inverse of
+    // RGB2HSL, with the components as unsigned 16-bit fractions.
+    fn hue_to_rgb(p: f64, q: f64, mut t: f64) -> f64 {
+        if t < 0.0 {
+            t += 1.0;
+        } else if t > 1.0 {
+            t -= 1.0;
+        }
+        if t < 1.0 / 6.0 {
+            return p + (q - p) * 6.0 * t;
+        }
+        if t < 1.0 / 2.0 {
+            return q;
+        }
+        if t < 2.0 / 3.0 {
+            return p + (q - p) * (2.0 / 3.0 - t) * 6.0;
+        }
+        p
+    }
+    let (Some(hue), Some(saturation), Some(lightness)) = (
+        memory.read_u16_be(hsl_ptr),
+        memory.read_u16_be(hsl_ptr.wrapping_add(2)),
+        memory.read_u16_be(hsl_ptr.wrapping_add(4)),
+    ) else {
+        return false;
+    };
+    if rgb_ptr == 0 || !ppc_memory_can_write_bytes(memory, rgb_ptr, 6) {
+        return false;
+    }
+    let hue = f64::from(hue) / 65_535.0;
+    let saturation = f64::from(saturation) / 65_535.0;
+    let lightness = f64::from(lightness) / 65_535.0;
+    let (red, green, blue) = if saturation == 0.0 {
+        (lightness, lightness, lightness)
+    } else {
+        let q = if lightness < 0.5 {
+            lightness * (1.0 + saturation)
+        } else {
+            lightness + saturation - lightness * saturation
+        };
+        let p = 2.0 * lightness - q;
+        (
+            hue_to_rgb(p, q, hue + 1.0 / 3.0),
+            hue_to_rgb(p, q, hue),
+            hue_to_rgb(p, q, hue - 1.0 / 3.0),
+        )
+    };
+    let to_word = |component: f64| -> u16 { (component.clamp(0.0, 1.0) * 65_535.0).round() as u16 };
+    memory.write_u16_be(rgb_ptr, to_word(red)).is_some()
+        && memory.write_u16_be(rgb_ptr.wrapping_add(2), to_word(green)).is_some()
+        && memory.write_u16_be(rgb_ptr.wrapping_add(4), to_word(blue)).is_some()
 }
 
 fn ppc_rgb2hsl(memory: &mut PpcSectionMem, rgb_ptr: u32, hsl_ptr: u32) -> bool {

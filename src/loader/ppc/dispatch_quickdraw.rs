@@ -317,6 +317,20 @@ pub(super) fn dispatch_quickdraw_import(
             ppc_hsl2rgb(memory, cpu.gpr[3], cpu.gpr[4]);
             Some(PpcImportAction::ReturnPreserve)
         }
+        PpcImportDispatcherTarget::SeedFill => {
+            ppc_seed_fill(
+                memory,
+                cpu.gpr[3],
+                cpu.gpr[4],
+                cpu.gpr[5] as u16 as i16,
+                cpu.gpr[6] as u16 as i16,
+                cpu.gpr[7] as u16 as i16,
+                cpu.gpr[8] as u16 as i16,
+                cpu.gpr[9] as u16 as i16,
+                cpu.gpr[10] as u16 as i16,
+            );
+            Some(PpcImportAction::ReturnPreserve)
+        }
         PpcImportDispatcherTarget::RGB2HSV => {
             ppc_rgb2hsv(memory, cpu.gpr[3], cpu.gpr[4]);
             Some(PpcImportAction::ReturnPreserve)
@@ -628,6 +642,18 @@ pub(super) fn dispatch_quickdraw_import(
                     quickdraw_back_color.blue,
                 );
             }
+            // Imaging With QuickDraw (1994), 4-73: EraseRect fills with the
+            // port's background pattern, which in a colour port is bkPixPat.
+            if let Some(rect) = ppc_read_rect(memory, cpu.gpr[3]) {
+                let back_pix_pat = memory
+                    .read_u32_be(current_gworld.wrapping_add(PPC_CGRAF_PORT_BK_PIXPAT_OFFSET))
+                    .unwrap_or(0);
+                if back_pix_pat != 0
+                    && ppc_fill_rect_with_pix_pat(memory, gworlds, current_gworld, rect, back_pix_pat)
+                {
+                    return Some(PpcImportAction::ReturnPreserve);
+                }
+            }
             if let Some(rect) = ppc_read_rect(memory, cpu.gpr[3]) {
                 let _ = ppc_paint_rect_bounds(
                     memory,
@@ -898,5 +924,75 @@ pub(super) fn dispatch_quickdraw_import(
             Some(PpcImportAction::ReturnPreserve)
         }
         _ => None,
+    }
+}
+
+/// SeedFill(srcPtr, dstPtr, srcRow, dstRow, height, words, seedH, seedV).
+/// Inside Macintosh Volume IV (1986), p. IV-22: the destination gets 1s
+/// only where paint can leak from the seed point. As the 68K trap does, the
+/// pixels reached are the ones connected to the seed that share its value;
+/// every other bit of the destination rectangle is cleared.
+#[allow(clippy::too_many_arguments)]
+fn ppc_seed_fill(
+    memory: &mut PpcSectionMem,
+    src_ptr: u32,
+    dst_ptr: u32,
+    src_row: i16,
+    dst_row: i16,
+    height: i16,
+    words: i16,
+    seed_h: i16,
+    seed_v: i16,
+) {
+    if src_ptr == 0 || dst_ptr == 0 || src_row <= 0 || dst_row <= 0 || height <= 0 || words <= 0 {
+        return;
+    }
+    let width = words as usize * 16;
+    let height = height as usize;
+    let (src_row, dst_row) = (src_row as u32, dst_row as u32);
+    if src_row < words as u32 * 2 || dst_row < words as u32 * 2 || width * height > 4 << 20 {
+        return;
+    }
+    let bit = |memory: &mut PpcSectionMem, base: u32, row: u32, x: usize, y: usize| {
+        memory
+            .read_u8(base.wrapping_add(y as u32 * row + (x / 8) as u32))
+            .is_some_and(|byte| byte & (0x80 >> (x % 8)) != 0)
+    };
+    let mut source = Vec::with_capacity(width * height);
+    for y in 0..height {
+        for x in 0..width {
+            source.push(bit(memory, src_ptr, src_row, x, y));
+        }
+    }
+    let mut mask = vec![0u8; width / 8 * height];
+    if (seed_h as usize) < width && (seed_v as usize) < height && seed_h >= 0 && seed_v >= 0 {
+        let seed_value = source[seed_v as usize * width + seed_h as usize];
+        let mut seen = vec![false; width * height];
+        let mut stack = vec![(seed_h as usize, seed_v as usize)];
+        while let Some((x, y)) = stack.pop() {
+            let index = y * width + x;
+            if seen[index] || source[index] != seed_value {
+                continue;
+            }
+            seen[index] = true;
+            mask[y * width / 8 + x / 8] |= 0x80 >> (x % 8);
+            if x > 0 {
+                stack.push((x - 1, y));
+            }
+            if x + 1 < width {
+                stack.push((x + 1, y));
+            }
+            if y > 0 {
+                stack.push((x, y - 1));
+            }
+            if y + 1 < height {
+                stack.push((x, y + 1));
+            }
+        }
+    }
+    for y in 0..height {
+        for (byte, value) in mask[y * width / 8..(y + 1) * width / 8].iter().enumerate() {
+            let _ = memory.write_u8(dst_ptr.wrapping_add(y as u32 * dst_row + byte as u32), *value);
+        }
     }
 }

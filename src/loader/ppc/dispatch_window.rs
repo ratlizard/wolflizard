@@ -398,6 +398,7 @@ pub(super) fn dispatch_window_import(
                 toolbox_startup.host_menu_bar_hidden,
             );
             if !was_visible {
+                ppc_erase_shown_window_with_back_pix_pat(memory, gworlds, window);
                 if ppc_front_visible_process_window(memory, window_list) != Some(window) {
                     ppc_draw_existing_window_frame(
                         memory,
@@ -490,6 +491,7 @@ pub(super) fn dispatch_window_import(
                 toolbox_startup.host_menu_bar_hidden,
             );
             if visible && !was_visible {
+                ppc_erase_shown_window_with_back_pix_pat(memory, gworlds, window);
                 if ppc_front_visible_process_window(memory, window_list) != Some(window) {
                     ppc_draw_existing_window_frame(
                         memory,
@@ -743,6 +745,32 @@ pub(super) fn dispatch_window_import(
             if window != 0 && gworlds.iter().any(|record| record.port == window) {
                 *current_gworld = window;
                 *current_gdevice = ppc_gworld_device(gworlds, window).unwrap_or(*current_gdevice);
+                // Macintosh Toolbox Essentials (1992), 4-15 and 4-111: the
+                // Window Manager erases newly exposed content with the
+                // window's background before the update event. With a colour
+                // background pattern (a dialog's parchment, set by BackPixPat)
+                // that erase is the pattern; windows without one are left as
+                // they were.
+                let back_pix_pat = memory
+                    .read_u32_be(window.wrapping_add(PPC_CGRAF_PORT_BK_PIXPAT_OFFSET))
+                    .unwrap_or(0);
+                let update = memory
+                    .read_u32_be(window.wrapping_add(PPC_CWINDOW_UPDATE_RGN_OFFSET))
+                    .and_then(|rgn| ppc_read_rgn_bbox(memory, rgn))
+                    .filter(|rect| rect.0 < rect.2 && rect.1 < rect.3);
+                let pixel = gworlds
+                    .iter()
+                    .find(|record| record.port == window)
+                    .and_then(|record| ppc_read_rect(memory, record.pixmap.wrapping_add(6)));
+                if let (true, Some(update), Some(pixel)) = (back_pix_pat != 0, update, pixel) {
+                    let local = (
+                        update.0.saturating_add(pixel.0),
+                        update.1.saturating_add(pixel.1),
+                        update.2.saturating_add(pixel.0),
+                        update.3.saturating_add(pixel.1),
+                    );
+                    let _ = ppc_fill_rect_with_pix_pat(memory, gworlds, window, local, back_pix_pat);
+                }
             }
             Some(PpcImportAction::ReturnPreserve)
         }
@@ -4443,4 +4471,203 @@ pub(super) fn ppc_zoom_window(
     size_cpu.gpr[5] = bottom.saturating_sub(top) as u16 as u32;
     ppc_size_window(&size_cpu, memory, gworlds)?;
     Some(())
+}
+
+thread_local! {
+    static LAST_VIS_SIGNATURE: std::cell::RefCell<Vec<(u32, bool, Option<(i16, i16, i16, i16)>, Option<(i16, i16, i16, i16)>)>> =
+        const { std::cell::RefCell::new(Vec::new()) };
+}
+
+/// Keep every window's visRgn current: its port rectangle, below the menu
+/// bar, less the structure regions of the visible windows in front of it
+/// (Macintosh Toolbox Essentials (1992), pp. 4-7 to 4-9 and 4-119). Runs at
+/// the import boundary, and only does the work when a window's order,
+/// visibility, structure or position changed.
+#[allow(clippy::too_many_arguments)]
+pub(super) fn ppc_maintain_window_vis_regions(
+    mut allocator: Option<&mut PpcProcessAllocatorView<'_>>,
+    memory: &mut PpcSectionMem,
+    gworlds: &[PpcGWorldRecord],
+    window_list: &SharedProcessWindowList,
+    heap_cursor: &mut u32,
+    heap_limit: u32,
+    last_mem_error: &mut i16,
+    handles: &mut Vec<PpcHandleRecord>,
+) {
+    let windows = window_list.windows();
+    let origin = |memory: &mut PpcSectionMem, window: u32| {
+        gworlds
+            .iter()
+            .find(|record| record.port == window)
+            .and_then(|record| ppc_read_rect(memory, record.pixmap.wrapping_add(6)))
+    };
+    let signature: Vec<_> = windows
+        .iter()
+        .map(|&window| {
+            let visible = ppc_window_is_visible(memory, window);
+            let structure = memory
+                .read_u32_be(window.wrapping_add(PPC_CWINDOW_STRUCTURE_RGN_OFFSET))
+                .and_then(|rgn| ppc_read_rgn_bbox(memory, rgn));
+            (window, visible, structure, origin(memory, window))
+        })
+        .collect();
+    let changed = LAST_VIS_SIGNATURE.with(|last| *last.borrow() != signature);
+    if !changed {
+        return;
+    }
+    if std::env::var_os("SYSTEMLESS_PPC_TRACE_DEFPROC").is_some() {
+        eprintln!("[PPC-VIS] recompute {:?}", signature);
+    }
+    LAST_VIS_SIGNATURE.with(|last| *last.borrow_mut() = signature);
+    let menu_bottom = memory.read_u16_be(PPC_MBAR_HEIGHT_ADDR).unwrap_or(0) as i16;
+    let mut covering: Vec<Vec<u8>> = Vec::new();
+    for window in windows {
+        if !ppc_window_is_visible(memory, window) {
+            continue;
+        }
+        let (Some(port), Some(pixel)) =
+            (ppc_read_rect(memory, window.wrapping_add(16)), origin(memory, window))
+        else {
+            continue;
+        };
+        // Global = local - pixel bounds' top-left.
+        let (dv, dh) = (pixel.0, pixel.1);
+        let top = port.0.saturating_sub(dv).max(menu_bottom);
+        let bottom = port.2.saturating_sub(dv);
+        let left = port.1.saturating_sub(dh);
+        let right = port.3.saturating_sub(dh);
+        if top < bottom && left < right {
+            let mut rows = vec![vec![left, right]; (bottom as i32 - top as i32) as usize];
+            for storage in &covering {
+                if let Some(cover) = ppc_region_rows_for_band(storage, top, bottom) {
+                    for (row, cover) in rows.iter_mut().zip(cover) {
+                        *row = ppc_region_difference_rows(row, &cover);
+                    }
+                }
+            }
+            let local_rows: Vec<Vec<i16>> = rows
+                .iter()
+                .map(|row| row.iter().map(|x| x.saturating_add(dh)).collect())
+                .collect();
+            let vis_rgn = memory
+                .read_u32_be(window.wrapping_add(PPC_CGRAF_PORT_VIS_RGN_OFFSET))
+                .unwrap_or(0);
+            if let Some(storage) = ppc_region_storage_from_rows(top.saturating_add(dv), &local_rows) {
+                if vis_rgn != 0 {
+                    let trace = std::env::var_os("SYSTEMLESS_PPC_TRACE_DEFPROC").is_some();
+                    let result = ppc_write_region_storage(
+                        allocator.as_deref_mut(),
+                        memory,
+                        heap_cursor,
+                        heap_limit,
+                        last_mem_error,
+                        handles,
+                        vis_rgn,
+                        &storage,
+                    );
+                    if trace {
+                        let written = ppc_region_storage(memory, vis_rgn);
+                        eprintln!(
+                            "[PPC-VIS] window=${window:08X} vis len={} result={result} readback={:?}",
+                            storage.len(),
+                            written.as_ref().map(|s| (s.len(), ppc_region_storage_bbox(s)))
+                        );
+                    }
+                }
+            }
+        }
+        if let Some(storage) = memory
+            .read_u32_be(window.wrapping_add(PPC_CWINDOW_STRUCTURE_RGN_OFFSET))
+            .and_then(|rgn| ppc_region_storage(memory, rgn))
+        {
+            covering.push(storage);
+        }
+    }
+}
+
+/// Set the Window Manager port's clipRgn for a WDEF drawing `window`: its
+/// structure region less those of the visible windows in front of it
+/// (ClipAbove). `window == 0` opens the clip again.
+#[allow(clippy::too_many_arguments)]
+pub(super) fn ppc_apply_clip_above(
+    mut allocator: Option<&mut PpcProcessAllocatorView<'_>>,
+    memory: &mut PpcSectionMem,
+    window_list: &SharedProcessWindowList,
+    window: u32,
+    heap_cursor: &mut u32,
+    heap_limit: u32,
+    last_mem_error: &mut i16,
+    handles: &mut Vec<PpcHandleRecord>,
+) {
+    let Some(clip_rgn) = memory
+        .read_u32_be(PPC_MAIN_GWORLD.wrapping_add(PPC_CGRAF_PORT_CLIP_RGN_OFFSET))
+        .filter(|rgn| *rgn != 0)
+    else {
+        return;
+    };
+    if window == 0 {
+        let _ = ppc_write_rgn_bbox(memory, clip_rgn, i16::MIN, i16::MIN, i16::MAX, i16::MAX);
+        return;
+    }
+    let Some(structure) = memory
+        .read_u32_be(window.wrapping_add(PPC_CWINDOW_STRUCTURE_RGN_OFFSET))
+        .and_then(|rgn| ppc_region_storage(memory, rgn))
+    else {
+        return;
+    };
+    let Some((top, _, bottom, _)) = ppc_region_storage_bbox(&structure) else {
+        return;
+    };
+    let Some(mut rows) = ppc_region_rows_for_band(&structure, top, bottom) else {
+        return;
+    };
+    for front in window_list.windows() {
+        if front == window {
+            break;
+        }
+        if !ppc_window_is_visible(memory, front) {
+            continue;
+        }
+        if let Some(cover) = memory
+            .read_u32_be(front.wrapping_add(PPC_CWINDOW_STRUCTURE_RGN_OFFSET))
+            .and_then(|rgn| ppc_region_storage(memory, rgn))
+            .and_then(|storage| ppc_region_rows_for_band(&storage, top, bottom))
+        {
+            for (row, cover) in rows.iter_mut().zip(cover) {
+                *row = ppc_region_difference_rows(row, &cover);
+            }
+        }
+    }
+    if let Some(storage) = ppc_region_storage_from_rows(top, &rows) {
+        let _ = ppc_write_region_storage(
+            allocator.as_deref_mut(),
+            memory,
+            heap_cursor,
+            heap_limit,
+            last_mem_error,
+            handles,
+            clip_rgn,
+            &storage,
+        );
+    }
+}
+
+/// Macintosh Toolbox Essentials (1992), 4-15: a window that becomes visible
+/// has its content erased with its background before its update event. With
+/// a colour background pattern (BackPixPat, as for Cythera's parchment
+/// dialogs) that erase is the pattern; otherwise nothing is done here.
+pub(super) fn ppc_erase_shown_window_with_back_pix_pat(
+    memory: &mut PpcSectionMem,
+    gworlds: &[PpcGWorldRecord],
+    window: u32,
+) {
+    let back_pix_pat = memory
+        .read_u32_be(window.wrapping_add(PPC_CGRAF_PORT_BK_PIXPAT_OFFSET))
+        .unwrap_or(0);
+    if back_pix_pat == 0 {
+        return;
+    }
+    if let Some(port_rect) = ppc_read_rect(memory, window.wrapping_add(16)) {
+        let _ = ppc_fill_rect_with_pix_pat(memory, gworlds, window, port_rect, back_pix_pat);
+    }
 }

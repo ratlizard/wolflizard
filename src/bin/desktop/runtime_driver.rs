@@ -56,6 +56,10 @@ pub(super) struct GuiDriver {
     pub(super) last_presented_guest_tick: Option<u32>,
     /// Force the next host present even if the guest tick has not advanced.
     pub(super) force_next_render: bool,
+    /// Set once a PowerPC application has taken its menu bar away by setting
+    /// MBarHeight to zero; see `native_menu_bar_height`.
+    #[cfg(target_os = "macos")]
+    guest_owns_menu_bar_rows: std::cell::Cell<bool>,
     game_path: PathBuf,
     /// Additional media mounted as locked volumes beside the game.
     pub(super) mounts: Vec<PathBuf>,
@@ -123,6 +127,8 @@ impl GuiDriver {
             frame_count: 0,
             last_presented_guest_tick: None,
             force_next_render: true,
+            #[cfg(target_os = "macos")]
+            guest_owns_menu_bar_rows: std::cell::Cell::new(false),
             game_path,
             mounts: Vec::new(),
             settled_frame_presentation: false,
@@ -269,7 +275,6 @@ impl GuiDriver {
         output.warp = self.pending_warp;
         #[cfg(target_os = "macos")]
         {
-            use systemless::systems::macintosh::memory::MemoryBus;
             output.dialog_bounds = runner
                 .dispatcher()
                 .visible_dialog_structure_bounds(runner.bus());
@@ -281,14 +286,11 @@ impl GuiDriver {
             } else {
                 None
             };
-            output.hidden_menu_height = if self.native_integrations {
-                runner
-                    .bus()
-                    .read_word(systemless::systems::macintosh::memory::globals::addr::MBAR_HEIGHT)
-                    .into()
-            } else {
-                0
-            };
+            output.hidden_menu_height = super::native_menu_bar_height(
+                runner,
+                self.native_integrations,
+                &self.guest_owns_menu_bar_rows,
+            );
             if native_models && self.native_integrations {
                 let path = runner.dispatcher().launched_app_path();
                 if self
@@ -401,7 +403,6 @@ impl GuiDriver {
         }
         #[cfg(target_os = "macos")]
         {
-            use systemless::systems::macintosh::memory::MemoryBus;
             let dispatcher = runner.dispatcher();
             let game_windows = (capture_crop && self.fit_game_window)
                 .then(|| dispatcher.game_document_window_structure_bounds(runner.bus()))
@@ -421,16 +422,11 @@ impl GuiDriver {
                     .flatten(),
                 copybits_count: dispatcher.copybits_screen_count,
                 last_copybits_rect: dispatcher.last_screen_copybits_rect,
-                hidden_menu_height: if self.native_integrations {
-                    runner
-                        .bus()
-                        .read_word(
-                            systemless::systems::macintosh::memory::globals::addr::MBAR_HEIGHT,
-                        )
-                        .into()
-                } else {
-                    0
-                },
+                hidden_menu_height: super::native_menu_bar_height(
+                    runner,
+                    self.native_integrations,
+                    &self.guest_owns_menu_bar_rows,
+                ),
             };
         }
         #[cfg(not(target_os = "macos"))]

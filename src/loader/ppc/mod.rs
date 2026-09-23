@@ -16908,18 +16908,7 @@ fn dispatch_supported_import(context: PpcDispatchContext<'_>) -> Option<PpcImpor
             );
             Some(PpcImportAction::Halt)
         }
-        PpcImportDispatcherTarget::UnresolvedWeak | PpcImportDispatcherTarget::Unsupported => {
-            // Trial survey switch: log the import and return 0 instead of
-            // stopping, so one run lists every unsupported import it reaches.
-            if std::env::var_os("SYSTEMLESS_PPC_CONTINUE_UNSUPPORTED").is_some() {
-                eprintln!(
-                    "[PPC-SKIP] {}:{} r3=${:08X} lr=${:08X}",
-                    binding.library_name, binding.symbol_name, cpu.gpr[3], cpu.lr
-                );
-                return Some(PpcImportAction::Return(0));
-            }
-            None
-        }
+        PpcImportDispatcherTarget::UnresolvedWeak | PpcImportDispatcherTarget::Unsupported => None,
     }
 }
 

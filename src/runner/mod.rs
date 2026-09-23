@@ -7823,6 +7823,19 @@ impl FixtureRunner {
             self.halted_pc = Some(pc);
             self.halted_sp = Some(sp);
             self.halted_d0 = Some(gpr3);
+            // An import nothing here implements stops the application where
+            // it stands, and a window left on screen looks like a hang. Say
+            // which import it was.
+            if !trace_load_enabled() {
+                if let Some(name) = unsupported_import_index.and_then(|index| {
+                    ppc_unimpl_histogram_key(&ppc_app.imports, probe.result, Some(index))
+                }) {
+                    eprintln!(
+                        "[PPC] stopped: {name} is not implemented (called from ${:08X})",
+                        ppc_app.cpu.lr
+                    );
+                }
+            }
             if trace_load_enabled() {
                 let word = ppc_app.memory.read_u32_be(pc);
                 let word_text = word

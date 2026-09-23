@@ -1862,6 +1862,7 @@ pub(super) fn ppc_new_control_record_values(
     }
     // Macintosh Toolbox Essentials (1992), pp. 5-79--5-80.
     let _ = memory.write_u32_be(control + 32, if popup { u32::MAX } else { 0 });
+    super::dispatch_defproc::ppc_register_control_proc(handle, proc_id as i16);
     controls.retain(|record| record.handle != handle);
     controls.push(PpcControlRecord {
         handle,
@@ -3175,6 +3176,16 @@ pub(super) fn ppc_draw_control_inner(
         .unwrap_or(0)
         == 0
     {
+        return true;
+    }
+    // A control with an application CDEF is drawn by that CDEF, after the
+    // import that would have drawn it (drawCntl, whole control).
+    if super::dispatch_defproc::ppc_control_app_cdef_exists(vfs_resources, handle) {
+        super::dispatch_defproc::ppc_note_app_cdef_message(
+            handle,
+            super::dispatch_defproc::CDEF_DRAW,
+            0,
+        );
         return true;
     }
     let owner = memory

@@ -2008,6 +2008,7 @@ pub enum PpcImportDispatcherTarget {
     ThreadCurrentStackSpace,
     YieldToThread,
     YieldToAnyThread,
+    SetThreadScheduler,
     DisposeThread,
     ThreadEndCritical,
     GetCurrentProcess,
@@ -13396,9 +13397,8 @@ fn dispatcher_target_for_import(
             PpcImportDispatcherTarget::ThreadCurrentStackSpace
         }
         ("InterfaceLib" | "ThreadsLib", "NewThread") => PpcImportDispatcherTarget::NewThread,
-        // Trial: the scheduler procedure is accepted and never called.
         ("InterfaceLib" | "ThreadsLib", "SetThreadScheduler") => {
-            PpcImportDispatcherTarget::ReturnNoErr
+            PpcImportDispatcherTarget::SetThreadScheduler
         }
         ("InterfaceLib" | "ThreadsLib", "YieldToThread") => PpcImportDispatcherTarget::YieldToThread,
         ("InterfaceLib" | "ThreadsLib", "YieldToAnyThread") => PpcImportDispatcherTarget::YieldToAnyThread,
@@ -15562,6 +15562,7 @@ fn dispatch_supported_import(context: PpcDispatchContext<'_>) -> Option<PpcImpor
         | PpcImportDispatcherTarget::NewThread
         | PpcImportDispatcherTarget::YieldToThread
         | PpcImportDispatcherTarget::YieldToAnyThread
+        | PpcImportDispatcherTarget::SetThreadScheduler
         | PpcImportDispatcherTarget::DisposeThread
         | PpcImportDispatcherTarget::ThreadBeginCritical
         | PpcImportDispatcherTarget::ThreadEndCritical => {

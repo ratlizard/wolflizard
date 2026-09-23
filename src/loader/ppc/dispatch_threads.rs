@@ -398,14 +398,49 @@ pub(super) fn dispatch_thread_import(
             }
             Some(PpcImportAction::Return(ppc_i16_result(result)))
         }
+        PpcImportDispatcherTarget::SetThreadScheduler => {
+            // OSErr SetThreadScheduler(ThreadSchedulerTPP); nil removes it.
+            THREAD_SCHEDULER.with(|scheduler| scheduler.set(cpu.gpr[3]));
+            Some(PpcImportAction::Return(0))
+        }
         PpcImportDispatcherTarget::YieldToThread | PpcImportDispatcherTarget::YieldToAnyThread => {
             // OSErr YieldToThread(ThreadID); OSErr YieldToAnyThread(void);
             // Inside Macintosh: Thread Manager (1999), pp. 64–66.
-            let suggested = if binding.dispatcher_target == PpcImportDispatcherTarget::YieldToThread
-            {
-                cpu.gpr[3]
+            let resumed = SCHEDULER_CALL.with(|call| {
+                let mut call = call.borrow_mut();
+                (cpu.lr == cpu.pc && call.as_ref().is_some_and(|state| state.import_pc == cpu.pc))
+                    .then(|| call.take())
+                    .flatten()
+            });
+            let suggested = if let Some(state) = resumed {
+                // The application's scheduler has answered: its ThreadID, or
+                // kNoThreadID to leave the choice to the Thread Manager.
+                let chosen = cpu.gpr[3];
+                cpu.lr = state.final_lr;
+                cpu.gpr[1] = state.saved_sp;
+                cpu.gpr[2] = state.restore_rtoc;
+                let current = ThreadManager::new(toolbox_startup.execution.calls()).current_thread();
+                if chosen != 0 && chosen == current {
+                    return Some(PpcImportAction::Return(0));
+                }
+                if chosen == 0 {
+                    state.suggested
+                } else {
+                    chosen
+                }
             } else {
-                0
+                let suggested =
+                    if binding.dispatcher_target == PpcImportDispatcherTarget::YieldToThread {
+                        cpu.gpr[3]
+                    } else {
+                        0
+                    };
+                if let Some(action) =
+                    ppc_call_thread_scheduler(cpu, memory, toolbox_startup, suggested)
+                {
+                    return Some(action);
+                }
+                suggested
             };
             let action = match toolbox_startup
                     .execution
@@ -462,4 +497,71 @@ pub(super) fn dispatch_thread_import(
         )),
         _ => None,
     }
+}
+
+thread_local! {
+    /// The application's scheduler procedure, from SetThreadScheduler.
+    static THREAD_SCHEDULER: std::cell::Cell<u32> = const { std::cell::Cell::new(0) };
+    static SCHEDULER_CALL: std::cell::RefCell<Option<PpcSchedulerCall>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+struct PpcSchedulerCall {
+    import_pc: u32,
+    final_lr: u32,
+    saved_sp: u32,
+    restore_rtoc: u32,
+    suggested: u32,
+}
+
+/// Inside Macintosh: Thread Manager (1999), on custom schedulers: before
+/// scheduling a thread, the Thread Manager calls the application's scheduler
+/// with a SchedulerInfoRec (its size, the current thread, the suggested
+/// thread and the interrupted cooperative thread), and runs the thread it
+/// returns. Cythera's keeps its map animation thread from running while a
+/// conversation is up; without it that thread closed the conversation each
+/// tick as out of reach. Returns the guest call, or None to yield as before.
+fn ppc_call_thread_scheduler(
+    cpu: &mut PpcCpu,
+    memory: &mut PpcSectionMem,
+    toolbox_startup: &mut PpcToolboxStartupState,
+    suggested: u32,
+) -> Option<PpcImportAction> {
+    let scheduler = THREAD_SCHEDULER.with(|scheduler| scheduler.get());
+    if scheduler == 0 {
+        return None;
+    }
+    let target = ppc_resolve_callback_target(memory, scheduler, cpu.gpr[2], None)?;
+    let current = ThreadManager::new(toolbox_startup.execution.calls()).current_thread();
+    let saved_sp = cpu.gpr[1];
+    let sp = saved_sp.wrapping_sub(128) & !15;
+    let info = sp.wrapping_add(96);
+    for (offset, value) in [(0, 16), (4, current), (8, suggested), (12, 0)] {
+        memory.write_u32_be(info + offset, value)?;
+    }
+    SCHEDULER_CALL.with(|call| {
+        *call.borrow_mut() = Some(PpcSchedulerCall {
+            import_pc: cpu.pc,
+            final_lr: cpu.lr,
+            saved_sp,
+            restore_rtoc: cpu.gpr[2],
+            suggested,
+        })
+    });
+    cpu.gpr[1] = sp;
+    install_powerpc_call_arguments(cpu, memory, &[info])?;
+    GuestCallEffect::call_guest(
+        GuestCallRequest::new(GuestCallTarget {
+            isa: GuestIsa::PowerPc,
+            entry: target.entry,
+            rtoc: target.rtoc,
+        }),
+        GuestCallContinuation::to_powerpc(
+            PPC_GUEST_CALL_RETURN_PC,
+            cpu.pc,
+            cpu.gpr[2],
+            PpcNativeReturnGpr3::Preserve,
+        ),
+    )
+    .into_ppc_import_action()
 }

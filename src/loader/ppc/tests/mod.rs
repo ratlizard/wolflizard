@@ -1139,3 +1139,14 @@ fn appearance_window_types_draw_as_their_classic_equivalents() {
         assert_eq!(ppc_classic_window_proc_id(appearance), classic, "{appearance}");
     }
 }
+
+#[test]
+fn menu_hook_low_memory_accessors_round_trip() {
+    let pef = synthetic_pef_with_import(b"LMSetMenuHook");
+    let mut loaded = load_pef_application(&pef).unwrap();
+    loaded.cpu.gpr[3] = 0x0100_ABC0;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::LMSetMenuHook);
+    loaded.cpu.gpr[3] = 0;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::LMGetMenuHook);
+    assert_eq!(loaded.cpu.gpr[3], 0x0100_ABC0);
+}

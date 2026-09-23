@@ -569,6 +569,7 @@ fn ppc_set_current_menu_list(memory: &mut PpcSectionMem, menu_list: u32) {
     let _ = memory.write_u32_be(crate::memory::globals::addr::MENU_LIST, menu_list);
 }
 
+const PPC_MENU_HOOK_ADDR: u32 = 0x0000_0a30;
 const PPC_MBAR_HEIGHT_ADDR: u32 = 0x0000_0baa;
 const PPC_DEFAULT_DOUBLE_TIME_TICKS: u32 = 20;
 const PPC_RES_CHANGED_ATTR: u16 = 0x0002;
@@ -1929,6 +1930,8 @@ pub enum PpcImportDispatcherTarget {
     LMGetRndSeed,
     LMGetHiliteMode,
     LMSetHiliteMode,
+    LMGetMenuHook,
+    LMSetMenuHook,
     LMSetRndSeed,
     SetCurrentA5,
     SetA5,
@@ -13336,6 +13339,8 @@ fn dispatcher_target_for_import(
         ("InterfaceLib", "LMGetRndSeed") => PpcImportDispatcherTarget::LMGetRndSeed,
         ("InterfaceLib", "LMGetHiliteMode") => PpcImportDispatcherTarget::LMGetHiliteMode,
         ("InterfaceLib", "LMSetHiliteMode") => PpcImportDispatcherTarget::LMSetHiliteMode,
+        ("InterfaceLib", "LMGetMenuHook") => PpcImportDispatcherTarget::LMGetMenuHook,
+        ("InterfaceLib", "LMSetMenuHook") => PpcImportDispatcherTarget::LMSetMenuHook,
         ("InterfaceLib", "LMSetRndSeed") => PpcImportDispatcherTarget::LMSetRndSeed,
         ("InterfaceLib", "SetCurrentA5") => PpcImportDispatcherTarget::SetCurrentA5,
         ("InterfaceLib", "SetA5") => PpcImportDispatcherTarget::SetA5,
@@ -16856,6 +16861,8 @@ fn dispatch_supported_import(context: PpcDispatchContext<'_>) -> Option<PpcImpor
         | PpcImportDispatcherTarget::LMGetRndSeed
         | PpcImportDispatcherTarget::LMGetHiliteMode
         | PpcImportDispatcherTarget::LMSetHiliteMode
+        | PpcImportDispatcherTarget::LMGetMenuHook
+        | PpcImportDispatcherTarget::LMSetMenuHook
         | PpcImportDispatcherTarget::LMSetRndSeed
         | PpcImportDispatcherTarget::SetCurrentA5
         | PpcImportDispatcherTarget::SetA5

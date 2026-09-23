@@ -1304,7 +1304,16 @@ pub(crate) fn ppc_paint_rect(
     let Some(rect) = ppc_read_rect(memory, cpu.gpr[3]) else {
         return false;
     };
-    if pattern.iter().all(|row| *row == 0xff) {
+    // Imaging With QuickDraw (1994), pp. 3-6--3-8: the pen's transfer mode
+    // combines each pattern bit with the destination; a source mode given as
+    // the pen mode acts as its pattern counterpart (srcOr as patOr). Cythera
+    // tints its conversation panel with a grey pattern in patOr.
+    let pen_mode = memory
+        .read_u16_be(current_gworld.wrapping_add(PPC_CGRAF_PORT_PN_MODE_OFFSET))
+        .map_or(PPC_QD_PEN_MODE_PAT_COPY, |mode| mode as i16);
+    let operation = pen_mode & 0x03;
+    let inverted = pen_mode & 0x04 != 0;
+    if pattern.iter().all(|row| *row == 0xff) && !inverted && operation <= 1 {
         return ppc_paint_rect_bounds(
             memory,
             gworlds,
@@ -1342,7 +1351,7 @@ pub(crate) fn ppc_paint_rect(
         .and_then(|vis_rgn| ppc_region_storage(memory, vis_rgn));
     let mut wrote = false;
     for y in top..bottom {
-        let pattern_row = pattern[(y as usize) & 7];
+        let pattern_row = pattern[((y + i32::from(surface.top)) & 7) as usize];
         for x in left..right {
             if !ppc_local_point_in_port_regions(
                 surface,
@@ -1352,13 +1361,24 @@ pub(crate) fn ppc_paint_rect(
             ) {
                 continue;
             }
-            let mask = 0x80 >> ((x as usize) & 7);
-            let pixel = if pattern_row & mask != 0 {
-                fore_pixel
-            } else {
-                back_pixel
+            let mask = 0x80 >> ((x + i32::from(surface.left)) & 7);
+            let bit = (pattern_row & mask != 0) != inverted;
+            let pixel = match operation {
+                1 => bit.then_some(fore_pixel),
+                2 => {
+                    if bit {
+                        ppc_quickdraw_read_pixel(memory, front_buffer, (x, y))
+                            .map(|dst| dst ^ fore_pixel)
+                    } else {
+                        None
+                    }
+                }
+                3 => bit.then_some(back_pixel),
+                _ => Some(if bit { fore_pixel } else { back_pixel }),
             };
-            wrote |= ppc_quickdraw_write_raw_pixel(memory, front_buffer, (x, y), pixel);
+            if let Some(pixel) = pixel {
+                wrote |= ppc_quickdraw_write_raw_pixel(memory, front_buffer, (x, y), pixel);
+            }
         }
     }
     wrote

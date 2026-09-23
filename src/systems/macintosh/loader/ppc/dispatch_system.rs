@@ -168,6 +168,97 @@ pub(crate) fn ppc_dequeue_compatibility(
 }
 
 #[allow(clippy::too_many_arguments)]
+/// StyledLineBreak(textPtr, textLen, textStart, textEnd, flags, textWidth,
+/// textOffset): Inside Macintosh: Text (1993), p. 5-79. Measures the
+/// run from textStart in the current port's font; if it fits, returns
+/// smBreakOverflow (2) with textOffset at textEnd, otherwise breaks after the
+/// last space that fits (smBreakWord, 0), or inside the word when this is the
+/// line's first run (smBreakChar, 1), and always past textStart: a caller
+/// that loops until the offset moves would otherwise never stop. The same
+/// choices as the 68K ScriptUtil selector.
+pub(crate) fn ppc_styled_line_break(
+    cpu: &PpcCpu,
+    memory: &mut PpcSectionMem,
+    font: i16,
+    size: i16,
+    style: u8,
+) -> u8 {
+    let text_ptr = cpu.gpr[3];
+    let text_len = (cpu.gpr[4] as i32).max(0) as u32;
+    let text_start = ((cpu.gpr[5] as i32).max(0) as u32).min(text_len);
+    let text_end = ((cpu.gpr[6] as i32).max(0) as u32).max(text_start).min(text_len);
+    let (width_ptr, offset_ptr) = (cpu.gpr[8], cpu.gpr[9]);
+    let first_run_on_line = offset_ptr != 0 && memory.read_u32_be(offset_ptr).unwrap_or(0) != 0;
+    let width_raw = if width_ptr != 0 {
+        memory.read_u32_be(width_ptr).unwrap_or(0)
+    } else {
+        0x7FFF
+    };
+    // textWidth is Fixed; a value with no integer half is taken as pixels.
+    let available = if width_raw & 0xFFFF_0000 != 0 {
+        (width_raw as i32) >> 16
+    } else {
+        width_raw as i32
+    }
+    .max(0);
+    let byte = |memory: &mut PpcSectionMem, offset: u32| {
+        memory.read_u8(text_ptr.wrapping_add(offset)).unwrap_or(0)
+    };
+    let width_of = |memory: &mut PpcSectionMem, start: u32, end: u32| {
+        let bytes: Vec<u8> = (start..end).map(|offset| byte(memory, offset)).collect();
+        i32::from(ppc_text_width_bytes(font, size, style, &bytes))
+    };
+    let is_space = |value: u8| matches!(value, b' ' | b'\t' | b'\r' | b'\n');
+    let run_width = width_of(memory, text_start, text_end);
+    let (result, offset, consumed) = if run_width <= available {
+        (2u8, text_end, run_width)
+    } else {
+        let mut fit = text_start;
+        while fit < text_end && width_of(memory, text_start, fit + 1) <= available {
+            fit += 1;
+        }
+        let mut word_break = None;
+        let mut offset = text_start;
+        while offset < fit {
+            if is_space(byte(memory, offset)) {
+                let mut after = offset + 1;
+                while after < text_end && is_space(byte(memory, after)) {
+                    after += 1;
+                }
+                word_break = Some(after);
+                offset = after;
+            } else {
+                offset += 1;
+            }
+        }
+        if let Some(word_offset) = word_break {
+            (0, word_offset, width_of(memory, text_start, word_offset))
+        } else {
+            let char_offset = if first_run_on_line && fit > text_start {
+                fit
+            } else {
+                (text_start + 1).min(text_end)
+            };
+            let code = if first_run_on_line { 1 } else { 0 };
+            (code, char_offset, width_of(memory, text_start, char_offset))
+        }
+    };
+    if offset_ptr != 0 {
+        let _ = memory.write_u32_be(offset_ptr, offset);
+    }
+    if width_ptr != 0 {
+        let remaining = available.saturating_sub(consumed).clamp(0, 0x7FFF);
+        let value = if width_raw & 0xFFFF_0000 != 0 {
+            (remaining << 16) as u32
+        } else {
+            remaining as u32
+        };
+        let _ = memory.write_u32_be(width_ptr, value);
+    }
+    result
+}
+
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn ppc_dispatch_system_compatibility(
     operation: PpcSystemCompatibilityOperation,
     cpu: &mut PpcCpu,
@@ -264,23 +355,7 @@ pub(crate) fn ppc_dispatch_system_compatibility(
             PpcImportAction::Return(1)
         }
         PpcSystemCompatibilityOperation::StyledLineBreak => {
-            let text_len = cpu.gpr[4];
-            let text_end = cpu.gpr[6].min(text_len);
-            let width_ptr = cpu.gpr[8];
-            let offset_ptr = cpu.gpr[9];
-            let width = memory.read_u32_be(width_ptr).unwrap_or(0) as i32;
-            let available_chars = (width.max(0) as u32 / (6 << 16)).max(1);
-            if text_end <= available_chars {
-                let _ = memory.write_u32_be(offset_ptr, text_end);
-                let used = text_end.saturating_mul(6 << 16);
-                let _ = memory.write_u32_be(width_ptr, (width as u32).saturating_sub(used));
-                PpcImportAction::Return(2)
-            } else {
-                let break_at = available_chars.min(text_end);
-                let _ = memory.write_u32_be(offset_ptr, break_at);
-                let _ = memory.write_u32_be(width_ptr, 0);
-                PpcImportAction::Return(1)
-            }
+            unreachable!("StyledLineBreak is served by ppc_styled_line_break")
         }
         PpcSystemCompatibilityOperation::GetNextProcess => {
             let psn = cpu.gpr[3];

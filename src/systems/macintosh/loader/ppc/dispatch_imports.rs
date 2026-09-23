@@ -2659,6 +2659,19 @@ pub(crate) fn dispatch_supported_import(
                 toolbox_startup,
             ))
         }
+        PpcImportDispatcherTarget::SystemCompatibility(
+            PpcSystemCompatibilityOperation::StyledLineBreak,
+        ) => {
+            let font = ppc_current_text_font(memory, *current_gworld);
+            let style = ppc_current_text_style(memory, *current_gworld);
+            Some(PpcImportAction::Return(u32::from(super::dispatch_system::ppc_styled_line_break(
+                cpu,
+                memory,
+                font,
+                *quickdraw_text_size,
+                style,
+            ))))
+        }
         PpcImportDispatcherTarget::SystemCompatibility(operation) => {
             Some(dispatch_system::ppc_dispatch_system_compatibility(
                 operation,
@@ -2842,8 +2855,8 @@ pub(crate) fn dispatch_supported_import(
         PpcImportDispatcherTarget::QuickTimeMusic(_) => {
             unreachable!("tune imports return through dispatch_tune_import")
         }
-        // VisibleLength: the length of the text with trailing white space
-        // excluded, as the 68K ScriptUtil selector answers it. Cythera lays out its narration by advancing by
+        // Inside Macintosh: Text (1993), p. 3-89: the length of the text with
+        // trailing white space excluded. Cythera lays out its narration by advancing by
         // this; a zero never advances.
         PpcImportDispatcherTarget::VisibleLength => {
             let (text, mut visible) = (cpu.gpr[3], cpu.gpr[4]);

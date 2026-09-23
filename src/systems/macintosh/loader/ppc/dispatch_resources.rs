@@ -491,6 +491,15 @@ pub(super) fn dispatch_resource_import(
             );
             Some(PpcImportAction::ReturnPreserve)
         }
+        // Imaging With QuickDraw (1994), 4-102: PixPatChanged marks the
+        // expanded pattern stale, which is patXValid = -1; nothing is cached
+        // here that would need rebuilding.
+        PpcImportDispatcherTarget::PixPatChanged => {
+            if let Some(pattern) = memory.read_u32_be(cpu.gpr[3]).filter(|ptr| *ptr != 0) {
+                let _ = memory.write_u16_be(pattern.wrapping_add(14), 0xFFFF);
+            }
+            Some(PpcImportAction::ReturnPreserve)
+        }
         PpcImportDispatcherTarget::GetPixPat => Some(PpcImportAction::Return(ppc_get_pix_pat(
             cpu,
             process_memory_manager,

@@ -469,6 +469,71 @@ pub(super) fn dispatch_resource_import(
             );
             Some(PpcImportAction::ReturnPreserve)
         }
+        // Macintosh Toolbox Essentials (1992), 5-97 and 4-99: a control or
+        // window without colours of its own has the default auxiliary
+        // record, whose colour table is the standard one; both calls then
+        // return it and TRUE. One shared default record serves every caller.
+        PpcImportDispatcherTarget::GetAuxiliaryControlRecord
+        | PpcImportDispatcherTarget::GetAuxWin => {
+            let window = binding.dispatcher_target == PpcImportDispatcherTarget::GetAuxWin;
+            let record = ppc_default_aux_record(
+                window,
+                process_memory_manager,
+                memory,
+                heap_cursor,
+                last_mem_error,
+                handles,
+            );
+            let out = cpu.gpr[4];
+            if out != 0 {
+                let _ = memory.write_u32_be(out, record);
+            }
+            Some(PpcImportAction::Return(u32::from(record != 0)))
+        }
+        // Mac OS 8 Menu Manager: an item's command ID comes from the menu's
+        // 'xmnu' resource. After a version word and an item count, each item
+        // has an entry: a bare zero word for one without a command, otherwise
+        // 30 bytes whose command ID is the long at +2 -- the parse the 68K
+        // path uses for Cythera's 'xmnu' 129 (Save 5, Quit 10). Zero means no
+        // command ID.
+        PpcImportDispatcherTarget::GetMenuItemCommandID => {
+            let item = cpu.gpr[4] as u16 as i16;
+            let menu_id = memory
+                .read_u32_be(cpu.gpr[3])
+                .filter(|ptr| *ptr != 0)
+                .and_then(|menu| memory.read_u16_be(menu))
+                .map(|id| id as i16);
+            let xmnu = u32::from_be_bytes(*b"xmnu");
+            let command = menu_id
+                .and_then(|menu_id| {
+                    vfs_resources
+                        .iter()
+                        .find(|record| record.res_type == xmnu && record.res_id == menu_id)
+                })
+                .and_then(|record| {
+                    let data = &record.data;
+                    let word = |at: usize| data.get(at..at + 2).map(|b| u16::from_be_bytes([b[0], b[1]]));
+                    let count = word(2)?.min(255);
+                    let mut offset = 4usize;
+                    for index in 1..=count {
+                        if word(offset)? == 0 {
+                            offset += 2;
+                            continue;
+                        }
+                        if index as i16 == item {
+                            let b = data.get(offset + 2..offset + 6)?;
+                            return Some(u32::from_be_bytes([b[0], b[1], b[2], b[3]]));
+                        }
+                        offset += 30;
+                    }
+                    None
+                })
+                .unwrap_or(0);
+            if cpu.gpr[5] != 0 {
+                let _ = memory.write_u32_be(cpu.gpr[5], command);
+            }
+            Some(PpcImportAction::Return(0))
+        }
         PpcImportDispatcherTarget::NewPixPat => Some(PpcImportAction::Return(ppc_new_pix_pat(
             process_memory_manager,
             memory,
@@ -660,6 +725,69 @@ fn ppc_get_ind_pattern(
     } else {
         PPC_PARAM_ERR
     };
+}
+
+thread_local! {
+    static DEFAULT_AUX_RECORDS: std::cell::RefCell<[u32; 2]> = const { std::cell::RefCell::new([0; 2]) };
+}
+
+/// The default AuxCtlRec (22 bytes, acCTable at +8) or AuxWinRec (28 bytes,
+/// awCTable at +8), each with a colour table of the standard parts: a
+/// control's frame, body, text and thumb; a window's content, frame, text,
+/// hilite and title bar.
+fn ppc_default_aux_record(
+    window: bool,
+    process_memory_manager: &mut ProcessNativeMemoryManager,
+    memory: &mut PpcSectionMem,
+    heap_cursor: &mut u32,
+    last_mem_error: &mut i16,
+    handles: &mut Vec<PpcHandleRecord>,
+) -> u32 {
+    let slot = usize::from(window);
+    let existing = DEFAULT_AUX_RECORDS.with(|records| records.borrow()[slot]);
+    if existing != 0 && memory.read_u32_be(existing).is_some_and(|ptr| ptr != 0) {
+        return existing;
+    }
+    let black = [0u16, 0, 0];
+    let white = [0xFFFFu16, 0xFFFF, 0xFFFF];
+    let parts: &[[u16; 3]] = if window {
+        &[white, black, black, black, white]
+    } else {
+        &[black, white, black, white]
+    };
+    let mut table = Vec::new();
+    table.extend_from_slice(&0u32.to_be_bytes());
+    table.extend_from_slice(&0u16.to_be_bytes());
+    table.extend_from_slice(&((parts.len() - 1) as u16).to_be_bytes());
+    for (index, rgb) in parts.iter().enumerate() {
+        table.extend_from_slice(&(index as u16).to_be_bytes());
+        for component in rgb {
+            table.extend_from_slice(&component.to_be_bytes());
+        }
+    }
+    let table = ppc_process_alloc_handle_with_bytes(
+        process_memory_manager,
+        memory,
+        heap_cursor,
+        last_mem_error,
+        handles,
+        &table,
+    );
+    let mut record = vec![0u8; if window { 28 } else { 22 }];
+    record[8..12].copy_from_slice(&table.to_be_bytes());
+    let record = ppc_process_alloc_handle_with_bytes(
+        process_memory_manager,
+        memory,
+        heap_cursor,
+        last_mem_error,
+        handles,
+        &record,
+    );
+    if table == 0 || record == 0 {
+        return 0;
+    }
+    DEFAULT_AUX_RECORDS.with(|records| records.borrow_mut()[slot] = record);
+    record
 }
 
 /// NewPixPat: a pattern built at run time, with real handles in its patMap,

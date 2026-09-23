@@ -573,12 +573,12 @@ pub(super) fn dispatch_quickdraw_import(
             }
             Some(PpcImportAction::ReturnPreserve)
         }
-        PpcImportDispatcherTarget::HSL2RGB => {
-            ppc_hsl2rgb(memory, cpu.gpr[3], cpu.gpr[4]);
-            Some(PpcImportAction::ReturnPreserve)
-        }
         PpcImportDispatcherTarget::RGB2HSL => {
             ppc_rgb2hsl(memory, cpu.gpr[3], cpu.gpr[4]);
+            Some(PpcImportAction::ReturnPreserve)
+        }
+        PpcImportDispatcherTarget::HSL2RGB => {
+            ppc_hsl2rgb(memory, cpu.gpr[3], cpu.gpr[4]);
             Some(PpcImportAction::ReturnPreserve)
         }
         PpcImportDispatcherTarget::RGB2HSV => {
@@ -1063,6 +1063,11 @@ pub(super) fn dispatch_quickdraw_import(
         }
         PpcImportDispatcherTarget::FillCRect => {
             if let Some(rect) = ppc_read_rect(memory, cpu.gpr[3]) {
+                // The fork's pixel patterns (GetPixPat's records) first;
+                // upstream's fill answers the handles it made itself.
+                if ppc_fill_rect_with_pix_pat(memory, gworlds, current_gworld, rect, cpu.gpr[4]) {
+                    return Some(PpcImportAction::ReturnPreserve);
+                }
                 let pp_handle = cpu.gpr[4];
                 let _ = ppc_fill_color_rect(
                     memory,

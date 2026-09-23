@@ -198,8 +198,8 @@ pub enum PpcImportDispatcherTarget {
     PmBackColor,
     Color2Index,
     Index2Color,
-    HSL2RGB,
     RGB2HSL,
+    HSL2RGB,
     RGB2HSV,
     HSV2RGB,
     FixRatio,
@@ -3353,8 +3353,8 @@ pub(crate) fn dispatcher_target_for_import(
         ("InterfaceLib", "PmBackColor") => PpcImportDispatcherTarget::PmBackColor,
         ("InterfaceLib", "Color2Index") => PpcImportDispatcherTarget::Color2Index,
         ("InterfaceLib", "Index2Color") => PpcImportDispatcherTarget::Index2Color,
-        ("InterfaceLib", "HSL2RGB") => PpcImportDispatcherTarget::HSL2RGB,
         ("InterfaceLib", "RGB2HSL") => PpcImportDispatcherTarget::RGB2HSL,
+        ("InterfaceLib", "HSL2RGB") => PpcImportDispatcherTarget::HSL2RGB,
         ("InterfaceLib", "RGB2HSV") => PpcImportDispatcherTarget::RGB2HSV,
         ("InterfaceLib", "HSV2RGB") => PpcImportDispatcherTarget::HSV2RGB,
         ("InterfaceLib", "FixRatio") => PpcImportDispatcherTarget::FixRatio,
@@ -5886,7 +5886,7 @@ pub(crate) fn dispatcher_target_for_import(
         ) => PpcImportDispatcherTarget::LegacyControl(PpcLegacyControlOperation::GetControlMaximum),
         (
             "InterfaceLib" | "AppearanceLib" | "CarbonLib",
-            "GetControlAction" | "getcontrolaction",
+            "GetControlAction" | "getcontrolaction" | "GetCtlAction" | "getctlaction",
         ) => PpcImportDispatcherTarget::LegacyControl(PpcLegacyControlOperation::GetControlAction),
         (
             "InterfaceLib" | "AppearanceLib" | "CarbonLib",
@@ -5969,7 +5969,7 @@ pub(crate) fn dispatcher_target_for_import(
         ) => PpcImportDispatcherTarget::LegacyControl(PpcLegacyControlOperation::SetControlMaximum),
         (
             "InterfaceLib" | "AppearanceLib" | "CarbonLib",
-            "SetControlAction" | "setcontrolaction",
+            "SetControlAction" | "setcontrolaction" | "SetCtlAction" | "setctlaction",
         ) => PpcImportDispatcherTarget::LegacyControl(PpcLegacyControlOperation::SetControlAction),
         (
             "InterfaceLib" | "AppearanceLib" | "CarbonLib",

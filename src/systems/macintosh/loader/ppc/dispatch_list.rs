@@ -395,6 +395,66 @@ pub(super) fn dispatch_list_import(context: PpcListDispatchContext<'_>) -> Optio
             }
             Some(PpcImportAction::ReturnPreserve)
         }
+        // More Macintosh Toolbox (1993), 4-82: LAddToCell appends to the
+        // cell's data, which LSetCell replaces.
+        PpcImportDispatcherTarget::LAddToCell => {
+            let length = usize::from(cpu.gpr[4] as u16);
+            let bytes = ppc_memory_read_bytes(memory, cpu.gpr[3], length as u32);
+            let v = (cpu.gpr[5] >> 16) as u16 as i16;
+            let h = cpu.gpr[5] as u16 as i16;
+            if let Some(bytes) = bytes {
+                list_manager.with_record_mut(cpu.gpr[6], |record| {
+                    if ppc_list_cell_index(record, v, h).is_some() {
+                        record.cells.entry((v, h)).or_default().extend_from_slice(&bytes);
+                        let mut allocator = PpcProcessAllocatorView {
+                            memory_manager: process_memory_manager,
+                        };
+                        let result = ppc_list_sync_guest_storage(
+                            Some(&mut allocator),
+                            memory,
+                            heap_cursor,
+                            heap_limit,
+                            last_mem_error,
+                            handles,
+                            record,
+                        );
+                        *last_mem_error = result;
+                        if record.draw_enabled {
+                            ppc_list_redraw(
+                                memory,
+                                handles,
+                                controls,
+                                gworlds,
+                                vfs_resources,
+                                current_resource_refnum,
+                                record,
+                            );
+                        }
+                    }
+                });
+            }
+            Some(PpcImportAction::ReturnPreserve)
+        }
+        // More Macintosh Toolbox (1993), 4-84: LGetCellDataLocation reports
+        // where a cell's data starts in the cells handle and its length,
+        // laid out cell after cell in index order as the guest copy is.
+        PpcImportDispatcherTarget::LGetCellDataLocation => {
+            let v = (cpu.gpr[5] >> 16) as u16 as i16;
+            let h = cpu.gpr[5] as u16 as i16;
+            list_manager.with_record_ref(cpu.gpr[6], |record| {
+                if let Some(index) = ppc_list_cell_index(record, v, h) {
+                    let length_of = |cell_index: usize| {
+                        ppc_list_cell_for_index(record, cell_index)
+                            .and_then(|cell| record.cells.get(&cell))
+                            .map_or(0, |bytes| bytes.len().min(0x7fff))
+                    };
+                    let offset: usize = (0..index).map(length_of).sum();
+                    let _ = memory.write_u16_be(cpu.gpr[3], offset.min(0x7fff) as u16);
+                    let _ = memory.write_u16_be(cpu.gpr[4], length_of(index) as u16);
+                }
+            });
+            Some(PpcImportAction::ReturnPreserve)
+        }
         PpcImportDispatcherTarget::LGetCell => {
             let length_ptr = cpu.gpr[4];
             let requested = usize::from(memory.read_u16_be(length_ptr).unwrap_or(0));

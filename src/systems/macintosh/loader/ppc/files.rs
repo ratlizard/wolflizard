@@ -5529,6 +5529,16 @@ pub(super) fn ppc_resolve_alias(
         .or_else(|| {
             ppc_alias_record_from_handle(memory, handles, alias_handle, Some(vfs_directories))
         });
+    if ppc_hle_trace_enabled() {
+        eprintln!(
+            "[PPC-TRACE] ResolveAlias alias=${alias_handle:08X} -> {:?}",
+            alias.as_ref().map(|alias| (
+                alias.target_vref,
+                alias.target_dir_id,
+                String::from_utf8_lossy(&alias.target_name).into_owned()
+            ))
+        );
+    }
     let Some(alias) = alias else {
         return PPC_PARAM_ERR;
     };

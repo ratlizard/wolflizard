@@ -759,6 +759,7 @@ pub enum PpcImportDispatcherTarget {
     StdCalloc,
     StdRealloc,
     StdStrcpy,
+    StdPascalString(PpcPascalStringOp),
     StdStrcat,
     StdStrncpy,
     StdStrncat,
@@ -2229,6 +2230,23 @@ pub(crate) fn dispatcher_target_for_import(
         ("StdCLib", "calloc") => PpcImportDispatcherTarget::StdCalloc,
         ("StdCLib", "realloc") => PpcImportDispatcherTarget::StdRealloc,
         ("StdCLib", "strcpy") => PpcImportDispatcherTarget::StdStrcpy,
+        ("StdCLib", symbol @ ("PLstrcmp" | "PLstrncmp" | "PLstrcpy" | "PLstrncpy" | "PLstrcat"
+            | "PLstrncat" | "PLstrchr" | "PLstrrchr" | "PLstrpbrk" | "PLstrspn" | "PLstrstr"
+            | "PLstrlen" | "PLpos")) => PpcImportDispatcherTarget::StdPascalString(match symbol {
+            "PLstrcmp" => PpcPascalStringOp::Cmp,
+            "PLstrncmp" => PpcPascalStringOp::NCmp,
+            "PLstrcpy" => PpcPascalStringOp::Cpy,
+            "PLstrncpy" => PpcPascalStringOp::NCpy,
+            "PLstrcat" => PpcPascalStringOp::Cat,
+            "PLstrncat" => PpcPascalStringOp::NCat,
+            "PLstrchr" => PpcPascalStringOp::Chr,
+            "PLstrrchr" => PpcPascalStringOp::RChr,
+            "PLstrpbrk" => PpcPascalStringOp::PBrk,
+            "PLstrspn" => PpcPascalStringOp::Spn,
+            "PLstrstr" => PpcPascalStringOp::Str,
+            "PLstrlen" => PpcPascalStringOp::Len,
+            _ => PpcPascalStringOp::Pos,
+        }),
         ("StdCLib", "strcat") => PpcImportDispatcherTarget::StdStrcat,
         ("StdCLib", "strncpy") => PpcImportDispatcherTarget::StdStrncpy,
         ("StdCLib", "strncat") => PpcImportDispatcherTarget::StdStrncat,
@@ -2859,6 +2877,11 @@ pub(crate) fn dispatcher_target_for_import(
             "InterfaceLib" | "AppearanceLib" | "CarbonLib",
             "HMGetBalloons" | "hmgetballoons",
         ) => PpcImportDispatcherTarget::HMGetBalloons,
+        // As the 68K Pack14 does: no balloons, so showing one reports
+        // hmHelpDisabled and removing one has nothing to remove
+        // (More Macintosh Toolbox (1993), pp. 3-100 and 3-105).
+        ("InterfaceLib", "HMShowBalloon") => PpcImportDispatcherTarget::ReturnError(-850),
+        ("InterfaceLib", "HMRemoveBalloon") => PpcImportDispatcherTarget::ReturnNoErr,
         (
             "InterfaceLib" | "AppearanceLib" | "CarbonLib",
             "HiliteMenu" | "hilitemenu",

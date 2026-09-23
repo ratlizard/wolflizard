@@ -1746,6 +1746,7 @@ pub(crate) fn dispatch_supported_import(
         | PpcImportDispatcherTarget::Index2Color
         | PpcImportDispatcherTarget::RGB2HSL
         | PpcImportDispatcherTarget::HSL2RGB
+        | PpcImportDispatcherTarget::SeedFill
         | PpcImportDispatcherTarget::RGB2HSV
         | PpcImportDispatcherTarget::HSV2RGB
         | PpcImportDispatcherTarget::SetRect
@@ -1995,6 +1996,7 @@ pub(crate) fn dispatch_supported_import(
         | PpcImportDispatcherTarget::GetCTSeed
         | PpcImportDispatcherTarget::MakeITable
         | PpcImportDispatcherTarget::CTabChanged
+        | PpcImportDispatcherTarget::GetSubTable
         | PpcImportDispatcherTarget::ProtectEntry
         | PpcImportDispatcherTarget::ReserveEntry
         | PpcImportDispatcherTarget::RestoreEntries

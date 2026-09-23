@@ -1941,6 +1941,34 @@ impl PpcLoadedApp {
                 if toolbox_startup.init_graf_global_ptr != 0 {
                     let _ = memory.write_u32_be(toolbox_startup.init_graf_global_ptr, *current_gworld);
                 }
+                {
+                    let mut handles = process_memory_manager.native_handle_records().to_vec();
+                    let mut allocator = PpcProcessAllocatorView {
+                        memory_manager: &mut *process_memory_manager,
+                    };
+                    dispatch_window::ppc_maintain_window_vis_regions(
+                        Some(&mut allocator),
+                        memory,
+                        &gworlds,
+                        &window_list,
+                        &mut heap_cursor,
+                        heap_limit,
+                        &mut last_mem_error,
+                        &mut handles,
+                    );
+                    if let Some(window) = dispatch_defproc::ppc_take_clip_above() {
+                        dispatch_window::ppc_apply_clip_above(
+                            Some(&mut allocator),
+                            memory,
+                            &window_list,
+                            window,
+                            &mut heap_cursor,
+                            heap_limit,
+                            &mut last_mem_error,
+                            &mut handles,
+                        );
+                    }
+                }
 
                 ppc_sync_process_window_list(memory, &window_list);
 

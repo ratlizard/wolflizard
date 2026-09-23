@@ -3056,16 +3056,16 @@ pub(crate) fn ppc_copy_bits(
             return None;
         }
 
-        let copy_left = i32::from(dst_left).max(i32::from(dst_bits.left));
+        let mut copy_left = i32::from(dst_left).max(i32::from(dst_bits.left));
         let copy_top = i32::from(dst_top).max(i32::from(dst_bits.top));
-        let copy_right = i32::from(dst_right).min(i32::from(dst_bits.right));
+        let mut copy_right = i32::from(dst_right).min(i32::from(dst_bits.right));
         let copy_bottom = i32::from(dst_bottom).min(i32::from(dst_bits.bottom));
         if copy_left >= copy_right || copy_top >= copy_bottom {
             reason = "clipped-empty";
             return None;
         }
 
-        let mask_storage = if mask_rgn == 0 {
+        let mut mask_storage = if mask_rgn == 0 {
             None
         } else {
             let Some(storage) = ppc_region_storage(memory, mask_rgn) else {
@@ -3074,6 +3074,75 @@ pub(crate) fn ppc_copy_bits(
             };
             Some(storage)
         };
+        // Imaging With QuickDraw (1994), 3-113: CopyBits clips to the current
+        // port's visRgn and clipRgn. Applied when the destination is that
+        // port's own pixels, where its local coordinates are the
+        // destination's. A rectangular result narrows the copy and keeps the
+        // row path; anything else becomes (part of) the mask.
+        if std::env::var_os("SYSTEMLESS_PPC_TRACE_DEFPROC").is_some() {
+            eprintln!(
+                "[PPC-CLIP] CopyBits dst=${dst_bits_ptr:08X} port=${current_gworld:08X} match={}",
+                dst_bits_ptr == current_gworld.wrapping_add(2)
+            );
+        }
+        if dst_bits_ptr == current_gworld.wrapping_add(2) && current_gworld != 0 {
+            let band = (i16::try_from(copy_top), i16::try_from(copy_bottom));
+            if let (Ok(band_top), Ok(band_bottom)) = band {
+                let mut rows =
+                    vec![vec![copy_left as i16, copy_right as i16]; (copy_bottom - copy_top) as usize];
+                for offset in [PPC_CGRAF_PORT_VIS_RGN_OFFSET, PPC_CGRAF_PORT_CLIP_RGN_OFFSET] {
+                    let storage = memory
+                        .read_u32_be(current_gworld.wrapping_add(offset))
+                        .and_then(|rgn| ppc_region_storage(memory, rgn));
+                    if let Some(clip_rows) = storage
+                        .as_deref()
+                        .and_then(|storage| ppc_region_rows_for_band(storage, band_top, band_bottom))
+                    {
+                        for (row, clip) in rows.iter_mut().zip(clip_rows) {
+                            *row = ppc_region_intersect_rows(row, &clip);
+                        }
+                    }
+                }
+                if rows.iter().all(|row| row.is_empty()) {
+                    reason = "clipped-empty";
+                    return None;
+                }
+                let uniform = rows.first().filter(|first| {
+                    first.len() == 2 && rows.iter().all(|row| row == *first)
+                });
+                match uniform {
+                    Some(span) => {
+                        copy_left = copy_left.max(i32::from(span[0]));
+                        copy_right = copy_right.min(i32::from(span[1]));
+                        if copy_left >= copy_right {
+                            reason = "clipped-empty";
+                            return None;
+                        }
+                    }
+                    None => {
+                        let port_mask = ppc_region_storage_from_rows(band_top, &rows);
+                        mask_storage = match (mask_storage.take(), port_mask) {
+                            (Some(mask), Some(port_mask)) => {
+                                let mask_rows = ppc_region_rows_for_band(&mask, band_top, band_bottom);
+                                mask_rows
+                                    .map(|mask_rows| {
+                                        let combined: Vec<Vec<i16>> = mask_rows
+                                            .iter()
+                                            .zip(rows.iter())
+                                            .map(|(a, b)| ppc_region_intersect_rows(a, b))
+                                            .collect();
+                                        ppc_region_storage_from_rows(band_top, &combined)
+                                    })
+                                    .flatten()
+                                    .or(Some(port_mask))
+                            }
+                            (None, port_mask) => port_mask,
+                            (mask, None) => mask,
+                        };
+                    }
+                }
+            }
+        }
 
         // Inside Macintosh: Imaging With QuickDraw (1994), pp. 3-112–3-116
         // and 4-27: CopyBits copies bitmap or PixMap pixels between graphics

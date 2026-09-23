@@ -239,8 +239,9 @@ pub(crate) fn dispatch_supported_import(
     {
         if *tick_count >= from {
             eprintln!(
-                "[PPC-IMPORT] tick={} {}:{} r3=${:08X} lr=${:08X}",
-                *tick_count, binding.library_name, binding.symbol_name, cpu.gpr[3], cpu.lr
+                "[PPC-IMPORT] tick={} {}:{} r3=${:08X} lr=${:08X} r4=${:08X} r5=${:08X} r6=${:08X}",
+                *tick_count, binding.library_name, binding.symbol_name, cpu.gpr[3], cpu.lr,
+                cpu.gpr[4], cpu.gpr[5], cpu.gpr[6]
             );
         }
     }

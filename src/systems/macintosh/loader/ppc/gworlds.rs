@@ -3182,6 +3182,60 @@ pub(crate) fn ppc_restore_process_port_draw_state(
     }
 }
 
+pub(crate) fn ppc_hsl2rgb(memory: &mut PpcSectionMem, hsl_ptr: u32, rgb_ptr: u32) -> bool {
+    // Inside Macintosh Volume VI (1991), pp. 19-10--19-11: the inverse of
+    // RGB2HSL, with the components as unsigned 16-bit fractions.
+    fn hue_to_rgb(p: f64, q: f64, mut t: f64) -> f64 {
+        if t < 0.0 {
+            t += 1.0;
+        } else if t > 1.0 {
+            t -= 1.0;
+        }
+        if t < 1.0 / 6.0 {
+            return p + (q - p) * 6.0 * t;
+        }
+        if t < 1.0 / 2.0 {
+            return q;
+        }
+        if t < 2.0 / 3.0 {
+            return p + (q - p) * (2.0 / 3.0 - t) * 6.0;
+        }
+        p
+    }
+    let (Some(hue), Some(saturation), Some(lightness)) = (
+        memory.read_u16_be(hsl_ptr),
+        memory.read_u16_be(hsl_ptr.wrapping_add(2)),
+        memory.read_u16_be(hsl_ptr.wrapping_add(4)),
+    ) else {
+        return false;
+    };
+    if rgb_ptr == 0 || !ppc_memory_can_write_bytes(memory, rgb_ptr, 6) {
+        return false;
+    }
+    let hue = f64::from(hue) / 65_535.0;
+    let saturation = f64::from(saturation) / 65_535.0;
+    let lightness = f64::from(lightness) / 65_535.0;
+    let (red, green, blue) = if saturation == 0.0 {
+        (lightness, lightness, lightness)
+    } else {
+        let q = if lightness < 0.5 {
+            lightness * (1.0 + saturation)
+        } else {
+            lightness + saturation - lightness * saturation
+        };
+        let p = 2.0 * lightness - q;
+        (
+            hue_to_rgb(p, q, hue + 1.0 / 3.0),
+            hue_to_rgb(p, q, hue),
+            hue_to_rgb(p, q, hue - 1.0 / 3.0),
+        )
+    };
+    let to_word = |component: f64| -> u16 { (component.clamp(0.0, 1.0) * 65_535.0).round() as u16 };
+    memory.write_u16_be(rgb_ptr, to_word(red)).is_some()
+        && memory.write_u16_be(rgb_ptr.wrapping_add(2), to_word(green)).is_some()
+        && memory.write_u16_be(rgb_ptr.wrapping_add(4), to_word(blue)).is_some()
+}
+
 pub(crate) fn ppc_rgb2hsl(memory: &mut PpcSectionMem, rgb_ptr: u32, hsl_ptr: u32) -> bool {
     // Inside Macintosh Volume VI (1991), pp. 19-10--19-11: RGBColor and
     // HSLColor both carry unsigned 16-bit components; hue is a fraction of a

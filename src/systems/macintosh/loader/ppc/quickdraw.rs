@@ -1467,6 +1467,122 @@ pub(crate) fn ppc_paint_rect_bounds(
     wrote
 }
 
+/// FillCRect with a full-colour PixPat: tile the pattern's pixels over the
+/// rectangle. Imaging With QuickDraw (1994), 4-73 and 4-99 to 4-104: patType 1
+/// is a full-colour pattern whose image is patData laid out by patMap, and a
+/// pattern is aligned to the port's local coordinate origin. A PixPat copied
+/// from a 'ppat' resource (GetPixPat here) keeps patMap and patData as offsets
+/// within its own block; one made by NewPixPat keeps handles. Only an 8-bit
+/// pattern onto an 8-bit surface is drawn, copying colour indices; anything
+/// else returns false and the caller falls back to a solid fill.
+pub(crate) fn ppc_fill_rect_with_pix_pat(
+    memory: &mut PpcSectionMem,
+    gworlds: &[PpcGWorldRecord],
+    current_gworld: u32,
+    rect: (i16, i16, i16, i16),
+    pix_pat: u32,
+) -> bool {
+    let Some(pattern) = memory.read_u32_be(pix_pat).filter(|ptr| *ptr != 0) else {
+        return false;
+    };
+    if memory.read_u16_be(pattern) != Some(1) {
+        return false;
+    }
+    let (Some(pat_map), Some(pat_data)) = (
+        memory.read_u32_be(pattern.wrapping_add(2)),
+        memory.read_u32_be(pattern.wrapping_add(6)),
+    ) else {
+        return false;
+    };
+    let resolve = |memory: &mut PpcSectionMem, field: u32| -> Option<u32> {
+        if field < 0x0001_0000 {
+            Some(pattern.wrapping_add(field))
+        } else {
+            memory.read_u32_be(field).filter(|ptr| *ptr != 0)
+        }
+    };
+    let (Some(map), Some(data)) = (resolve(memory, pat_map), resolve(memory, pat_data)) else {
+        return false;
+    };
+    let (Some(row_bytes), Some(bounds), Some(pixel_size)) = (
+        memory.read_u16_be(map.wrapping_add(4)),
+        ppc_read_rect(memory, map.wrapping_add(6)),
+        memory.read_u16_be(map.wrapping_add(32)),
+    ) else {
+        return false;
+    };
+    let pat_row_bytes = u32::from(row_bytes & 0x3FFF);
+    let pat_width = i32::from(bounds.3) - i32::from(bounds.1);
+    let pat_height = i32::from(bounds.2) - i32::from(bounds.0);
+    if pixel_size != 8 || pat_width <= 0 || pat_height <= 0 || pat_row_bytes == 0 {
+        return false;
+    }
+    let Some(surface) = ppc_live_quickdraw_surface(memory, gworlds, current_gworld) else {
+        return false;
+    };
+    let front_buffer = surface.front_buffer;
+    if front_buffer.depth != 8 {
+        return false;
+    }
+    let mut image = vec![0u8; (pat_row_bytes * pat_height as u32) as usize];
+    if memory.read_bytes_into(data, &mut image).is_none() {
+        return false;
+    }
+    let (top, left, bottom, right) = surface.local_rect(rect);
+    let left = left.max(0).min(front_buffer.width as i32);
+    let top = top.max(0).min(front_buffer.height as i32);
+    let right = right.max(0).min(front_buffer.width as i32);
+    let bottom = bottom.max(0).min(front_buffer.height as i32);
+    if left >= right || top >= bottom {
+        return false;
+    }
+    let clip_storage = memory
+        .read_u32_be(current_gworld.wrapping_add(PPC_CGRAF_PORT_CLIP_RGN_OFFSET))
+        .and_then(|clip_rgn| ppc_region_storage(memory, clip_rgn));
+    let vis_storage = memory
+        .read_u32_be(current_gworld.wrapping_add(PPC_CGRAF_PORT_VIS_RGN_OFFSET))
+        .and_then(|vis_rgn| ppc_region_storage(memory, vis_rgn));
+    let (Ok(port_top), Ok(port_bottom)) = (
+        i16::try_from(top + i32::from(surface.top)),
+        i16::try_from(bottom + i32::from(surface.top)),
+    ) else {
+        return false;
+    };
+    let (Ok(port_left), Ok(port_right)) = (
+        i16::try_from(left + i32::from(surface.left)),
+        i16::try_from(right + i32::from(surface.left)),
+    ) else {
+        return false;
+    };
+    let mut rows = vec![vec![port_left, port_right]; (port_bottom as i32 - port_top as i32) as usize];
+    for storage in [vis_storage.as_deref(), clip_storage.as_deref()]
+        .into_iter()
+        .flatten()
+    {
+        let Some(clip_rows) = ppc_region_rows_for_band(storage, port_top, port_bottom) else {
+            return false;
+        };
+        for (row, clip) in rows.iter_mut().zip(clip_rows) {
+            *row = ppc_region_intersect_rows(row, &clip);
+        }
+    }
+    let mut wrote = false;
+    for (dy, row) in rows.iter().enumerate() {
+        let port_y = i32::from(port_top) + dy as i32;
+        let y = port_y - i32::from(surface.top);
+        let pattern_row = port_y.rem_euclid(pat_height) as u32 * pat_row_bytes;
+        for pair in row.chunks_exact(2) {
+            let bytes: Vec<u8> = (i32::from(pair[0])..i32::from(pair[1]))
+                .map(|port_x| image[(pattern_row + port_x.rem_euclid(pat_width) as u32) as usize])
+                .collect();
+            let x = i32::from(pair[0]) - i32::from(surface.left);
+            let address = front_buffer.base_addr + y as u32 * front_buffer.row_bytes + x as u32;
+            wrote |= memory.write_bytes(address, &bytes).is_some();
+        }
+    }
+    wrote
+}
+
 pub(crate) fn ppc_invert_rect(
     cpu: &PpcCpu,
     memory: &mut PpcSectionMem,

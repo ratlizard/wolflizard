@@ -70,6 +70,16 @@ pub(super) fn dispatch_file_import(context: PpcFileDispatchContext<'_>) -> Optio
                 vfs_resources,
             ))))
         }
+        PpcImportDispatcherTarget::FSpExchangeFiles => Some(PpcImportAction::Return(
+            ppc_i16_result(ppc_fsp_exchange_files(
+                cpu,
+                memory,
+                vfs_directories,
+                vfs_files,
+                vfs_resource_files,
+                vfs_resources,
+            )),
+        )),
         PpcImportDispatcherTarget::PBClose => {
             Some(PpcImportAction::Return(ppc_i16_result(ppc_pb_close(
                 cpu,
@@ -1389,5 +1399,91 @@ pub(super) fn ppc_flush_vol(cpu: &mut PpcCpu, memory: &mut PpcSectionMem) -> i16
     if name_ptr != 0 && ppc_read_pstring_bytes(memory, name_ptr).is_none() {
         return PPC_PARAM_ERR;
     }
+    PPC_NO_ERR
+}
+
+fn ppc_resource_fork_bytes(
+    vfs_resource_files: &mut ProcessVfsResourceFileRecords,
+    vfs_resources: &[PpcVfsResourceRecord],
+    path: &str,
+) -> Vec<u8> {
+    ppc_publish_resource_fork_bytes(vfs_resource_files, vfs_resources, true);
+    let key = vfs_resource_files
+        .iter()
+        .find(|record| record.path.eq_ignore_ascii_case(path))
+        .map(|record| record.path.clone())
+        .unwrap_or_else(|| path.to_string());
+    vfs_resource_files.fork(&key).cloned().unwrap_or_default()
+}
+
+/// Make `bytes` a file's resource fork, as raw bytes that stand until the
+/// Resource Manager next changes one of its resources.
+fn ppc_store_resource_fork(
+    vfs_resource_files: &mut ProcessVfsResourceFileRecords,
+    vfs_files: &[PpcVfsFileRecord],
+    path: &str,
+    bytes: Vec<u8>,
+) {
+    let len = u32::try_from(bytes.len()).unwrap_or(u32::MAX);
+    if let Some(record) = vfs_resource_files
+        .iter_mut()
+        .find(|record| record.path.eq_ignore_ascii_case(path))
+    {
+        record.raw_data = Some(bytes.clone().into());
+        record.resource_len = len;
+        record.dirty = true;
+        let key = record.path.clone();
+        vfs_resource_files.update_fork(&key, &bytes);
+        return;
+    }
+    let (creator, file_type, finder_flags) = vfs_files
+        .iter()
+        .find(|file| file.path.eq_ignore_ascii_case(path))
+        .map_or((0, 0, 0), |file| (file.creator, file.file_type, file.finder_flags));
+    vfs_resource_files.push(PpcVfsResourceFileRecord {
+        path: path.to_string(),
+        creator,
+        file_type,
+        finder_flags,
+        resource_len: len,
+        raw_data: Some(bytes.into()),
+        map_attrs: 0,
+        dirty: true,
+    });
+}
+
+/// FSpExchangeFiles(source, dest): Inside Macintosh: Files (1992), 2-180.
+/// The two files trade data and resource forks and keep their names.
+fn ppc_fsp_exchange_files(
+    cpu: &PpcCpu,
+    memory: &mut PpcSectionMem,
+    vfs_directories: &[PpcVfsDirectory],
+    vfs_files: &mut ProcessVfsFileRecords,
+    vfs_resource_files: &mut ProcessVfsResourceFileRecords,
+    vfs_resources: &[PpcVfsResourceRecord],
+) -> i16 {
+    let source = match ppc_existing_data_path_for_fsspec(memory, vfs_directories, vfs_files, cpu.gpr[3]) {
+        Ok(path) => path,
+        Err(err) => return err,
+    };
+    let dest = match ppc_existing_data_path_for_fsspec(memory, vfs_directories, vfs_files, cpu.gpr[4]) {
+        Ok(path) => path,
+        Err(err) => return err,
+    };
+    let (Some(source_index), Some(dest_index)) =
+        (ppc_vfs_file_index(vfs_files, &source), ppc_vfs_file_index(vfs_files, &dest))
+    else {
+        return PPC_FNF_ERR;
+    };
+    let source_data = vfs_files[source_index].data.to_vec();
+    let dest_data = vfs_files[dest_index].data.to_vec();
+    vfs_files[source_index].data.with_mut(|bytes| *bytes = dest_data);
+    vfs_files[dest_index].data.with_mut(|bytes| *bytes = source_data);
+    vfs_files[source_index].dirty = true;
+    vfs_files[dest_index].dirty = true;
+    let source_fork = ppc_resource_fork_bytes(vfs_resource_files, vfs_resources, &source);
+    let dest_fork = ppc_resource_fork_bytes(vfs_resource_files, vfs_resources, &dest);
+    ppc_store_resource_fork(vfs_resource_files, vfs_files, &source, dest_fork);
+    ppc_store_resource_fork(vfs_resource_files, vfs_files, &dest, source_fork);
     PPC_NO_ERR
 }

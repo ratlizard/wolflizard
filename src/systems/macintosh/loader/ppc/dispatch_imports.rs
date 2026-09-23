@@ -1637,6 +1637,7 @@ pub(crate) fn dispatch_supported_import(
         | PpcImportDispatcherTarget::FSpOpenResFile
         | PpcImportDispatcherTarget::FSpOpenDF
         | PpcImportDispatcherTarget::FSpOpenRF
+        | PpcImportDispatcherTarget::FSpExchangeFiles
         | PpcImportDispatcherTarget::HOpen
         | PpcImportDispatcherTarget::PBOpen
         | PpcImportDispatcherTarget::PBHOpenDF
@@ -2129,6 +2130,9 @@ pub(crate) fn dispatch_supported_import(
         | PpcImportDispatcherTarget::LDispose
         | PpcImportDispatcherTarget::LAddRow
         | PpcImportDispatcherTarget::LDelRow
+        | PpcImportDispatcherTarget::LAddColumn
+        | PpcImportDispatcherTarget::LDelColumn
+        | PpcImportDispatcherTarget::LRect
         | PpcImportDispatcherTarget::LGetSelect
         | PpcImportDispatcherTarget::LSetSelect
         | PpcImportDispatcherTarget::LSetCell

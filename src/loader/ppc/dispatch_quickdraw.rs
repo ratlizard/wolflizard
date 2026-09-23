@@ -705,6 +705,8 @@ pub(super) fn dispatch_quickdraw_import(
                     current_gworld,
                     *quickdraw_fore_color,
                     quickdraw_fore_indices.get(&current_gworld).copied(),
+                    *quickdraw_back_color,
+                    &toolbox_startup.quickdraw_pen_pattern,
                 );
             }
             Some(PpcImportAction::ReturnPreserve)

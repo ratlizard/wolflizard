@@ -42727,6 +42727,7 @@ fn ppc_invert_rect_bounds(
     wrote
 }
 
+#[allow(clippy::too_many_arguments)]
 fn ppc_frame_rect(
     cpu: &PpcCpu,
     memory: &mut PpcSectionMem,
@@ -42734,6 +42735,8 @@ fn ppc_frame_rect(
     current_gworld: u32,
     color: PpcRgbColor,
     explicit_index: Option<u8>,
+    back_color: PpcRgbColor,
+    pen_pattern: &[u8; 8],
 ) -> bool {
     let Some(rect) = ppc_read_rect(memory, cpu.gpr[3]) else {
         return false;
@@ -42775,29 +42778,65 @@ fn ppc_frame_rect(
     else {
         return false;
     };
-    let mut wrote = false;
+    let back_pixel =
+        ppc_quickdraw_surface_fore_pixel(memory, surface, back_color, None).unwrap_or(0);
+    let pen_mode = memory
+        .read_u16_be(current_gworld.wrapping_add(PPC_CGRAF_PORT_PN_MODE_OFFSET))
+        .map_or(PPC_QD_PEN_MODE_PAT_COPY, |mode| mode as i16);
+    let clip_storage = memory
+        .read_u32_be(current_gworld.wrapping_add(PPC_CGRAF_PORT_CLIP_RGN_OFFSET))
+        .and_then(|clip_rgn| ppc_region_storage(memory, clip_rgn));
+    let vis_storage = memory
+        .read_u32_be(current_gworld.wrapping_add(PPC_CGRAF_PORT_VIS_RGN_OFFSET))
+        .and_then(|vis_rgn| ppc_region_storage(memory, vis_rgn));
+    // A pixel is written once even where two edges of a thin frame meet, so
+    // an XOR frame drawn twice leaves nothing behind.
+    let mut points = std::collections::BTreeSet::new();
     for dy in 0..pen_height {
         for x in left..right {
-            wrote |=
-                ppc_quickdraw_write_raw_pixel(memory, front_buffer, (x, top + dy), color_pixel);
-            wrote |= ppc_quickdraw_write_raw_pixel(
-                memory,
-                front_buffer,
-                (x, bottom - 1 - dy),
-                color_pixel,
-            );
+            points.insert((x, top + dy));
+            points.insert((x, bottom - 1 - dy));
         }
     }
     for dx in 0..pen_width {
         for y in top..bottom {
-            wrote |=
-                ppc_quickdraw_write_raw_pixel(memory, front_buffer, (left + dx, y), color_pixel);
-            wrote |= ppc_quickdraw_write_raw_pixel(
-                memory,
-                front_buffer,
-                (right - 1 - dx, y),
-                color_pixel,
-            );
+            points.insert((left + dx, y));
+            points.insert((right - 1 - dx, y));
+        }
+    }
+    let mut wrote = false;
+    for point in points {
+        if !ppc_local_point_in_port_regions(surface, point, vis_storage.as_deref(), clip_storage.as_deref()) {
+            continue;
+        }
+        // Imaging With QuickDraw (1994), pp. 3-6--3-8: the pen pattern is
+        // aligned to the port's local coordinates, and the pattern modes
+        // combine each of its bits with the destination.
+        let port_x = point.0 + i32::from(surface.left);
+        let port_y = point.1 + i32::from(surface.top);
+        let row = pen_pattern[(port_y & 7) as usize];
+        let mut bit = row & (0x80 >> (port_x & 7)) != 0;
+        if pen_mode & 0x04 != 0 {
+            bit = !bit;
+        }
+        let pixel = match pen_mode & 0x03 {
+            // patOr: set bits paint the foreground.
+            1 => bit.then_some(color_pixel),
+            // patXor: set bits invert the destination.
+            2 => {
+                if bit {
+                    ppc_quickdraw_read_pixel(memory, front_buffer, point).map(|dst| dst ^ color_pixel)
+                } else {
+                    None
+                }
+            }
+            // patBic: set bits paint the background.
+            3 => bit.then_some(back_pixel),
+            // patCopy.
+            _ => Some(if bit { color_pixel } else { back_pixel }),
+        };
+        if let Some(pixel) = pixel {
+            wrote |= ppc_quickdraw_write_raw_pixel(memory, front_buffer, point, pixel);
         }
     }
     wrote
@@ -44019,8 +44058,30 @@ fn ppc_copy_bits(
                 toolbox_startup,
                 dst_clut,
             );
+            // Imaging With QuickDraw (1994), p. 4-97: CopyBits compares the
+            // source table's ctSeed with the destination device's; when they
+            // match, the indexes already name the device's colours and are
+            // copied as they are, whatever the entries say. Cythera's
+            // portraits carry the device seed on a table whose entries sit
+            // one place from the device's.
+            let seed = |memory: &mut PpcSectionMem, handle: u32| {
+                memory
+                    .read_u32_be(handle)
+                    .filter(|table| *table != 0)
+                    .and_then(|table| memory.read_u32_be(table))
+                    .filter(|seed| *seed != 0)
+            };
+            let source_seed_matches_device = src_ctable != 0
+                && dst_device_ctable_resolution.handle.is_some_and(|device| {
+                    let device_seed = seed(memory, device);
+                    device_seed.is_some() && seed(memory, src_ctable) == device_seed
+                });
             if let Some(linked_palette_map) = linked_palette_map {
                 Some(linked_palette_map)
+            } else if source_seed_matches_device {
+                indexed_palette_identity_known =
+                    src_clut_resolution_known && dst_clut_resolution_known;
+                None
             } else if same_indexed_ctable_identity {
                 indexed_palette_identity_known =
                     src_clut_resolution_known && dst_clut_resolution_known;
@@ -50828,6 +50889,17 @@ fn ppc_apply_palette(
                         .map(|channel| rgb[channel].abs_diff(candidate[channel]))
                         .max()
                         .unwrap_or(0);
+                    // A slot that is another explicit entry's own index is
+                    // not free for this one: Inside Macintosh Volume VI
+                    // (1991), pp. 20-8--20-12, explicit entry n names device
+                    // index n. Taking it would push every later entry of a
+                    // full explicit palette one index along.
+                    let owned_by_explicit_entry = |slot: usize| {
+                        slot != entry
+                            && entries
+                                .get(slot)
+                                .is_some_and(|(_, usage, _)| usage & PM_EXPLICIT != 0)
+                    };
                     if difference <= tolerance {
                         entry_mappings[entry] = PpcPaletteEntryMapping::MatchOnly(closest);
                     } else if let Some((slot, stolen)) = (0..256)
@@ -50835,6 +50907,7 @@ fn ppc_apply_palette(
                             !device_protected[*slot]
                                 && !allocation_blocked[*slot]
                                 && !claimed[*slot]
+                                && !owned_by_explicit_entry(*slot)
                         })
                         .map(|slot| (slot, None))
                         .or_else(|| {

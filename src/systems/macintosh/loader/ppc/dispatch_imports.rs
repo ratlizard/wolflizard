@@ -1751,6 +1751,7 @@ pub(crate) fn dispatch_supported_import(
         | PpcImportDispatcherTarget::RGB2HSL
         | PpcImportDispatcherTarget::HSL2RGB
         | PpcImportDispatcherTarget::SeedFill
+        | PpcImportDispatcherTarget::CalcMask
         | PpcImportDispatcherTarget::RGB2HSV
         | PpcImportDispatcherTarget::HSV2RGB
         | PpcImportDispatcherTarget::SetRect

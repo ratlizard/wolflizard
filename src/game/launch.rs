@@ -3765,11 +3765,17 @@ mod tests {
     fn frontend_runner_constructors_preserve_defaults_and_explicit_depths() {
         let default_runner = new_runner();
         assert_eq!(default_runner.configured_screen_depth(), 8);
-        assert_eq!(default_runner.configured_powerpc_screen_depth(), 16);
+        assert_eq!(
+            default_runner.configured_powerpc_screen_depth(),
+            crate::runner::DEFAULT_POWERPC_SCREEN_DEPTH
+        );
 
         let addressed_default = new_runner_with_addressing(false);
         assert_eq!(addressed_default.configured_screen_depth(), 8);
-        assert_eq!(addressed_default.configured_powerpc_screen_depth(), 16);
+        assert_eq!(
+            addressed_default.configured_powerpc_screen_depth(),
+            crate::runner::DEFAULT_POWERPC_SCREEN_DEPTH
+        );
         assert!(!addressed_default.bus().addressing_32_bit());
 
         for depth in [1, 2, 4, 8] {

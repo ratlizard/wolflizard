@@ -137,6 +137,7 @@ use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::OnceLock;
 
 mod dispatch_cfm;
+mod dispatch_defproc;
 use dispatch_cfm::*;
 mod dispatch_apple_events;
 use dispatch_apple_events::*;
@@ -8863,7 +8864,11 @@ impl PpcLoadedApp {
                         &mut quickdraw_text_size,
                     );
                 }
-                let action = if binding.dispatcher_target == PpcImportDispatcherTarget::GetKeys {
+                let action = if let Some(resumed) =
+                    dispatch_defproc::ppc_resume_def_proc_calls(cpu, memory)
+                {
+                    Some(resumed)
+                } else if binding.dispatcher_target == PpcImportDispatcherTarget::GetKeys {
                     Some(dispatch_getkeys_import(
                         cpu,
                         memory,
@@ -9177,6 +9182,14 @@ impl PpcLoadedApp {
                     });
                     action
                 };
+                let action = process_file_system.resource_manager.with_mut(|resource_manager| {
+                    dispatch_defproc::ppc_begin_pending_def_procs(
+                        cpu,
+                        memory,
+                        &resource_manager.vfs_resources,
+                        action,
+                    )
+                });
 
                 ppc_sync_process_window_list(memory, &window_list);
 

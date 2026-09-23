@@ -614,6 +614,10 @@ const PPC_MAIN_PIXMAP_HANDLE: u32 = 0x02f0_0300;
 const PPC_MAIN_PIXMAP: u32 = 0x02f0_0400;
 const PPC_GRAY_RGN_HANDLE: u32 = 0x02f0_0500;
 const PPC_GRAY_RGN: u32 = 0x02f0_0600;
+/// pnPat and bkPat in an old-style GrafPort (Inside Macintosh Volume I,
+/// I-148).
+const PPC_OLD_GRAF_PORT_PN_PAT_OFFSET: u32 = 58;
+const PPC_OLD_GRAF_PORT_BK_PAT_OFFSET: u32 = 32;
 /// Room for GrayRgn's region data, which lies outside the application heap:
 /// everything up to the next fixed record.
 const PPC_GRAY_RGN_CAPACITY: u32 = 0x100;
@@ -17714,6 +17718,25 @@ fn ppc_dispatch_quickdraw_compatibility(
                     }
                 }
             }
+            PpcImportAction::ReturnPreserve
+        }
+        // GetWMgrPort and GetCWMgrPort return the same colour port here. An
+        // application keeping the two in step, as Apple's sample SyncPorts
+        // does, passes the old-style port's pnPat (offset 58) and bkPat
+        // (offset 32), which in the colour port are the pattern handles.
+        // With one port there is nothing to copy; the port keeps its
+        // patterns. Cythera's plaques were framed in a pattern made of
+        // handle bytes, white where it should be black.
+        PpcQuickDrawCompatibilityOperation::PenPat | PpcQuickDrawCompatibilityOperation::BackPat
+            if cpu.gpr[3]
+                == PPC_MAIN_GWORLD.wrapping_add(
+                    if operation == PpcQuickDrawCompatibilityOperation::PenPat {
+                        PPC_OLD_GRAF_PORT_PN_PAT_OFFSET
+                    } else {
+                        PPC_OLD_GRAF_PORT_BK_PAT_OFFSET
+                    },
+                ) =>
+        {
             PpcImportAction::ReturnPreserve
         }
         PpcQuickDrawCompatibilityOperation::PenPat => {

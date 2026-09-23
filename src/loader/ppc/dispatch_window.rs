@@ -892,18 +892,25 @@ pub(super) fn ppc_window_structure_bounds(
     proc_id: i16,
     content: (i16, i16, i16, i16),
 ) -> (i16, i16, i16, i16) {
-    let has_title_bar = ppc_window_proc_has_title_bar(proc_id);
-    let border: i16 = if has_title_bar { 1 } else { 6 };
-    if has_title_bar {
-        crate::window_manager::standard_window_structure_bounds(content)
-    } else {
-        (
-            content.0.saturating_sub(border),
-            content.1.saturating_sub(border),
-            content.2.saturating_add(border),
-            content.3.saturating_add(border),
-        )
+    if ppc_window_proc_has_title_bar(proc_id) {
+        return crate::window_manager::standard_window_structure_bounds(content);
     }
+    // dBoxProc, plainDBox and altDBoxProc (Inside Macintosh Volume I,
+    // I-273), with the frame widths the 68K path draws: an eight-pixel
+    // double border, a single line, and a line with a two-pixel shadow right
+    // and below.
+    let (top, left, bottom, right) = match proc_id {
+        1 => (8, 8, 8, 8),
+        2 => (1, 1, 1, 1),
+        3 => (1, 1, 3, 3),
+        _ => (6, 6, 6, 6),
+    };
+    (
+        content.0.saturating_sub(top),
+        content.1.saturating_sub(left),
+        content.2.saturating_add(bottom),
+        content.3.saturating_add(right),
+    )
 }
 
 pub(super) fn ppc_window_proc_id(memory: &mut PpcSectionMem, window: u32) -> i16 {
@@ -1486,6 +1493,8 @@ pub(super) fn ppc_draw_existing_window_frame(
         ppc_draw_standard_window_frame(memory, gworlds, window, width, height, go_away);
     } else if proc_id == 1 {
         ppc_draw_dialog_box_frame(memory, gworlds, window, height, width);
+    } else if matches!(proc_id, 2 | 3) {
+        ppc_draw_plain_box_frame(memory, gworlds, window, proc_id == 3);
     }
     if let Some(saved) = preserved_front_pixels {
         for (index, (x, y, pixel)) in saved.pixels.iter().copied().enumerate() {
@@ -1570,6 +1579,15 @@ pub(super) fn ppc_window_global_structure_bounds(
     gworlds: &[PpcGWorldRecord],
     window: u32,
 ) -> Option<(i16, i16, i16, i16)> {
+    // The structure region is the window definition's own answer; the
+    // proc-ID formula is only a stand-in for a window that has none yet.
+    if let Some(bounds) = memory
+        .read_u32_be(window.wrapping_add(PPC_CWINDOW_STRUCTURE_RGN_OFFSET))
+        .and_then(|rgn| ppc_read_rgn_bbox(memory, rgn))
+        .filter(|(top, left, bottom, right)| top < bottom && left < right)
+    {
+        return Some(bounds);
+    }
     let content = ppc_window_global_content_bounds(memory, gworlds, window)?;
     Some(ppc_window_structure_bounds(
         ppc_window_proc_id(memory, window),
@@ -1984,6 +2002,36 @@ pub(super) fn ppc_recalculate_vis_regions_behind(
         if let Some((top, left, _, _)) = ppc_read_rgn_bbox(memory, content_rgn) {
             let _ = ppc_offset_rgn(memory, vis_rgn, left.saturating_neg(), top.saturating_neg());
         }
+    }
+}
+
+/// plainDBox's one-pixel black frame around the content, and for
+/// altDBoxProc its two-pixel shadow to the right and below.
+fn ppc_draw_plain_box_frame(
+    memory: &mut PpcSectionMem,
+    gworlds: &[PpcGWorldRecord],
+    window: u32,
+    shadow: bool,
+) {
+    let Some((top, left, bottom, right)) = memory
+        .read_u32_be(window + PPC_CWINDOW_CONTENT_RGN_OFFSET)
+        .and_then(|region| ppc_read_rgn_bbox(memory, region))
+    else {
+        return;
+    };
+    let (t, l, b, r) = (top - 1, left - 1, bottom + 1, right + 1);
+    let mut rects = vec![
+        (t, l, t + 1, r),
+        (b - 1, l, b, r),
+        (t, l, b, l + 1),
+        (t, r - 1, b, r),
+    ];
+    if shadow {
+        rects.push((t + 2, r, b + 2, r + 2));
+        rects.push((b, l + 2, b + 2, r + 2));
+    }
+    for rect in rects {
+        let _ = ppc_paint_rect_bounds(memory, gworlds, PPC_MAIN_GWORLD, rect, PPC_RGB_BLACK, None);
     }
 }
 

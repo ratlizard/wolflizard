@@ -1723,6 +1723,9 @@ pub(crate) fn dispatch_supported_import(
         | PpcImportDispatcherTarget::GetIndPattern
         | PpcImportDispatcherTarget::GetPixPat
         | PpcImportDispatcherTarget::NewPixPat
+        | PpcImportDispatcherTarget::GetAuxiliaryControlRecord
+        | PpcImportDispatcherTarget::GetAuxWin
+        | PpcImportDispatcherTarget::GetMenuItemCommandID
         | PpcImportDispatcherTarget::PixPatChanged
         | PpcImportDispatcherTarget::DisposePixPat
         | PpcImportDispatcherTarget::GetIntlResource => {
@@ -1903,7 +1906,6 @@ pub(crate) fn dispatch_supported_import(
         | PpcImportDispatcherTarget::SetWRefCon
         | PpcImportDispatcherTarget::GetWindowPic
         | PpcImportDispatcherTarget::SetWindowPic
-        | PpcImportDispatcherTarget::GetAuxWin
         | PpcImportDispatcherTarget::LMGetWindowList
         | PpcImportDispatcherTarget::LMSetWindowList
         | PpcImportDispatcherTarget::SizeWindow

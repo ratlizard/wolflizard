@@ -301,23 +301,6 @@ pub(super) fn dispatch_window_import(
             }
             Some(PpcImportAction::ReturnPreserve)
         }
-        PpcImportDispatcherTarget::GetAuxWin => {
-            let window_ptr = cpu.gpr[3];
-            let aw_ctable_ptr = cpu.gpr[4];
-            let is_tracked = window_list.contains_window(window_ptr);
-            let color_table = if window_ptr != 0 {
-                memory
-                    .read_u32_be(window_ptr.wrapping_add(PPC_CWINDOW_COLOR_TABLE_HANDLE_OFFSET))
-                    .unwrap_or(0)
-            } else {
-                0
-            };
-            if aw_ctable_ptr != 0 && ppc_memory_can_write_bytes(memory, aw_ctable_ptr, 4) {
-                let _ = memory.write_u32_be(aw_ctable_ptr, color_table);
-            }
-            let success = if color_table != 0 || is_tracked { 1 } else { 0 };
-            Some(PpcImportAction::Return(success))
-        }
         PpcImportDispatcherTarget::LMGetWindowList => {
             let head = window_list.first().unwrap_or(0);
             let window = if head != 0 {

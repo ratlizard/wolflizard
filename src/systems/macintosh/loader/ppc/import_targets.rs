@@ -96,6 +96,9 @@ pub enum PpcImportDispatcherTarget {
     GetIndPattern,
     GetPixPat,
     NewPixPat,
+    GetAuxiliaryControlRecord,
+    GetAuxWin,
+    GetMenuItemCommandID,
     PixPatChanged,
     DisposePixPat,
     GetPictInfo,
@@ -251,7 +254,6 @@ pub enum PpcImportDispatcherTarget {
     SetWRefCon,
     GetWindowPic,
     SetWindowPic,
-    GetAuxWin,
     LMGetWindowList,
     LMSetWindowList,
     SizeWindow,
@@ -2553,6 +2555,12 @@ pub(crate) fn dispatcher_target_for_import(
         ("InterfaceLib", "GetIndPattern") => PpcImportDispatcherTarget::GetIndPattern,
         ("InterfaceLib", "GetPixPat") => PpcImportDispatcherTarget::GetPixPat,
         ("InterfaceLib", "NewPixPat") => PpcImportDispatcherTarget::NewPixPat,
+        ("InterfaceLib", "GetAuxiliaryControlRecord" | "GetAuxCtl") => {
+            PpcImportDispatcherTarget::GetAuxiliaryControlRecord
+        }
+        ("AppearanceLib" | "InterfaceLib", "GetMenuItemCommandID") => {
+            PpcImportDispatcherTarget::GetMenuItemCommandID
+        }
         ("InterfaceLib", "PixPatChanged") => PpcImportDispatcherTarget::PixPatChanged,
         ("InterfaceLib", "DisposePixPat" | "DisposPixPat") => {
             PpcImportDispatcherTarget::DisposePixPat

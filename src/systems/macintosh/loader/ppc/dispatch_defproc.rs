@@ -26,6 +26,41 @@ pub(super) const WDEF_NEW: u32 = 3;
 struct DefProcCall {
     target: PpcCallbackTarget,
     args: [u32; 4],
+    /// The port to make current for the call (a CDEF draws in its window).
+    port: Option<u32>,
+}
+
+/// CDEF messages (Macintosh Toolbox Essentials (1992), pp. 5-104 to 5-116).
+pub(super) const CDEF_DRAW: u32 = 0;
+pub(super) const CDEF_INIT: u32 = 3;
+
+/// Record a new control; one naming an application CDEF is told of it.
+pub(super) fn ppc_register_control_proc(handle: u32, proc_id: i16) {
+    let app = (proc_id as u16 >> 4) >= 128;
+    APP_CDEF_CONTROLS.with(|controls| {
+        let mut controls = controls.borrow_mut();
+        if app {
+            controls.insert(handle, proc_id);
+        } else {
+            controls.remove(&handle);
+        }
+    });
+    if app {
+        ppc_note_app_cdef_message(handle, CDEF_INIT, 0);
+    }
+}
+
+pub(super) fn ppc_control_has_app_cdef(handle: u32) -> bool {
+    APP_CDEF_CONTROLS.with(|controls| controls.borrow().contains_key(&handle))
+}
+
+pub(super) fn ppc_note_app_cdef_message(handle: u32, message: u32, param: u32) {
+    PENDING_CDEF_CALLS.with(|pending| {
+        let mut pending = pending.borrow_mut();
+        if !pending.contains(&(handle, message, param)) {
+            pending.push((handle, message, param));
+        }
+    });
 }
 
 struct DefProcCallState {
@@ -48,6 +83,10 @@ thread_local! {
     static APP_WDEF_WINDOWS: RefCell<std::collections::HashMap<u32, i16>> =
         RefCell::new(std::collections::HashMap::new());
     static PENDING_WDEF_DRAWS: RefCell<Vec<(u32, u32)>> = const { RefCell::new(Vec::new()) };
+    /// Controls with an application CDEF: handle -> procID.
+    static APP_CDEF_CONTROLS: RefCell<std::collections::HashMap<u32, i16>> =
+        RefCell::new(std::collections::HashMap::new());
+    static PENDING_CDEF_CALLS: RefCell<Vec<(u32, u32, u32)>> = const { RefCell::new(Vec::new()) };
     static DEF_PROC_STACK: RefCell<Vec<DefProcCallState>> = const { RefCell::new(Vec::new()) };
     static PORT_TO_RESTORE: RefCell<Option<u32>> = const { RefCell::new(None) };
 }
@@ -150,6 +189,9 @@ fn ppc_next_def_proc_call(cpu: &mut PpcCpu, memory: &mut PpcSectionMem) -> Optio
             }
             let call = state.calls[state.next];
             state.next += 1;
+            if let Some(port) = call.port {
+                PORT_TO_RESTORE.with(|slot| *slot.borrow_mut() = Some(port));
+            }
             // A WDEF computing regions takes the window's global origin from
             // portBits.bounds (GrafPort offsets 8 and 10), which in a
             // CGrafPort is where grafVars lives. For the length of the call
@@ -255,7 +297,9 @@ pub(super) fn ppc_begin_pending_def_procs(
     current_port: u32,
 ) -> Option<PpcImportAction> {
     let pending = PENDING_WDEF_DRAWS.with(|pending| std::mem::take(&mut *pending.borrow_mut()));
-    if pending.is_empty() {
+    let pending_controls =
+        PENDING_CDEF_CALLS.with(|pending| std::mem::take(&mut *pending.borrow_mut()));
+    if pending.is_empty() && pending_controls.is_empty() {
         return action;
     }
     let completion = match action {
@@ -264,6 +308,7 @@ pub(super) fn ppc_begin_pending_def_procs(
         // keeps its meaning; the frames are drawn at a later import.
         other => {
             PENDING_WDEF_DRAWS.with(|slot| slot.borrow_mut().extend(pending));
+            PENDING_CDEF_CALLS.with(|slot| slot.borrow_mut().extend(pending_controls));
             return other;
         }
     };
@@ -296,9 +341,33 @@ pub(super) fn ppc_begin_pending_def_procs(
             Some(DefProcCall {
                 target,
                 args: [var_code, window, message, 0],
+                port: None,
             })
         })
         .collect();
+    let cdef = u32::from_be_bytes(*b"CDEF");
+    let mut calls = calls;
+    calls.extend(pending_controls.into_iter().filter_map(|(handle, message, param)| {
+        let proc_id = APP_CDEF_CONTROLS.with(|controls| controls.borrow().get(&handle).copied())?;
+        let res_id = (proc_id as u16 >> 4) as i16;
+        let var_code = u32::from(proc_id as u16 & 0x000F);
+        let target = ppc_app_def_proc_target(memory, vfs_resources, cdef, res_id, cpu.gpr[2])?;
+        let control = memory.read_u32_be(handle).filter(|ptr| *ptr != 0)?;
+        // Macintosh Toolbox Essentials (1992), p. 5-114: contrlDefProc is
+        // the handle to the CDEF, which an application CDEF may identify
+        // itself by (Cythera's TCDEFRegister, like its WDEF).
+        if message == CDEF_INIT {
+            if let Some(defproc) = ppc_app_def_proc_handle(vfs_resources, cdef, res_id) {
+                let _ = memory.write_u32_be(control.wrapping_add(24), defproc);
+            }
+        }
+        let owner = memory.read_u32_be(control.wrapping_add(4)).filter(|ptr| *ptr != 0);
+        Some(DefProcCall {
+            target,
+            args: [var_code, handle, message, param],
+            port: owner,
+        })
+    }));
     if calls.is_empty() {
         return Some(completion);
     }

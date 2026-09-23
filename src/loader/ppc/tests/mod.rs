@@ -61586,6 +61586,106 @@ fn calc_vis_behind_rebuilds_visible_window_regions_below_the_menu_bar() {
 }
 
 #[test]
+fn calc_vis_behind_leaves_windows_in_front_out_of_the_visible_region() {
+    let pef = synthetic_pef_with_import(b"CalcVisBehind");
+    let mut loaded = load_pef_application(&pef).unwrap();
+    let mut last_mem_error = loaded.last_mem_error();
+    let bounds_ptr = PPC_DATA_BASE + 0x1000;
+    loaded.memory.add_region(bounds_ptr, vec![0; 8]);
+    let mut windows = Vec::new();
+    for (bounds, behind) in [((40, 0, 400, 600), 0), ((100, 100, 200, 200), u32::MAX)] {
+        let (top, left, bottom, right) = bounds;
+        ppc_write_rect(&mut loaded.memory, bounds_ptr, top, left, bottom, right).unwrap();
+        let mut window_cpu = loaded.cpu.clone();
+        window_cpu.gpr[3] = 0;
+        window_cpu.gpr[4] = bounds_ptr;
+        window_cpu.gpr[6] = 1;
+        window_cpu.gpr[7] = 2;
+        window_cpu.gpr[8] = behind;
+        let window = ppc_new_cwindow(
+            &window_cpu,
+            None,
+            &mut loaded.memory,
+            test_heap_cursor!(loaded),
+            test_heap_limit!(loaded),
+            &mut last_mem_error,
+            test_handles!(loaded),
+            &mut loaded.gworlds,
+            &mut loaded.window_list,
+            *loaded.current_gdevice,
+        );
+        assert_ne!(window, 0);
+        windows.push(window);
+    }
+    let (back, front) = (windows[0], windows[1]);
+    assert_eq!(loaded.window_list.windows(), [front, back]);
+
+    let clobbered_rgn = ppc_new_rgn(
+        &mut loaded.memory,
+        test_heap_cursor!(loaded),
+        test_heap_limit!(loaded),
+        &mut last_mem_error,
+        test_handles!(loaded),
+    );
+    ppc_write_rgn_bbox(&mut loaded.memory, clobbered_rgn, 0, 0, 20, 600).unwrap();
+    loaded.cpu.gpr[3] = back;
+    loaded.cpu.gpr[4] = clobbered_rgn;
+
+    let probe = loaded.run_with_hle_imports(64);
+
+    assert_eq!(probe.handled_import_count, 1);
+    assert_eq!(loaded.last_mem_error(), PPC_NO_ERR);
+    // Local to the back window, whose content starts at (40, 0): the front
+    // window covers global (150, 150), and (300, 300) is open.
+    let vis_rgn = loaded.memory.read_u32_be(back + 24).unwrap();
+    assert!(!ppc_point_in_region(&mut loaded.memory, vis_rgn, 110, 150));
+    assert!(ppc_point_in_region(&mut loaded.memory, vis_rgn, 260, 300));
+}
+
+#[test]
+fn region_operations_can_change_the_gray_region() {
+    let pef = synthetic_pef_with_import(b"UnionRgn");
+    let mut loaded = load_pef_application(&pef).unwrap();
+    let mut last_mem_error = loaded.last_mem_error();
+    let (_, _, bottom, right) = ppc_read_rgn_bbox(&mut loaded.memory, PPC_GRAY_RGN_HANDLE).unwrap();
+    let menu_bar = ppc_new_rgn(
+        &mut loaded.memory,
+        test_heap_cursor!(loaded),
+        test_heap_limit!(loaded),
+        &mut last_mem_error,
+        test_handles!(loaded),
+    );
+    ppc_write_rgn_bbox(&mut loaded.memory, menu_bar, 0, 0, 20, right).unwrap();
+
+    // Cythera's own menu bar: shown by taking its strip out of GrayRgn, and
+    // hidden by giving it back.
+    for (operation, top) in [
+        (PpcRegionBooleanOp::Difference, 20),
+        (PpcRegionBooleanOp::Union, 0),
+    ] {
+        assert_eq!(
+            ppc_region_boolean_op(
+                None,
+                &mut loaded.memory,
+                test_heap_cursor!(loaded),
+                test_heap_limit!(loaded),
+                &mut last_mem_error,
+                test_handles!(loaded),
+                PPC_GRAY_RGN_HANDLE,
+                menu_bar,
+                PPC_GRAY_RGN_HANDLE,
+                operation,
+            ),
+            PPC_NO_ERR
+        );
+        assert_eq!(
+            ppc_read_rgn_bbox(&mut loaded.memory, PPC_GRAY_RGN_HANDLE),
+            Some((top, 0, bottom, right))
+        );
+    }
+}
+
+#[test]
 fn paint_behind_nil_draws_the_classic_desktop_inside_the_clobbered_region() {
     let pef = synthetic_pef_with_import(b"PaintBehind");
     let mut loaded = load_pef_application(&pef).unwrap();

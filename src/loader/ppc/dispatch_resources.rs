@@ -469,6 +469,26 @@ pub(super) fn dispatch_resource_import(
             );
             Some(PpcImportAction::ReturnPreserve)
         }
+        PpcImportDispatcherTarget::NewPixPat => Some(PpcImportAction::Return(ppc_new_pix_pat(
+            process_memory_manager,
+            memory,
+            heap_cursor,
+            last_mem_error,
+            handles,
+        ))),
+        // Imaging With QuickDraw (1994), 4-102: PixPatChanged marks the
+        // expanded pattern stale, which is patXValid = -1; nothing is cached
+        // here that would need rebuilding.
+        PpcImportDispatcherTarget::PixPatChanged => {
+            if let Some(pattern) = memory.read_u32_be(cpu.gpr[3]).filter(|ptr| *ptr != 0) {
+                let _ = memory.write_u16_be(pattern.wrapping_add(14), 0xFFFF);
+            }
+            Some(PpcImportAction::ReturnPreserve)
+        }
+        // Imaging With QuickDraw (1994), 4-101: DisposePixPat releases the
+        // pattern and its PixMap, data and expanded-data handles. The handles
+        // are left to the heap here, as GetPixPat's copies are.
+        PpcImportDispatcherTarget::DisposePixPat => Some(PpcImportAction::ReturnPreserve),
         PpcImportDispatcherTarget::GetPixPat => Some(PpcImportAction::Return(ppc_get_pix_pat(
             cpu,
             process_memory_manager,
@@ -640,6 +660,67 @@ fn ppc_get_ind_pattern(
     } else {
         PPC_PARAM_ERR
     };
+}
+
+/// NewPixPat: a pattern built at run time, with real handles in its patMap,
+/// patData, patXData and patXMap fields rather than the resource offsets a
+/// `GetPixPat` copy keeps. Imaging With QuickDraw (1994), 4-100 to 4-101:
+/// patType 1 (full colour), a PixMap like NewPixMap's, an empty data handle
+/// the application sizes and fills, patXValid -1, pat1Data 50% grey.
+/// PixPat: patType 0, patMap 2, patData 6, patXData 10, patXValid 14,
+/// patXMap 16, pat1Data 20.
+fn ppc_new_pix_pat(
+    process_memory_manager: &mut ProcessNativeMemoryManager,
+    memory: &mut PpcSectionMem,
+    heap_cursor: &mut u32,
+    last_mem_error: &mut i16,
+    handles: &mut Vec<PpcHandleRecord>,
+) -> u32 {
+    let mut alloc = |bytes: &[u8], memory: &mut PpcSectionMem| {
+        ppc_process_alloc_handle_with_bytes(
+            process_memory_manager,
+            memory,
+            heap_cursor,
+            last_mem_error,
+            handles,
+            bytes,
+        )
+    };
+    // ColorTable: ctSeed, ctFlags, ctSize -1 (no entries).
+    let mut color_table = Vec::new();
+    color_table.extend_from_slice(&0u32.to_be_bytes());
+    color_table.extend_from_slice(&0u16.to_be_bytes());
+    color_table.extend_from_slice(&0xFFFFu16.to_be_bytes());
+    let table = alloc(&color_table, memory);
+    // PixMap, 50 bytes: rowBytes with the PixMap flag, 72 dpi, 8-bit
+    // chunky indexed, one component of 8 bits, the table above.
+    let mut pix_map = vec![0u8; 50];
+    pix_map[4..6].copy_from_slice(&0x8000u16.to_be_bytes());
+    pix_map[22..26].copy_from_slice(&0x0048_0000u32.to_be_bytes());
+    pix_map[26..30].copy_from_slice(&0x0048_0000u32.to_be_bytes());
+    pix_map[32..34].copy_from_slice(&8u16.to_be_bytes());
+    pix_map[34..36].copy_from_slice(&1u16.to_be_bytes());
+    pix_map[36..38].copy_from_slice(&8u16.to_be_bytes());
+    pix_map[42..46].copy_from_slice(&table.to_be_bytes());
+    let pat_map = alloc(&pix_map, memory);
+    let pat_data = alloc(&[], memory);
+    let pat_x_data = alloc(&[], memory);
+    let pat_x_map = alloc(&vec![0u8; 50], memory);
+    let mut pattern = vec![0u8; 28];
+    pattern[0..2].copy_from_slice(&1u16.to_be_bytes());
+    pattern[2..6].copy_from_slice(&pat_map.to_be_bytes());
+    pattern[6..10].copy_from_slice(&pat_data.to_be_bytes());
+    pattern[10..14].copy_from_slice(&pat_x_data.to_be_bytes());
+    pattern[14..16].copy_from_slice(&0xFFFFu16.to_be_bytes());
+    pattern[16..20].copy_from_slice(&pat_x_map.to_be_bytes());
+    pattern[20..28].copy_from_slice(&[0xAA, 0x55, 0xAA, 0x55, 0xAA, 0x55, 0xAA, 0x55]);
+    let handle = alloc(&pattern, memory);
+    if handle == 0 || pat_map == 0 || pat_data == 0 || table == 0 {
+        *last_mem_error = PPC_MEM_FULL_ERR;
+        return 0;
+    }
+    *last_mem_error = PPC_NO_ERR;
+    handle
 }
 
 fn ppc_get_pix_pat(

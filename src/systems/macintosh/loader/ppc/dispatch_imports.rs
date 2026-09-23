@@ -2074,6 +2074,8 @@ pub(crate) fn dispatch_supported_import(
         | PpcImportDispatcherTarget::GetPattern
         | PpcImportDispatcherTarget::GetIndPattern
         | PpcImportDispatcherTarget::GetPixPat
+        | PpcImportDispatcherTarget::GetAuxiliaryControlRecord
+        | PpcImportDispatcherTarget::GetAuxWin
         | PpcImportDispatcherTarget::PixPatChanged
         | PpcImportDispatcherTarget::GetIntlResource => {
             unreachable!("resource imports return through dispatch_resource_import")
@@ -2300,7 +2302,6 @@ pub(crate) fn dispatch_supported_import(
         | PpcImportDispatcherTarget::SetWRefCon
         | PpcImportDispatcherTarget::GetWindowPic
         | PpcImportDispatcherTarget::SetWindowPic
-        | PpcImportDispatcherTarget::GetAuxWin
         | PpcImportDispatcherTarget::LMGetWindowList
         | PpcImportDispatcherTarget::LMSetWindowList
         | PpcImportDispatcherTarget::LMGetAuxWinHead

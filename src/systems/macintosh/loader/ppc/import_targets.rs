@@ -134,6 +134,8 @@ pub enum PpcImportDispatcherTarget {
     GetPattern,
     GetIndPattern,
     GetPixPat,
+    GetAuxiliaryControlRecord,
+    GetAuxWin,
     PixPatChanged,
     GetPictInfo,
     DrawPicture,
@@ -329,7 +331,6 @@ pub enum PpcImportDispatcherTarget {
     SetWRefCon,
     GetWindowPic,
     SetWindowPic,
-    GetAuxWin,
     LMGetWindowList,
     LMGetGhostWindow,
     LMSetWindowList,
@@ -3292,6 +3293,9 @@ pub(crate) fn dispatcher_target_for_import(
         ("InterfaceLib", "GetPicture") => PpcImportDispatcherTarget::GetPicture,
         ("InterfaceLib", "GetIndPattern") => PpcImportDispatcherTarget::GetIndPattern,
         ("InterfaceLib", "GetPixPat") => PpcImportDispatcherTarget::GetPixPat,
+        ("InterfaceLib", "GetAuxiliaryControlRecord" | "GetAuxCtl") => {
+            PpcImportDispatcherTarget::GetAuxiliaryControlRecord
+        }
         ("InterfaceLib", "PixPatChanged") => PpcImportDispatcherTarget::PixPatChanged,
         ("InterfaceLib", "GetPictInfo") => PpcImportDispatcherTarget::GetPictInfo,
         ("InterfaceLib", "DrawPicture") => PpcImportDispatcherTarget::DrawPicture,

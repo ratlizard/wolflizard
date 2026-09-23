@@ -1314,6 +1314,163 @@ fn load_substitute_recording(
     }
 }
 
+/// Queue one tune stream on a player: decode it, prefer an installed
+/// recording or MIDI file, render it (reusing the last render when the same
+/// segment comes round again) and append the segment. Shared by the 68K
+/// Component Manager path and the PowerPC QuickTimeLib imports. False when
+/// nothing was queued: the queue was full or the stream held no notes.
+pub(crate) fn queue_tune_stream(
+    player: &mut super::dispatch::TunePlayerState,
+    installed_tunes: &std::collections::HashMap<u32, Vec<u8>>,
+    tune_ptr: u32,
+    words: &[u32],
+    tick: u32,
+    trace: bool,
+) -> bool {
+    let (volume, time_scale, spots) =
+        (player.volume_fixed, player.time_scale, player.queue_spots());
+    if spots == 0 {
+        // A full queue is `tunePlayerFullErr` on a real player.
+        // Dropping the segment is closer to that than silently
+        // displacing something already accepted.
+        if trace {
+            eprintln!("[TUNE] queue refused, full: tune=${tune_ptr:08X}");
+        }
+        return false;
+    }
+
+    let mut decoded = crate::tune_player::decode_tune(words);
+    decoded.adopt_header_programs(&player.header_programs);
+    if trace {
+        eprintln!(
+            "[TUNE] queue tick={} tune=${:08X} longs={} notes={} units={} scale={} duration={}ms spots={}",
+            tick,
+            tune_ptr,
+            words.len(),
+            decoded.notes.len(),
+            decoded.duration_units,
+            time_scale,
+            crate::tune_player::units_to_ms(decoded.duration_units, time_scale),
+            spots
+        );
+    }
+    if decoded.notes.is_empty() {
+        return false;
+    }
+    let checksum = tune_stream_checksum(words);
+
+    // A MIDI file installed for this tune replaces its notes. The
+    // game still decides which tune plays, when it starts and
+    // stops, and how loud it is; only the music is someone
+    // else's. Cythera's own music is better known from the
+    // community's transcriptions than from QuickTime's rendering
+    // of it, which is why this exists.
+    // A recording, if one is installed, is played as it is; there
+    // is nothing for a synthesiser to add to a performance.
+    let installed = installed_tunes.get(&checksum).map(Vec::as_slice);
+    if let Some(recording) = load_substitute_recording(checksum, installed) {
+        let duration_ms = recording.duration_ms();
+        if trace {
+            eprintln!(
+                "[TUNE] playing recording {:08X}.wav: {} frames at {} Hz, {} ms",
+                checksum,
+                recording.samples.len(),
+                recording.sample_rate,
+                duration_ms
+            );
+        }
+        let ticks = duration_ms.saturating_mul(60) / 1000;
+        player.queue.push_back(super::dispatch::QueuedTuneSegment {
+            tune_ptr,
+            duration_ticks: ticks,
+            sample_rate: recording.sample_rate,
+            samples: recording.samples,
+        });
+        return true;
+    }
+    let installed = installed_tunes.get(&checksum).map(Vec::as_slice);
+    let substitute = load_substitute_tune(checksum, installed);
+    let substituted = substitute.is_some();
+    let (decoded, render_scale) = match substitute {
+        Some(tune) => {
+            if trace {
+                eprintln!(
+                    "[TUNE] substituting {:08X}.mid: {} notes, {} ms",
+                    checksum,
+                    tune.notes.len(),
+                    crate::tune_player::units_to_ms(
+                        tune.duration_units,
+                        crate::tune_player::midi::MIDI_TIME_SCALE
+                    )
+                );
+            }
+            (tune, crate::tune_player::midi::MIDI_TIME_SCALE)
+        }
+        None => (decoded, time_scale),
+    };
+    let duration_ms = crate::tune_player::units_to_ms(decoded.duration_units, render_scale);
+
+    let cached = player.rendered.as_ref().filter(|rendered| {
+        rendered.tune_ptr == tune_ptr
+            && rendered.longs == words.len()
+            && rendered.checksum == checksum
+            && rendered.volume_fixed == volume
+            && rendered.time_scale == render_scale
+            && rendered.substituted == substituted
+    });
+    let samples = match cached {
+        Some(rendered) => rendered.samples.clone(),
+        None => {
+            let rendered = crate::tune_player::render_tune(&decoded, volume, render_scale);
+            player.rendered = Some(super::dispatch::RenderedTune {
+                tune_ptr,
+                longs: words.len(),
+                checksum,
+                volume_fixed: volume,
+                time_scale: render_scale,
+                substituted,
+                samples: rendered.clone(),
+            });
+            rendered
+        }
+    };
+
+    // Ticks run at 60 Hz.
+    let duration_ticks = duration_ms.saturating_mul(60) / 1000;
+    player.queue.push_back(super::dispatch::QueuedTuneSegment {
+        tune_ptr,
+        duration_ticks,
+        sample_rate: crate::sound::OUTPUT_RATE,
+        samples,
+    });
+    true
+}
+
+/// `read_tune_stream` over any memory: `read_long` reads one guest long.
+pub(crate) fn read_tune_stream_with(
+    tune_ptr: u32,
+    mut read_long: impl FnMut(u32) -> u32,
+) -> Vec<u32> {
+    if tune_ptr == 0 {
+        return Vec::new();
+    }
+    let mut words: Vec<u32> = Vec::new();
+    let mut index = 0usize;
+    while index < crate::tune_player::MAX_TUNE_LONGS {
+        let word = read_long(tune_ptr + (index as u32) * 4);
+        let length = crate::tune_player::event_length_longs(word);
+        words.push(word);
+        if word == crate::tune_player::END_MARKER_VALUE || length == 0 {
+            break;
+        }
+        for offset in 1..length {
+            words.push(read_long(tune_ptr + ((index + offset) as u32) * 4));
+        }
+        index += length;
+    }
+    words
+}
+
 /// A cheap checksum over a tune stream, so a cached render is only reused for
 /// the same bytes. Not a hash with any strength claim -- it guards against the
 /// same address holding a different tune, not against a crafted collision.
@@ -1333,29 +1490,7 @@ fn tune_stream_checksum(words: &[u32]) -> u32 {
 ///
 /// The cap guards against a stream that never reaches a terminator at all.
 fn read_tune_stream(bus: &mut impl crate::memory::MemoryBus, tune_ptr: u32) -> Vec<u32> {
-    if tune_ptr == 0 {
-        return Vec::new();
-    }
-    let mut words: Vec<u32> = Vec::new();
-    let mut index = 0usize;
-    while index < crate::tune_player::MAX_TUNE_LONGS {
-        let word = bus.read_long(tune_ptr + (index as u32) * 4);
-        let length = crate::tune_player::event_length_longs(word);
-        words.push(word);
-        if word == crate::tune_player::END_MARKER_VALUE {
-            break;
-        }
-        if length == 0 {
-            break;
-        }
-        // Pull in the rest of this event so the next word examined is the
-        // next event's first long.
-        for offset in 1..length {
-            words.push(bus.read_long(tune_ptr + ((index + offset) as u32) * 4));
-        }
-        index += length;
-    }
-    words
+    read_tune_stream_with(tune_ptr, |address| bus.read_long(address))
 }
 
 impl super::TrapDispatcher {
@@ -1431,142 +1566,21 @@ impl super::TrapDispatcher {
             //           queueFlags, callBackProc, refCon)
             QUEUE => {
                 let tune_ptr = bus.read_long(sp + 28);
-                let Some((volume, time_scale, spots)) =
-                    self.tune_players.get(&instance).map(|player| {
-                        (player.volume_fixed, player.time_scale, player.queue_spots())
-                    })
-                else {
-                    return;
-                };
-                if spots == 0 {
-                    // A full queue is `tunePlayerFullErr` on a real player.
-                    // Dropping the segment is closer to that than silently
-                    // displacing something already accepted.
-                    if trace {
-                        eprintln!("[TUNE] queue refused, full: tune=${tune_ptr:08X}");
-                    }
-                    return;
-                }
-
                 let words = read_tune_stream(bus, tune_ptr);
-                let mut decoded = crate::tune_player::decode_tune(&words);
-                if let Some(player) = self.tune_players.get(&instance) {
-                    decoded.adopt_header_programs(&player.header_programs);
-                }
-                if trace {
-                    eprintln!(
-                        "[TUNE] queue tick={} tune=${:08X} longs={} notes={} units={} scale={} duration={}ms spots={}",
+                let queued = match self.tune_players.get_mut(&instance) {
+                    Some(player) => queue_tune_stream(
+                        player,
+                        &self.installed_tunes,
+                        tune_ptr,
+                        &words,
                         tick,
-                        tune_ptr,
-                        words.len(),
-                        decoded.notes.len(),
-                        decoded.duration_units,
-                        time_scale,
-                        crate::tune_player::units_to_ms(decoded.duration_units, time_scale),
-                        spots
-                    );
-                }
-                if decoded.notes.is_empty() {
-                    return;
-                }
-                let checksum = tune_stream_checksum(&words);
-
-                // A MIDI file installed for this tune replaces its notes. The
-                // game still decides which tune plays, when it starts and
-                // stops, and how loud it is; only the music is someone
-                // else's. Cythera's own music is better known from the
-                // community's transcriptions than from QuickTime's rendering
-                // of it, which is why this exists.
-                // A recording, if one is installed, is played as it is; there
-                // is nothing for a synthesiser to add to a performance.
-                let installed = self.installed_tunes.get(&checksum).map(Vec::as_slice);
-                if let Some(recording) = load_substitute_recording(checksum, installed) {
-                    let duration_ms = recording.duration_ms();
-                    if trace {
-                        eprintln!(
-                            "[TUNE] playing recording {:08X}.wav: {} frames at {} Hz, {} ms",
-                            checksum,
-                            recording.samples.len(),
-                            recording.sample_rate,
-                            duration_ms
-                        );
-                    }
-                    let ticks = duration_ms.saturating_mul(60) / 1000;
-                    if let Some(player) = self.tune_players.get_mut(&instance) {
-                        player.queue.push_back(super::dispatch::QueuedTuneSegment {
-                            tune_ptr,
-                            duration_ticks: ticks,
-                            sample_rate: recording.sample_rate,
-                            samples: recording.samples,
-                        });
-                    }
+                        trace,
+                    ),
+                    None => false,
+                };
+                if queued {
                     self.start_due_tune_segment(instance, tick);
-                    return;
                 }
-                let installed = self.installed_tunes.get(&checksum).map(Vec::as_slice);
-                let substitute = load_substitute_tune(checksum, installed);
-                let substituted = substitute.is_some();
-                let (decoded, render_scale) = match substitute {
-                    Some(tune) => {
-                        if trace {
-                            eprintln!(
-                                "[TUNE] substituting {:08X}.mid: {} notes, {} ms",
-                                checksum,
-                                tune.notes.len(),
-                                crate::tune_player::units_to_ms(
-                                    tune.duration_units,
-                                    crate::tune_player::midi::MIDI_TIME_SCALE
-                                )
-                            );
-                        }
-                        (tune, crate::tune_player::midi::MIDI_TIME_SCALE)
-                    }
-                    None => (decoded, time_scale),
-                };
-                let duration_ms =
-                    crate::tune_player::units_to_ms(decoded.duration_units, render_scale);
-
-                let cached = self.tune_players.get(&instance).and_then(|player| {
-                    player.rendered.as_ref().filter(|rendered| {
-                        rendered.tune_ptr == tune_ptr
-                            && rendered.longs == words.len()
-                            && rendered.checksum == checksum
-                            && rendered.volume_fixed == volume
-                            && rendered.time_scale == render_scale
-                            && rendered.substituted == substituted
-                    })
-                });
-                let samples = match cached {
-                    Some(rendered) => rendered.samples.clone(),
-                    None => {
-                        let rendered =
-                            crate::tune_player::render_tune(&decoded, volume, render_scale);
-                        if let Some(player) = self.tune_players.get_mut(&instance) {
-                            player.rendered = Some(super::dispatch::RenderedTune {
-                                tune_ptr,
-                                longs: words.len(),
-                                checksum,
-                                volume_fixed: volume,
-                                time_scale: render_scale,
-                                substituted,
-                                samples: rendered.clone(),
-                            });
-                        }
-                        rendered
-                    }
-                };
-
-                // Ticks run at 60 Hz.
-                let duration_ticks = duration_ms.saturating_mul(60) / 1000;
-                if let Some(player) = self.tune_players.get_mut(&instance) {
-                    player.queue.push_back(super::dispatch::QueuedTuneSegment {
-                        tune_ptr,
-                        duration_ticks,
-                        sample_rate: crate::sound::OUTPUT_RATE,
-                        samples,
-                    });
-                }
-                self.start_due_tune_segment(instance, tick);
             }
             // TuneGetStatus(tp, TuneStatus *status)
             GET_STATUS => {

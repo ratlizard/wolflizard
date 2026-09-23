@@ -108,6 +108,8 @@ use std::sync::OnceLock;
 
 mod dispatch_cfm;
 mod dispatch_defproc;
+mod dispatch_tunes;
+pub use dispatch_tunes::PpcTuneOp;
 use dispatch_cfm::*;
 mod dispatch_apple_events;
 use dispatch_apple_events::*;

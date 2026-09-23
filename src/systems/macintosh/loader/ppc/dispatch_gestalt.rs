@@ -155,6 +155,9 @@ fn ppc_gestalt_response(selector: u32, physical_ram_size: u32) -> Option<(u32, i
         // gestaltQuickTimeFeatures: gestaltPPCQuickTimeLibPresent (bit 0),
         // since QuickTimeLib's imports are bound here.
         b"qtrs" => Some((1, PPC_NO_ERR)),
+        // gestaltComponentMgr: present. Cythera's GMSInit decides from this
+        // one answer whether the game has music, as on the 68K path.
+        b"cpnt" => Some((1, PPC_NO_ERR)),
         b"drag" => Some((0, PPC_NO_ERR)),
         b"os  " => Some((0x00FF, PPC_NO_ERR)),
         b"powr" => Some((0, PPC_NO_ERR)),

@@ -760,6 +760,7 @@ pub enum PpcImportDispatcherTarget {
     StdRealloc,
     StdStrcpy,
     StdPascalString(PpcPascalStringOp),
+    QuickTimeMusic(PpcTuneOp),
     StdStrcat,
     StdStrncpy,
     StdStrncat,
@@ -3327,6 +3328,11 @@ pub(crate) fn dispatcher_target_for_import(
         }
         // File previews and thumbnails are cosmetic and nothing reads them
         // back; decline them the way a missing codec does (codecUnimpErr).
+        ("QuickTimeLib", symbol) if dispatch_tunes::ppc_tune_symbol_op(symbol).is_some() => {
+            PpcImportDispatcherTarget::QuickTimeMusic(
+                dispatch_tunes::ppc_tune_symbol_op(symbol).expect("checked"),
+            )
+        }
         ("QuickTimeLib" | "InterfaceLib", "MakeFilePreview" | "AddFilePreview" | "MakeThumbnailFromPixMap") => {
             PpcImportDispatcherTarget::ReturnError(-8962)
         }

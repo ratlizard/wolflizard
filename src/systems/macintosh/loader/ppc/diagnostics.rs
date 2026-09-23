@@ -593,6 +593,21 @@ impl PpcMemoryWriteObserver for PpcWatchObserver {
 
 static PPC_WATCH_RANGE: OnceLock<Option<PpcWatchRange>> = OnceLock::new();
 
+/// Trial trace switches, read once.
+pub(crate) fn ppc_trace_imports_from_tick() -> Option<u32> {
+    static FROM: OnceLock<Option<u32>> = OnceLock::new();
+    *FROM.get_or_init(|| {
+        std::env::var("SYSTEMLESS_PPC_TRACE_IMPORTS_FROM_TICK")
+            .ok()
+            .and_then(|value| value.parse::<u32>().ok())
+    })
+}
+
+pub(crate) fn ppc_trace_defproc_enabled() -> bool {
+    static ENABLED: OnceLock<bool> = OnceLock::new();
+    *ENABLED.get_or_init(|| std::env::var_os("SYSTEMLESS_PPC_TRACE_DEFPROC").is_some())
+}
+
 pub(crate) fn ppc_watch_range() -> Option<PpcWatchRange> {
     *PPC_WATCH_RANGE.get_or_init(|| {
         let value = std::env::var_os("SYSTEMLESS_PPC_WATCH")?;

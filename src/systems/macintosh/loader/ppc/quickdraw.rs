@@ -3079,7 +3079,7 @@ pub(crate) fn ppc_copy_bits(
         // port's own pixels, where its local coordinates are the
         // destination's. A rectangular result narrows the copy and keeps the
         // row path; anything else becomes (part of) the mask.
-        if std::env::var_os("SYSTEMLESS_PPC_TRACE_DEFPROC").is_some() {
+        if ppc_trace_defproc_enabled() {
             eprintln!(
                 "[PPC-CLIP] CopyBits dst=${dst_bits_ptr:08X} port=${current_gworld:08X} match={}",
                 dst_bits_ptr == current_gworld.wrapping_add(2)

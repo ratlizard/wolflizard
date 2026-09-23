@@ -3959,6 +3959,7 @@ pub(crate) fn ppc_invert_rect_bounds(
     wrote
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn ppc_frame_rect(
     cpu: &PpcCpu,
     memory: &mut PpcSectionMem,
@@ -3966,38 +3967,109 @@ pub(crate) fn ppc_frame_rect(
     current_gworld: u32,
     color: PpcRgbColor,
     explicit_index: Option<u8>,
+    back_color: PpcRgbColor,
+    pen_pattern: &[u8; 8],
 ) -> bool {
-    let Some((top, left, bottom, right)) = ppc_read_rect(memory, cpu.gpr[3]) else {
+    let Some(rect) = ppc_read_rect(memory, cpu.gpr[3]) else {
         return false;
     };
+    let Some(surface) = ppc_live_quickdraw_surface(memory, gworlds, current_gworld) else {
+        return false;
+    };
+    let front_buffer = surface.front_buffer;
+    if !matches!(front_buffer.depth, 1 | 2 | 4 | 8 | 16) {
+        return false;
+    }
+
+    let (top, left, bottom, right) = surface.local_rect(rect);
+    let left = left.max(0).min(front_buffer.width as i32);
+    let top = top.max(0).min(front_buffer.height as i32);
+    let right = right.max(0).min(front_buffer.width as i32);
+    let bottom = bottom.max(0).min(front_buffer.height as i32);
     if left >= right || top >= bottom {
         return false;
     }
-    let pen_height = (memory
-        .read_u16_be(current_gworld.wrapping_add(PPC_CGRAF_PORT_PN_SIZE_OFFSET))
-        .unwrap_or(1) as i16)
-        .clamp(0, bottom.saturating_sub(top));
-    let pen_width = (memory
-        .read_u16_be(current_gworld.wrapping_add(PPC_CGRAF_PORT_PN_SIZE_OFFSET + 2))
-        .unwrap_or(1) as i16)
-        .clamp(0, right.saturating_sub(left));
+    let pen_height = i32::from(
+        memory
+            .read_u16_be(current_gworld.wrapping_add(PPC_CGRAF_PORT_PN_SIZE_OFFSET))
+            .unwrap_or(1),
+    )
+    .min(bottom - top);
+    let pen_width = i32::from(
+        memory
+            .read_u16_be(current_gworld.wrapping_add(PPC_CGRAF_PORT_PN_SIZE_OFFSET + 2))
+            .unwrap_or(1),
+    )
+    .min(right - left);
     if pen_width == 0 || pen_height == 0 {
         return true;
     }
 
-    // Each edge is painted through the port's visRgn and clipRgn: drawing
-    // into a back window must not run over the windows in front of it.
-    // Inside Macintosh: Imaging With QuickDraw (1994), pp. 2-10--2-11.
-    let edges = [
-        (top, left, top.saturating_add(pen_height), right),
-        (bottom.saturating_sub(pen_height), left, bottom, right),
-        (top, left, bottom, left.saturating_add(pen_width)),
-        (top, right.saturating_sub(pen_width), bottom, right),
-    ];
+    let Some(color_pixel) =
+        ppc_quickdraw_surface_fore_pixel(memory, surface, color, explicit_index)
+    else {
+        return false;
+    };
+    let back_pixel =
+        ppc_quickdraw_surface_fore_pixel(memory, surface, back_color, None).unwrap_or(0);
+    let pen_mode = memory
+        .read_u16_be(current_gworld.wrapping_add(PPC_CGRAF_PORT_PN_MODE_OFFSET))
+        .map_or(PPC_QD_PEN_MODE_PAT_COPY, |mode| mode as i16);
+    let clip_storage = memory
+        .read_u32_be(current_gworld.wrapping_add(PPC_CGRAF_PORT_CLIP_RGN_OFFSET))
+        .and_then(|clip_rgn| ppc_region_storage(memory, clip_rgn));
+    let vis_storage = memory
+        .read_u32_be(current_gworld.wrapping_add(PPC_CGRAF_PORT_VIS_RGN_OFFSET))
+        .and_then(|vis_rgn| ppc_region_storage(memory, vis_rgn));
+    // A pixel is written once even where two edges of a thin frame meet, so
+    // an XOR frame drawn twice leaves nothing behind.
+    let mut points = std::collections::BTreeSet::new();
+    for dy in 0..pen_height {
+        for x in left..right {
+            points.insert((x, top + dy));
+            points.insert((x, bottom - 1 - dy));
+        }
+    }
+    for dx in 0..pen_width {
+        for y in top..bottom {
+            points.insert((left + dx, y));
+            points.insert((right - 1 - dx, y));
+        }
+    }
     let mut wrote = false;
-    for edge in edges {
-        wrote |=
-            ppc_paint_rect_bounds(memory, gworlds, current_gworld, edge, color, explicit_index);
+    for point in points {
+        if !ppc_local_point_in_port_regions(surface, point, vis_storage.as_deref(), clip_storage.as_deref()) {
+            continue;
+        }
+        // Imaging With QuickDraw (1994), pp. 3-6--3-8: the pen pattern is
+        // aligned to the port's local coordinates, and the pattern modes
+        // combine each of its bits with the destination.
+        let port_x = point.0 + i32::from(surface.left);
+        let port_y = point.1 + i32::from(surface.top);
+        let row = pen_pattern[(port_y & 7) as usize];
+        let mut bit = row & (0x80 >> (port_x & 7)) != 0;
+        if pen_mode & 0x04 != 0 {
+            bit = !bit;
+        }
+        let pixel = match pen_mode & 0x03 {
+            // patOr: set bits paint the foreground.
+            1 => bit.then_some(color_pixel),
+            // patXor: set bits invert the destination.
+            2 => {
+                if bit {
+                    ppc_quickdraw_read_pixel(memory, front_buffer, point).map(|dst| dst ^ color_pixel)
+                } else {
+                    None
+                }
+            }
+            // patBic: set bits paint the background.
+            3 => bit.then_some(back_pixel),
+            // patCopy.
+            _ => Some(if bit { color_pixel } else { back_pixel }),
+        };
+        if let Some(pixel) = pixel {
+            wrote |= ppc_quickdraw_write_raw_pixel(memory, front_buffer, point, pixel);
+        }
     }
     wrote
 }
@@ -5835,8 +5907,30 @@ pub(crate) fn ppc_copy_bits(
                 toolbox_startup,
                 dst_clut,
             );
+            // Imaging With QuickDraw (1994), p. 4-97: CopyBits compares the
+            // source table's ctSeed with the destination device's; when they
+            // match, the indexes already name the device's colours and are
+            // copied as they are, whatever the entries say. Cythera's
+            // portraits carry the device seed on a table whose entries sit
+            // one place from the device's.
+            let seed = |memory: &mut PpcSectionMem, handle: u32| {
+                memory
+                    .read_u32_be(handle)
+                    .filter(|table| *table != 0)
+                    .and_then(|table| memory.read_u32_be(table))
+                    .filter(|seed| *seed != 0)
+            };
+            let source_seed_matches_device = src_ctable != 0
+                && dst_device_ctable_resolution.handle.is_some_and(|device| {
+                    let device_seed = seed(memory, device);
+                    device_seed.is_some() && seed(memory, src_ctable) == device_seed
+                });
             if let Some(linked_palette_map) = linked_palette_map {
                 Some(linked_palette_map)
+            } else if source_seed_matches_device {
+                indexed_palette_identity_known =
+                    src_clut_resolution_known && dst_clut_resolution_known;
+                None
             } else if same_indexed_ctable_identity {
                 indexed_palette_identity_known =
                     src_clut_resolution_known && dst_clut_resolution_known;

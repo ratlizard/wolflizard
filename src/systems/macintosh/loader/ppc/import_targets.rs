@@ -4230,7 +4230,7 @@ pub(crate) fn dispatcher_target_for_import(
         ("InterfaceLib", "ReadLocation") => PpcImportDispatcherTarget::ReadLocation,
         ("InterfaceLib", "GetTime") => PpcImportDispatcherTarget::GetTime,
         ("InterfaceLib", "Delay") => PpcImportDispatcherTarget::Delay,
-        ("InterfaceLib", "GetDblTime") => PpcImportDispatcherTarget::GetDblTime,
+        ("InterfaceLib", "GetDblTime" | "LMGetDoubleTime") => PpcImportDispatcherTarget::GetDblTime,
         ("InterfaceLib", "GetCaretTime" | "getcarettime") => {
             PpcImportDispatcherTarget::GetCaretTime
         }
@@ -4436,6 +4436,10 @@ pub(crate) fn dispatcher_target_for_import(
             PpcImportDispatcherTarget::ThreadCurrentStackSpace
         }
         ("InterfaceLib" | "ThreadsLib", "NewThread") => PpcImportDispatcherTarget::NewThread,
+        // Trial: the scheduler procedure is accepted and never called.
+        ("InterfaceLib" | "ThreadsLib", "SetThreadScheduler") => {
+            PpcImportDispatcherTarget::ReturnNoErr
+        }
         ("InterfaceLib" | "ThreadsLib", "YieldToThread") => {
             PpcImportDispatcherTarget::YieldToThread
         }

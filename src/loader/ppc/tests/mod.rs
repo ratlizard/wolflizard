@@ -1192,3 +1192,33 @@ fn menu_items_are_drawn_whatever_clip_the_application_left_in_the_window_manager
     };
     assert!(draw(false) == draw(true), "the clipped port lost the menu's items");
 }
+
+#[test]
+fn pbh_open_rf_opens_a_new_files_empty_resource_fork() {
+    // MoreFiles' FileCopy creates the copy and opens both its forks; a new
+    // file's resource fork is empty but opens.
+    let pef = synthetic_pef_with_import(b"PBHOpenRFSync");
+    let mut loaded = load_pef_application(&pef).unwrap();
+    loaded.push_test_vfs_file(PpcVfsFileRecord {
+        path: "Saves/Bellerophon copy".to_string(),
+        data: Vec::new().into(),
+        creator: 0,
+        file_type: 0,
+        finder_flags: 0,
+        dirty: false,
+    });
+    let pb = PPC_DATA_BASE + 0x1800;
+    let name = pb + 0x80;
+    loaded.memory.add_region(pb, vec![0; 0x100]);
+    assert!(ppc_write_pstring_bytes(&mut loaded.memory, name, b"Bellerophon copy"));
+    loaded.memory.write_u32_be(pb + 18, name).unwrap();
+    loaded.memory.write_u8(pb + 27, 3).unwrap();
+    loaded.cpu.gpr[3] = pb;
+    run_test_import(
+        &mut loaded,
+        PpcImportDispatcherTarget::FileCompatibility(PpcFileCompatibilityOperation::PbHOpenRfSync),
+    );
+    assert_eq!(loaded.cpu.gpr[3], 0);
+    assert_eq!(loaded.memory.read_u16_be(pb + 16), Some(0), "ioResult");
+    assert_ne!(loaded.memory.read_u16_be(pb + 24), Some(0), "ioRefNum");
+}

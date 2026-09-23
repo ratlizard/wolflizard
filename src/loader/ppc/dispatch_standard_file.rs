@@ -664,6 +664,16 @@ fn ppc_standard_file_draw_get_dialog(
     gworlds: &[PpcGWorldRecord],
     tracking: &PpcStandardFileGetTrackingState,
 ) {
+    ppc_with_open_window_manager_port(memory, |memory| {
+        ppc_standard_file_draw_get_dialog_in_open_port(memory, gworlds, tracking)
+    });
+}
+
+fn ppc_standard_file_draw_get_dialog_in_open_port(
+    memory: &mut PpcSectionMem,
+    gworlds: &[PpcGWorldRecord],
+    tracking: &PpcStandardFileGetTrackingState,
+) {
     let front = tracking.front_buffer;
     let bounds = tracking.bounds;
     ppc_draw_retained_dialog_frame(memory, gworlds, bounds, bounds, 2);
@@ -789,6 +799,16 @@ fn ppc_standard_file_draw_get_dialog(
 }
 
 fn ppc_standard_file_draw_put_dialog(
+    memory: &mut PpcSectionMem,
+    gworlds: &[PpcGWorldRecord],
+    tracking: &PpcStandardFilePutTrackingState,
+) {
+    ppc_with_open_window_manager_port(memory, |memory| {
+        ppc_standard_file_draw_put_dialog_in_open_port(memory, gworlds, tracking)
+    });
+}
+
+fn ppc_standard_file_draw_put_dialog_in_open_port(
     memory: &mut PpcSectionMem,
     gworlds: &[PpcGWorldRecord],
     tracking: &PpcStandardFilePutTrackingState,

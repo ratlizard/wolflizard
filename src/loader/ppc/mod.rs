@@ -36341,22 +36341,44 @@ fn ppc_draw_tracked_menu(
     >,
     selected: i16,
 ) {
-    // The Menu Manager draws a menu in the Window Manager port with the
-    // whole screen open to it, whatever clipRgn an application left there.
-    // Cythera sets that port's clipRgn to the menu bar strip when it shows
-    // and hides its menu bar, and every item's text was clipped away.
+    ppc_with_open_window_manager_port(memory, |memory| {
+        ppc_draw_tracked_menu_in_open_port(
+            memory,
+            gworlds,
+            screen_clut,
+            menu_colors,
+            kind,
+            state,
+            selected,
+        )
+    });
+}
+
+/// Run `draw` with the Window Manager port's clipRgn and visRgn set aside,
+/// then put them back. What the system draws there itself (menus, window
+/// frames, the Standard File dialogs) is not limited by a clipRgn the
+/// application left in that port: the Menu Manager draws a menu with the
+/// whole screen open to it, and the Window Manager sets its own clip for a
+/// frame. Cythera leaves the port clipped to the menu bar strip once it has
+/// shown and hidden its menu bar, and menu items, the Save and New Game
+/// dialogs' text and dialog frames were all clipped away.
+pub(super) fn ppc_with_open_window_manager_port<R>(
+    memory: &mut PpcSectionMem,
+    draw: impl FnOnce(&mut PpcSectionMem) -> R,
+) -> R {
     let clip_addr = PPC_MAIN_GWORLD + PPC_CGRAF_PORT_CLIP_RGN_OFFSET;
     let vis_addr = PPC_MAIN_GWORLD + PPC_CGRAF_PORT_VIS_RGN_OFFSET;
     let saved = (memory.read_u32_be(clip_addr), memory.read_u32_be(vis_addr));
     let _ = memory.write_u32_be(clip_addr, 0);
     let _ = memory.write_u32_be(vis_addr, 0);
-    ppc_draw_tracked_menu_in_open_port(memory, gworlds, screen_clut, menu_colors, kind, state, selected);
+    let result = draw(memory);
     if let Some(clip) = saved.0 {
         let _ = memory.write_u32_be(clip_addr, clip);
     }
     if let Some(vis) = saved.1 {
         let _ = memory.write_u32_be(vis_addr, vis);
     }
+    result
 }
 
 fn ppc_draw_tracked_menu_in_open_port(

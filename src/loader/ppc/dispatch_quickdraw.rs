@@ -313,6 +313,10 @@ pub(super) fn dispatch_quickdraw_import(
             ppc_rgb2hsl(memory, cpu.gpr[3], cpu.gpr[4]);
             Some(PpcImportAction::ReturnPreserve)
         }
+        PpcImportDispatcherTarget::HSL2RGB => {
+            ppc_hsl2rgb(memory, cpu.gpr[3], cpu.gpr[4]);
+            Some(PpcImportAction::ReturnPreserve)
+        }
         PpcImportDispatcherTarget::RGB2HSV => {
             ppc_rgb2hsv(memory, cpu.gpr[3], cpu.gpr[4]);
             Some(PpcImportAction::ReturnPreserve)
@@ -657,6 +661,11 @@ pub(super) fn dispatch_quickdraw_import(
         }
         PpcImportDispatcherTarget::FillRect | PpcImportDispatcherTarget::FillCRect => {
             if let Some(rect) = ppc_read_rect(memory, cpu.gpr[3]) {
+                if binding.dispatcher_target == PpcImportDispatcherTarget::FillCRect
+                    && ppc_fill_rect_with_pix_pat(memory, gworlds, current_gworld, rect, cpu.gpr[4])
+                {
+                    return Some(PpcImportAction::ReturnPreserve);
+                }
                 let _ = ppc_paint_rect_bounds(
                     memory,
                     gworlds,

@@ -518,6 +518,33 @@ pub(super) fn ppc_dispatch_legacy_control(
                 .unwrap_or(0) as i16;
             Some(PpcImportAction::Return(ppc_i16_result(value)))
         }
+        // Macintosh Toolbox Essentials (1992), 5-110 to 5-113: the control's
+        // reference value (contrlRfCon) and default action procedure
+        // (contrlAction), read and written in the record.
+        PpcLegacyControlOperation::GetControlReference
+        | PpcLegacyControlOperation::GetControlAction => {
+            let offset = if operation == PpcLegacyControlOperation::GetControlAction {
+                PPC_CONTROL_ACTION_OFFSET
+            } else {
+                PPC_CONTROL_REF_CON_OFFSET
+            };
+            let value = ppc_control_ptr(memory, cpu.gpr[3])
+                .and_then(|control| memory.read_u32_be(control.wrapping_add(offset)))
+                .unwrap_or(0);
+            Some(PpcImportAction::Return(value))
+        }
+        PpcLegacyControlOperation::SetControlReference
+        | PpcLegacyControlOperation::SetControlAction => {
+            let offset = if operation == PpcLegacyControlOperation::SetControlAction {
+                PPC_CONTROL_ACTION_OFFSET
+            } else {
+                PPC_CONTROL_REF_CON_OFFSET
+            };
+            if let Some(control) = ppc_control_ptr(memory, cpu.gpr[3]) {
+                let _ = memory.write_u32_be(control.wrapping_add(offset), cpu.gpr[4]);
+            }
+            Some(PpcImportAction::ReturnPreserve)
+        }
         PpcLegacyControlOperation::GetControlTitle => {
             if let Some(control) = ppc_control_ptr(memory, cpu.gpr[3]) {
                 let title =

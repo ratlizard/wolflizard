@@ -16683,6 +16683,19 @@ fn dispatch_supported_import(context: PpcDispatchContext<'_>) -> Option<PpcImpor
                 toolbox_startup,
             ))
         }
+        PpcImportDispatcherTarget::SystemCompatibility(
+            PpcSystemCompatibilityOperation::StyledLineBreak,
+        ) => {
+            let font = ppc_current_text_font(memory, *current_gworld);
+            let style = ppc_current_text_style(memory, *current_gworld);
+            Some(PpcImportAction::Return(u32::from(ppc_styled_line_break(
+                cpu,
+                memory,
+                font,
+                *quickdraw_text_size,
+                style,
+            ))))
+        }
         PpcImportDispatcherTarget::SystemCompatibility(operation) => Some(ppc_dispatch_system_compatibility(
             operation,
             cpu,
@@ -16831,8 +16844,8 @@ fn dispatch_supported_import(context: PpcDispatchContext<'_>) -> Option<PpcImpor
         PpcImportDispatcherTarget::QuickTimeMusic(_) => {
             unreachable!("tune imports return through dispatch_tune_import")
         }
-        // VisibleLength: the length of the text with trailing white space
-        // excluded, as the 68K ScriptUtil selector answers it. Cythera lays out its narration by advancing by
+        // Inside Macintosh: Text (1993), p. 3-89: the length of the text with
+        // trailing white space excluded. Cythera lays out its narration by advancing by
         // this; a zero never advances.
         PpcImportDispatcherTarget::VisibleLength => {
             let (text, mut visible) = (cpu.gpr[3], cpu.gpr[4]);
@@ -17850,6 +17863,96 @@ fn ppc_dequeue_compatibility(memory: &mut PpcSectionMem, element: u32, header: u
 }
 
 #[allow(clippy::too_many_arguments)]
+/// StyledLineBreak(textPtr, textLen, textStart, textEnd, flags, textWidth,
+/// textOffset): Inside Macintosh: Text (1993), p. 5-79. Measures the
+/// run from textStart in the current port's font; if it fits, returns
+/// smBreakOverflow (2) with textOffset at textEnd, otherwise breaks after the
+/// last space that fits (smBreakWord, 0), or inside the word when this is the
+/// line's first run (smBreakChar, 1), and always past textStart: a caller
+/// that loops until the offset moves would otherwise never stop. The same
+/// choices as the 68K ScriptUtil selector.
+fn ppc_styled_line_break(
+    cpu: &PpcCpu,
+    memory: &mut PpcSectionMem,
+    font: i16,
+    size: i16,
+    style: u8,
+) -> u8 {
+    let text_ptr = cpu.gpr[3];
+    let text_len = (cpu.gpr[4] as i32).max(0) as u32;
+    let text_start = ((cpu.gpr[5] as i32).max(0) as u32).min(text_len);
+    let text_end = ((cpu.gpr[6] as i32).max(0) as u32).max(text_start).min(text_len);
+    let (width_ptr, offset_ptr) = (cpu.gpr[8], cpu.gpr[9]);
+    let first_run_on_line = offset_ptr != 0 && memory.read_u32_be(offset_ptr).unwrap_or(0) != 0;
+    let width_raw = if width_ptr != 0 {
+        memory.read_u32_be(width_ptr).unwrap_or(0)
+    } else {
+        0x7FFF
+    };
+    // textWidth is Fixed; a value with no integer half is taken as pixels.
+    let available = if width_raw & 0xFFFF_0000 != 0 {
+        (width_raw as i32) >> 16
+    } else {
+        width_raw as i32
+    }
+    .max(0);
+    let byte = |memory: &mut PpcSectionMem, offset: u32| {
+        memory.read_u8(text_ptr.wrapping_add(offset)).unwrap_or(0)
+    };
+    let width_of = |memory: &mut PpcSectionMem, start: u32, end: u32| {
+        let bytes: Vec<u8> = (start..end).map(|offset| byte(memory, offset)).collect();
+        i32::from(ppc_text_width_bytes(font, size, style, &bytes))
+    };
+    let is_space = |value: u8| matches!(value, b' ' | b'\t' | b'\r' | b'\n');
+    let run_width = width_of(memory, text_start, text_end);
+    let (result, offset, consumed) = if run_width <= available {
+        (2u8, text_end, run_width)
+    } else {
+        let mut fit = text_start;
+        while fit < text_end && width_of(memory, text_start, fit + 1) <= available {
+            fit += 1;
+        }
+        let mut word_break = None;
+        let mut offset = text_start;
+        while offset < fit {
+            if is_space(byte(memory, offset)) {
+                let mut after = offset + 1;
+                while after < text_end && is_space(byte(memory, after)) {
+                    after += 1;
+                }
+                word_break = Some(after);
+                offset = after;
+            } else {
+                offset += 1;
+            }
+        }
+        if let Some(word_offset) = word_break {
+            (0, word_offset, width_of(memory, text_start, word_offset))
+        } else {
+            let char_offset = if first_run_on_line && fit > text_start {
+                fit
+            } else {
+                (text_start + 1).min(text_end)
+            };
+            let code = if first_run_on_line { 1 } else { 0 };
+            (code, char_offset, width_of(memory, text_start, char_offset))
+        }
+    };
+    if offset_ptr != 0 {
+        let _ = memory.write_u32_be(offset_ptr, offset);
+    }
+    if width_ptr != 0 {
+        let remaining = available.saturating_sub(consumed).clamp(0, 0x7FFF);
+        let value = if width_raw & 0xFFFF_0000 != 0 {
+            (remaining << 16) as u32
+        } else {
+            remaining as u32
+        };
+        let _ = memory.write_u32_be(width_ptr, value);
+    }
+    result
+}
+
 fn ppc_dispatch_system_compatibility(
     operation: PpcSystemCompatibilityOperation,
     cpu: &mut PpcCpu,
@@ -17946,23 +18049,7 @@ fn ppc_dispatch_system_compatibility(
             PpcImportAction::Return(1)
         }
         PpcSystemCompatibilityOperation::StyledLineBreak => {
-            let text_len = cpu.gpr[4];
-            let text_end = cpu.gpr[6].min(text_len);
-            let width_ptr = cpu.gpr[8];
-            let offset_ptr = cpu.gpr[9];
-            let width = memory.read_u32_be(width_ptr).unwrap_or(0) as i32;
-            let available_chars = (width.max(0) as u32 / (6 << 16)).max(1);
-            if text_end <= available_chars {
-                let _ = memory.write_u32_be(offset_ptr, text_end);
-                let used = text_end.saturating_mul(6 << 16);
-                let _ = memory.write_u32_be(width_ptr, (width as u32).saturating_sub(used));
-                PpcImportAction::Return(2)
-            } else {
-                let break_at = available_chars.min(text_end);
-                let _ = memory.write_u32_be(offset_ptr, break_at);
-                let _ = memory.write_u32_be(width_ptr, 0);
-                PpcImportAction::Return(1)
-            }
+            unreachable!("StyledLineBreak is served by ppc_styled_line_break")
         }
         PpcSystemCompatibilityOperation::GetNextProcess => {
             let psn = cpu.gpr[3];
@@ -23069,7 +23156,16 @@ fn ppc_paint_rect(
     let Some(rect) = ppc_read_rect(memory, cpu.gpr[3]) else {
         return false;
     };
-    if pattern.iter().all(|row| *row == 0xff) {
+    // Imaging With QuickDraw (1994), pp. 3-6--3-8: the pen's transfer mode
+    // combines each pattern bit with the destination; a source mode given as
+    // the pen mode acts as its pattern counterpart (srcOr as patOr). Cythera
+    // tints its conversation panel with a grey pattern in patOr.
+    let pen_mode = memory
+        .read_u16_be(current_gworld.wrapping_add(PPC_CGRAF_PORT_PN_MODE_OFFSET))
+        .map_or(PPC_QD_PEN_MODE_PAT_COPY, |mode| mode as i16);
+    let operation = pen_mode & 0x03;
+    let inverted = pen_mode & 0x04 != 0;
+    if pattern.iter().all(|row| *row == 0xff) && !inverted && operation <= 1 {
         return ppc_paint_rect_bounds(
             memory,
             gworlds,
@@ -23107,7 +23203,7 @@ fn ppc_paint_rect(
         .and_then(|vis_rgn| ppc_region_storage(memory, vis_rgn));
     let mut wrote = false;
     for y in top..bottom {
-        let pattern_row = pattern[(y as usize) & 7];
+        let pattern_row = pattern[((y + i32::from(surface.top)) & 7) as usize];
         for x in left..right {
             if !ppc_local_point_in_port_regions(
                 surface,
@@ -23117,13 +23213,24 @@ fn ppc_paint_rect(
             ) {
                 continue;
             }
-            let mask = 0x80 >> ((x as usize) & 7);
-            let pixel = if pattern_row & mask != 0 {
-                fore_pixel
-            } else {
-                back_pixel
+            let mask = 0x80 >> ((x + i32::from(surface.left)) & 7);
+            let bit = (pattern_row & mask != 0) != inverted;
+            let pixel = match operation {
+                1 => bit.then_some(fore_pixel),
+                2 => {
+                    if bit {
+                        ppc_quickdraw_read_pixel(memory, front_buffer, (x, y))
+                            .map(|dst| dst ^ fore_pixel)
+                    } else {
+                        None
+                    }
+                }
+                3 => bit.then_some(back_pixel),
+                _ => Some(if bit { fore_pixel } else { back_pixel }),
             };
-            wrote |= ppc_quickdraw_write_raw_pixel(memory, front_buffer, (x, y), pixel);
+            if let Some(pixel) = pixel {
+                wrote |= ppc_quickdraw_write_raw_pixel(memory, front_buffer, (x, y), pixel);
+            }
         }
     }
     wrote

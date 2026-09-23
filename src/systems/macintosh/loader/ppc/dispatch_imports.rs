@@ -245,10 +245,7 @@ pub(crate) fn dispatch_supported_import(
         drag_manager.with_mut(|manager| manager.remove_window(cpu.gpr[3]));
     }
     // Trial trace: every import from a given tick on.
-    if let Some(from) = std::env::var("SYSTEMLESS_PPC_TRACE_IMPORTS_FROM_TICK")
-        .ok()
-        .and_then(|value| value.parse::<u32>().ok())
-    {
+    if let Some(from) = ppc_trace_imports_from_tick() {
         if *tick_count >= from {
             eprintln!(
                 "[PPC-IMPORT] tick={} {}:{} r3=${:08X} lr=${:08X} r4=${:08X} r5=${:08X} r6=${:08X}",
@@ -256,6 +253,11 @@ pub(crate) fn dispatch_supported_import(
                 cpu.gpr[4], cpu.gpr[5], cpu.gpr[6]
             );
         }
+    }
+    if let Some(action) =
+        dispatch_tunes::dispatch_tune_import(binding, cpu, memory, sound, *tick_count)
+    {
+        return Some(action);
     }
     let _menu_root = (matches!(
         binding.dispatcher_target,
@@ -3115,6 +3117,9 @@ pub(crate) fn dispatch_supported_import(
         | PpcImportDispatcherTarget::AddAbsoluteToAbsolute
         | PpcImportDispatcherTarget::MPDelayUntil => {
             unreachable!("time imports return through dispatch_time_import")
+        }
+        PpcImportDispatcherTarget::QuickTimeMusic(_) => {
+            unreachable!("tune imports return through dispatch_tune_import")
         }
         PpcImportDispatcherTarget::ReturnError(error) => {
             Some(PpcImportAction::Return(ppc_i16_result(error)))

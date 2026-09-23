@@ -5426,6 +5426,10 @@ pub(crate) fn dispatcher_target_for_import(
             PpcImportDispatcherTarget::ThreadCurrentStackSpace
         }
         ("InterfaceLib" | "ThreadsLib", "NewThread") => PpcImportDispatcherTarget::NewThread,
+        // Trial: the scheduler procedure is accepted and never called.
+        ("InterfaceLib" | "ThreadsLib", "SetThreadScheduler") => {
+            PpcImportDispatcherTarget::ReturnNoErr
+        }
         ("InterfaceLib" | "ThreadsLib", "YieldToThread") => {
             PpcImportDispatcherTarget::YieldToThread
         }

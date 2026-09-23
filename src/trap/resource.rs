@@ -7921,6 +7921,66 @@ impl super::TrapDispatcher {
                     return Some(Ok(()));
                 }
 
+                // Selector 10 = PBSetCatInfo ($A260, selector $000A).
+                // FUNCTION PBSetCatInfo(paramBlock: CInfoPBPtr;
+                //                       async: Boolean): OSErr;
+                // Files 1992, 2-195: the file or directory is named by
+                // ioNamePtr, ioVRefNum and ioDirID, as for PBGetCatInfo, and
+                // its Finder information (ioFlFndrInfo / ioDrUsrWds at +32)
+                // is replaced. The file type, creator and Finder flags are
+                // what the VFS keeps, which is also all the PowerPC import of
+                // this routine stores; the dates, extended Finder information
+                // and clump size are accepted and not kept.
+                //
+                // Treating it as a no-op loses the type of a file made by
+                // copying another's catalog information, which is how
+                // Cythera's Save As and Backup As give their new file the
+                // saved game's type and creator after PBHCreate made it
+                // '????'.
+                if selector == 10 {
+                    if vref != 0 && self.working_directory_info(vref).is_none() {
+                        bus.write_word(pb + 16, (-35i16) as u16); // nsvErr
+                        cpu.write_reg(Register::D0, (-35i32) as u32);
+                        return Some(Ok(()));
+                    }
+                    let file_type = bus.read_long(pb + 32);
+                    let creator = bus.read_long(pb + 36);
+                    let finder_flags = bus.read_word(pb + 40);
+                    let lookup = self
+                        .lookup_catalog_entry_for_hfs_lookup(vref, dir_id, &filename, fdir_index);
+                    let result: i16 = match lookup {
+                        None => -43, // fnfErr
+                        Some(entry) if self.vfs_path_is_read_only(&entry.path) => -44, // wPrErr
+                        Some(entry) if entry.is_directory => {
+                            self.vfs_directories.with_mut(|directories| {
+                                for directory in directories.iter_mut().filter(|directory| {
+                                    directory.path.eq_ignore_ascii_case(&entry.path)
+                                }) {
+                                    directory.file_type = file_type;
+                                    directory.creator = creator;
+                                    directory.finder_flags = finder_flags;
+                                }
+                            });
+                            0
+                        }
+                        Some(entry) => {
+                            self.set_vfs_entry_finfo(&entry.path, file_type, creator, finder_flags);
+                            0
+                        }
+                    };
+                    eprintln!(
+                        "[TRAP] FSDispatch PBSetCatInfo \"{}\" type='{}' creator='{}' flags=${:04X} -> {}",
+                        filename,
+                        String::from_utf8_lossy(&file_type.to_be_bytes()),
+                        String::from_utf8_lossy(&creator.to_be_bytes()),
+                        finder_flags,
+                        result
+                    );
+                    bus.write_word(pb + 16, result as u16);
+                    cpu.write_reg(Register::D0, i32::from(result) as u32);
+                    return Some(Ok(()));
+                }
+
                 // Selector 26 = PBOpenDF / PBHOpenDF: open data fork by name.
                 // hfsBit distinguishes the basic parameter block from the HFS
                 // form that adds ioDirID. Both forms otherwise share the open,
@@ -17164,6 +17224,92 @@ mod tests {
         assert_eq!(bus.read_long(pb + 54), 0, "data fork length");
         assert_eq!(bus.read_long(pb + 64), 4, "resource fork length");
         assert_eq!(bus.read_long(pb + 100), app_dir_id);
+    }
+
+    // Files 1992, 2-195: PBSetCatInfo replaces the Finder information of
+    // the file or directory PBGetCatInfo would name.
+    #[test]
+    fn fsdispatch_pbsetcatinfo_sets_file_finder_info() {
+        let (mut disp, mut cpu, mut bus) = setup();
+
+        let app_dir_id = disp.ensure_vfs_directory("Game Folder");
+        disp.vfs
+            .insert("Game Folder/Hero copy".to_string(), vec![0x01, 0x02]);
+        disp.set_vfs_entry_metadata("Game Folder/Hero copy", *b"????", *b"????", 0);
+
+        let pb = 0x300000u32;
+        setup_param_block(&mut bus, &mut cpu, pb, b"Hero copy");
+        bus.write_word(pb + 16, 0x3FFF); // ioResult poison
+        bus.write_word(pb + 22, super::super::dispatch::BOOT_VOLUME_REF_NUM as u16);
+        bus.write_word(pb + 28, 0); // ioFDirIndex
+        bus.write_long(pb + 32, u32::from_be_bytes(*b"DelP"));
+        bus.write_long(pb + 36, u32::from_be_bytes(*b"Delv"));
+        bus.write_word(pb + 40, 0x0100);
+        bus.write_long(pb + 48, app_dir_id);
+        cpu.write_reg(Register::D0, 10); // HFSDispatch selector: PBSetCatInfo
+
+        call(&mut disp, false, 0x60, &mut cpu, &mut bus).unwrap();
+
+        assert_eq!(cpu.read_reg(Register::D0) as i32, 0);
+        assert_eq!(bus.read_word(pb + 16) as i16, 0);
+        let metadata = disp
+            .vfs_file_metadata("Game Folder/Hero copy")
+            .expect("file metadata");
+        assert_eq!(metadata.file_type, u32::from_be_bytes(*b"DelP"));
+        assert_eq!(metadata.creator, u32::from_be_bytes(*b"Delv"));
+        assert_eq!(metadata.finder_flags, 0x0100);
+        assert_eq!(
+            disp.vfs.get("Game Folder/Hero copy").map(Vec::as_slice),
+            Some(&[0x01, 0x02][..])
+        );
+    }
+
+    #[test]
+    fn fsdispatch_pbsetcatinfo_sets_directory_finder_info() {
+        let (mut disp, mut cpu, mut bus) = setup();
+
+        let app_dir_id = disp.ensure_vfs_directory("Game Folder");
+        let saves_dir_id = disp.ensure_vfs_directory("Game Folder/Saves");
+
+        let pb = 0x300000u32;
+        setup_param_block(&mut bus, &mut cpu, pb, b"Saves");
+        bus.write_word(pb + 22, super::super::dispatch::BOOT_VOLUME_REF_NUM as u16);
+        bus.write_word(pb + 28, 0);
+        bus.write_long(pb + 32, u32::from_be_bytes(*b"fold"));
+        bus.write_long(pb + 36, u32::from_be_bytes(*b"TEST"));
+        bus.write_word(pb + 40, 0x0400);
+        bus.write_long(pb + 48, app_dir_id);
+        cpu.write_reg(Register::D0, 10);
+
+        call(&mut disp, false, 0x60, &mut cpu, &mut bus).unwrap();
+
+        assert_eq!(cpu.read_reg(Register::D0) as i32, 0);
+        let directory = disp
+            .vfs_directories
+            .iter()
+            .find(|directory| directory.dir_id == saves_dir_id)
+            .expect("directory");
+        assert_eq!(directory.creator, u32::from_be_bytes(*b"TEST"));
+        assert_eq!(directory.finder_flags, 0x0400);
+    }
+
+    #[test]
+    fn fsdispatch_pbsetcatinfo_missing_file_returns_fnferr() {
+        let (mut disp, mut cpu, mut bus) = setup();
+
+        let app_dir_id = disp.ensure_vfs_directory("Game Folder");
+
+        let pb = 0x300000u32;
+        setup_param_block(&mut bus, &mut cpu, pb, b"Not There");
+        bus.write_word(pb + 22, super::super::dispatch::BOOT_VOLUME_REF_NUM as u16);
+        bus.write_word(pb + 28, 0);
+        bus.write_long(pb + 48, app_dir_id);
+        cpu.write_reg(Register::D0, 10);
+
+        call(&mut disp, false, 0x60, &mut cpu, &mut bus).unwrap();
+
+        assert_eq!(cpu.read_reg(Register::D0) as i32, -43);
+        assert_eq!(bus.read_word(pb + 16) as i16, -43);
     }
 
     // ================================================================

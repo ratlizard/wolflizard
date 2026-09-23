@@ -1028,6 +1028,8 @@ struct App {
     /// Current game screen dimensions (tracks screen_mode changes)
     current_screen_width: u32,
     current_screen_height: u32,
+    /// Keys pressed in the window and not yet released, as (key, char).
+    held_keys: Vec<(u8, u8)>,
     /// Force a Metal submission even if all visible guest inputs are
     /// unchanged, for native expose/resize events that need a fresh drawable.
     #[cfg(target_os = "macos")]
@@ -1194,6 +1196,7 @@ impl App {
             mouse_guest_offset: (0, 0),
             current_screen_width: initial_screen_width(),
             current_screen_height: initial_screen_height(),
+            held_keys: Vec::new(),
             #[cfg(target_os = "macos")]
             force_gpu_present: true,
             start_fullscreen,
@@ -3202,6 +3205,16 @@ impl ApplicationHandler for App {
                     }
                     return;
                 }
+                match event.state {
+                    ElementState::Pressed => {
+                        if !self.held_keys.iter().any(|(key, _)| *key == mac_key) {
+                            self.held_keys.push((mac_key, char_code));
+                        }
+                    }
+                    ElementState::Released => {
+                        self.held_keys.retain(|(key, _)| *key != mac_key);
+                    }
+                }
                 self.send_command(match event.state {
                     ElementState::Pressed => runtime_protocol::GuiCommand::KeyDown {
                         key: mac_key,
@@ -3212,6 +3225,19 @@ impl ApplicationHandler for App {
                         character: char_code,
                     },
                 });
+            }
+
+            // A key held when the window loses focus is released elsewhere,
+            // and the window never hears of it: Cmd-Shift-4 for a screenshot
+            // left Command and Shift down, and the next click in a list was
+            // taken as a shift-click. Release them here.
+            WindowEvent::Focused(false) => {
+                for (mac_key, char_code) in std::mem::take(&mut self.held_keys) {
+                    self.send_command(runtime_protocol::GuiCommand::KeyUp {
+                        key: mac_key,
+                        character: char_code,
+                    });
+                }
             }
 
             WindowEvent::Resized(size) => {

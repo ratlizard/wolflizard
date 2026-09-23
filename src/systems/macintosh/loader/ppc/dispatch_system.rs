@@ -445,6 +445,13 @@ pub(crate) struct PpcPortTextMetrics {
 }
 
 impl PpcPortTextMetrics {
+    /// Width QuickDraw gives `bytes` drawn as one run in this port, measured
+    /// as a whole as the run is drawn, the character extra included.
+    pub(crate) fn width(&self, bytes: &[u8]) -> i32 {
+        i32::from(ppc_text_width_bytes(self.font, self.size, self.face, bytes))
+            + ppc_char_extra_width(self.char_extra, self.size, bytes)
+    }
+
     /// Advance width QuickDraw gives one byte of text in this port.
     pub(crate) fn byte_width(&self, byte: u8) -> i32 {
         let bytes = [byte];
@@ -699,25 +706,33 @@ pub(crate) fn ppc_dispatch_system_compatibility(
 
             // Inside Macintosh: Text (1993), pp. 5-37 and 5-80: StyledLineBreak
             // measures each style run with the font, size and style of the
-            // current graphics port, which the caller sets for that run.
-            let eval = crate::text_utils::evaluate_styled_line_break(
+            // current graphics port, which the caller sets for that run. The
+            // break is the one the 68K selector makes (styled_line_break_offsets):
+            // a word in a later run that does not fit moves whole to the next
+            // line, even to before textStart, so a conversation keyword drawn as
+            // its own run is never split. The text is read from textPtr, so the
+            // word's start can be found before the run.
+            let len = bytes.len() as u32;
+            let run_start = text_start.min(len);
+            let run_end = text_end.max(run_start).min(len);
+            let (code, output_offset, consumed) = crate::trap::styled_line_break_offsets(
                 &bytes,
-                text_start,
-                text_end,
-                available_pixels,
+                run_start,
+                run_end,
+                available_pixels.max(0),
                 first_style_run_on_line,
-                |byte| port_text.byte_width(byte),
+                |start, end| port_text.width(&bytes[start as usize..end as usize]),
             );
 
             if offset_ptr != 0 {
-                let _ = memory.write_u32_be(offset_ptr, eval.output_offset);
+                let _ = memory.write_u32_be(offset_ptr, output_offset);
             }
             if width_ptr != 0 {
-                let remaining_raw =
-                    crate::text_utils::pixels_to_width_like(raw_width, eval.remaining_width);
+                let remaining = available_pixels.max(0).saturating_sub(consumed).max(0);
+                let remaining_raw = crate::text_utils::pixels_to_width_like(raw_width, remaining);
                 let _ = memory.write_u32_be(width_ptr, remaining_raw);
             }
-            PpcImportAction::Return(u32::from(eval.code))
+            PpcImportAction::Return(u32::from(code))
         }
         PpcSystemCompatibilityOperation::GetNextProcess => {
             let psn = cpu.gpr[3];

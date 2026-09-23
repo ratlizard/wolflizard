@@ -719,6 +719,22 @@ pub(super) fn dispatch_window_import(
             }
             Some(PpcImportAction::ReturnPreserve)
         }
+        // Inside Macintosh: Macintosh Toolbox Essentials (1992), 4-111:
+        // ValidRgn removes a region from the update region. Validated here
+        // by the region's bounding box, exact for a rectangular region.
+        PpcImportDispatcherTarget::ValidRgn => {
+            let window = *current_gworld;
+            if window != PPC_MAIN_GWORLD {
+                if let Some(rect) = memory
+                    .read_u32_be(cpu.gpr[3])
+                    .filter(|region| *region != 0)
+                    .and_then(|region| ppc_read_rect(memory, region.wrapping_add(2)))
+                {
+                    ppc_validate_window_local_rect(memory, window, rect);
+                }
+            }
+            Some(PpcImportAction::ReturnPreserve)
+        }
         PpcImportDispatcherTarget::BeginUpdate => {
             let window = cpu.gpr[3];
             if window != 0 && gworlds.iter().any(|record| record.port == window) {

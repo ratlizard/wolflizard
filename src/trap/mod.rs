@@ -36,6 +36,7 @@ mod smc;
 mod sound;
 mod text_render;
 mod toolbox;
+pub(crate) use toolbox::{queue_tune_stream, read_tune_stream_with};
 pub(crate) mod types;
 mod window;
 

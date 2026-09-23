@@ -1176,7 +1176,11 @@ impl PpcLoadedApp {
                         &mut quickdraw_text_size,
                     );
                 }
-                let action = if binding.dispatcher_target == PpcImportDispatcherTarget::GlmPageFreeAll {
+                let action = if let Some(resumed) =
+                    dispatch_defproc::ppc_resume_def_proc_calls(cpu, memory)
+                {
+                    Some(resumed)
+                } else if binding.dispatcher_target == PpcImportDispatcherTarget::GlmPageFreeAll {
                     let pending = (cpu.lr == cpu.pc)
                         .then(|| glm_callback_stack.last().copied())
                         .flatten()
@@ -2083,6 +2087,14 @@ impl PpcLoadedApp {
                     });
                     action
                 };
+                let action = process_file_system.resource_manager.with_mut(|resource_manager| {
+                    dispatch_defproc::ppc_begin_pending_def_procs(
+                        cpu,
+                        memory,
+                        &resource_manager.vfs_resources,
+                        action,
+                    )
+                });
 
                 let cursor_device_move = binding.dispatcher_target == PpcImportDispatcherTarget::CrsrDevMoveTo
                     || binding.dispatcher_target == PpcImportDispatcherTarget::SystemCompatibility(

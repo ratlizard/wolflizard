@@ -3787,6 +3787,8 @@ pub(super) fn ppc_draw_control_inner(
                 owner,
                 ppc_theme_rgb(palette.frame_dark),
                 None,
+                PPC_RGB_WHITE,
+                &[0xff; 8],
             ),
         }
     };

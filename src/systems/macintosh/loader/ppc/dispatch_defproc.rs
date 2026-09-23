@@ -29,6 +29,9 @@ struct DefProcCall {
 }
 
 struct DefProcCallState {
+    /// The current port when the calls began; the Window Manager restores it
+    /// after calling a definition function, which may leave its own port set.
+    saved_port: u32,
     /// A word pair to put back once the call in flight returns.
     restore: Option<(u32, u32)>,
     import_pc: u32,
@@ -46,6 +49,7 @@ thread_local! {
         RefCell::new(std::collections::HashMap::new());
     static PENDING_WDEF_DRAWS: RefCell<Vec<(u32, u32)>> = const { RefCell::new(Vec::new()) };
     static DEF_PROC_STACK: RefCell<Vec<DefProcCallState>> = const { RefCell::new(Vec::new()) };
+    static PORT_TO_RESTORE: RefCell<Option<u32>> = const { RefCell::new(None) };
 }
 
 /// Resource IDs from 128 up are the application's; the system's WDEFs are
@@ -139,6 +143,7 @@ fn ppc_next_def_proc_call(cpu: &mut PpcCpu, memory: &mut PpcSectionMem) -> Optio
             }
             if state.next >= state.calls.len() {
                 let state = stack.pop().expect("state present");
+                PORT_TO_RESTORE.with(|slot| *slot.borrow_mut() = Some(state.saved_port));
                 cpu.lr = state.final_lr;
                 cpu.gpr[2] = state.restore_rtoc;
                 return Some(state.completion);
@@ -174,6 +179,12 @@ fn ppc_next_def_proc_call(cpu: &mut PpcCpu, memory: &mut PpcSectionMem) -> Optio
                 let port = PPC_MAIN_GWORLD;
                 let clip = memory.read_u32_be(port.wrapping_add(PPC_CGRAF_PORT_CLIP_RGN_OFFSET)).unwrap_or(0);
                 let vis = memory.read_u32_be(port.wrapping_add(PPC_CGRAF_PORT_VIS_RGN_OFFSET)).unwrap_or(0);
+                let pix_bounds = memory
+                    .read_u32_be(window.wrapping_add(2))
+                    .and_then(|pix_map| memory.read_u32_be(pix_map))
+                    .and_then(|pix_map| ppc_read_rect(memory, pix_map.wrapping_add(6)));
+                let port_rect = ppc_read_rect(memory, window.wrapping_add(16));
+                eprintln!("[PPC-DEFPROC]   pixmap bounds={pix_bounds:?} portRect={port_rect:?}");
                 let struc = memory.read_u32_be(window.wrapping_add(114)).unwrap_or(0);
                 let cont = memory.read_u32_be(window.wrapping_add(118)).unwrap_or(0);
                 eprintln!(
@@ -231,11 +242,17 @@ pub(super) fn ppc_resume_def_proc_calls(
 /// Called after an import is dispatched: when it would have drawn the frame
 /// of a window with an application WDEF, call that WDEF now, then return
 /// the import's own result.
+/// The port to make current again once a batch of definition calls is done.
+pub(super) fn ppc_take_port_to_restore() -> Option<u32> {
+    PORT_TO_RESTORE.with(|slot| slot.borrow_mut().take())
+}
+
 pub(super) fn ppc_begin_pending_def_procs(
     cpu: &mut PpcCpu,
     memory: &mut PpcSectionMem,
     vfs_resources: &[PpcVfsResourceRecord],
     action: Option<PpcImportAction>,
+    current_port: u32,
 ) -> Option<PpcImportAction> {
     let pending = PENDING_WDEF_DRAWS.with(|pending| std::mem::take(&mut *pending.borrow_mut()));
     if pending.is_empty() {
@@ -294,6 +311,7 @@ pub(super) fn ppc_begin_pending_def_procs(
             next: 0,
             completion,
             restore: None,
+            saved_port: current_port,
         })
     });
     ppc_next_def_proc_call(cpu, memory).or(Some(completion))

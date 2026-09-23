@@ -2850,6 +2850,19 @@ pub(crate) fn dispatch_supported_import(
                 toolbox_startup,
             ))
         }
+        PpcImportDispatcherTarget::SystemCompatibility(
+            PpcSystemCompatibilityOperation::StyledLineBreak,
+        ) => {
+            let font = ppc_current_text_font(memory, *current_gworld);
+            let style = ppc_current_text_style(memory, *current_gworld);
+            Some(PpcImportAction::Return(u32::from(super::dispatch_system::ppc_styled_line_break(
+                cpu,
+                memory,
+                font,
+                *quickdraw_text_size,
+                style,
+            ))))
+        }
         PpcImportDispatcherTarget::SystemCompatibility(operation) => {
             Some(dispatch_system::ppc_dispatch_system_compatibility(
                 operation,

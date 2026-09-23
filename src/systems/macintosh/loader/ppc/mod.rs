@@ -107,6 +107,7 @@ use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::OnceLock;
 
 mod dispatch_cfm;
+mod dispatch_defproc;
 use dispatch_cfm::*;
 mod dispatch_apple_events;
 use dispatch_apple_events::*;

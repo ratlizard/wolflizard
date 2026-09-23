@@ -9048,14 +9048,37 @@ impl PpcLoadedApp {
                     });
                     action
                 };
+                let port_before_def_procs = *current_gworld;
                 let action = process_file_system.resource_manager.with_mut(|resource_manager| {
                     dispatch_defproc::ppc_begin_pending_def_procs(
                         cpu,
                         memory,
                         &resource_manager.vfs_resources,
                         action,
+                        port_before_def_procs,
                     )
                 });
+                if let Some(port) = dispatch_defproc::ppc_take_port_to_restore() {
+                    current_gworld.with_mut(|current_gworld| *current_gworld = port);
+                    let device = ppc_gworld_device(&gworlds, port);
+                    current_gdevice.with_mut(|current_gdevice| {
+                        *current_gdevice = device.unwrap_or(*current_gdevice);
+                    });
+                    ppc_restore_port_colors(
+                        memory,
+                        port,
+                        &mut quickdraw_fore_color,
+                        &mut quickdraw_back_color,
+                    );
+                }
+                // Imaging With QuickDraw (1994), 2-35: SetPort and SetGWorld
+                // store the port in the application's QDGlobals.thePort, the
+                // global InitGraf was given. Applications read it directly
+                // (`&qd.thePort->portBits` as a CopyBits destination), so keep
+                // it in step with the current port at every import boundary.
+                if toolbox_startup.init_graf_global_ptr != 0 {
+                    let _ = memory.write_u32_be(toolbox_startup.init_graf_global_ptr, *current_gworld);
+                }
 
                 ppc_sync_process_window_list(memory, &window_list);
 
@@ -14280,8 +14303,9 @@ fn dispatch_supported_import(context: PpcDispatchContext<'_>) -> Option<PpcImpor
     {
         if *tick_count >= from {
             eprintln!(
-                "[PPC-IMPORT] tick={} {}:{} r3=${:08X} lr=${:08X}",
-                *tick_count, binding.library_name, binding.symbol_name, cpu.gpr[3], cpu.lr
+                "[PPC-IMPORT] tick={} {}:{} r3=${:08X} lr=${:08X} r4=${:08X} r5=${:08X} r6=${:08X}",
+                *tick_count, binding.library_name, binding.symbol_name, cpu.gpr[3], cpu.lr,
+                cpu.gpr[4], cpu.gpr[5], cpu.gpr[6]
             );
         }
     }

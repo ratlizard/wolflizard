@@ -348,7 +348,21 @@ pub(super) fn dispatch_menu_import(context: PpcMenuDispatchContext<'_>) -> Optio
                 if output == 0 || !ppc_memory_can_write_bytes(memory, output, 4) {
                     return Some(PpcImportAction::Return(ppc_i16_result(PPC_PARAM_ERR)));
                 }
-                let _ = memory.write_u32_be(output, values.get(params.menu_handle(), params.item()));
+                let mut value = values.get(params.menu_handle(), params.item());
+                // An item nothing has given a command ID keeps the one its
+                // menu's 'xmnu' resource carries, which is where Cythera's
+                // Save and Quit get theirs.
+                if value == 0
+                    && binding.dispatcher_target == PpcImportDispatcherTarget::GetMenuItemCommandID
+                {
+                    value = super::dispatch_resources::ppc_xmnu_item_command_id(
+                        memory,
+                        vfs_resources,
+                        params.menu_handle(),
+                        params.item() as i16,
+                    );
+                }
+                let _ = memory.write_u32_be(output, value);
             }
             Some(PpcImportAction::Return(ppc_i16_result(PPC_NO_ERR)))
         }

@@ -72,6 +72,9 @@ struct DefProcCallState {
     import_pc: u32,
     final_lr: u32,
     restore_rtoc: u32,
+    /// The import's argument registers, which the calls clobber; a yielding
+    /// import is dispatched again with them.
+    saved_args: [u32; 8],
     calls: Vec<DefProcCall>,
     next: usize,
     completion: PpcImportAction,
@@ -89,6 +92,9 @@ thread_local! {
     static PENDING_CDEF_CALLS: RefCell<Vec<(u32, u32, u32)>> = const { RefCell::new(Vec::new()) };
     static DEF_PROC_STACK: RefCell<Vec<DefProcCallState>> = const { RefCell::new(Vec::new()) };
     static PORT_TO_RESTORE: RefCell<Option<u32>> = const { RefCell::new(None) };
+    /// ClipAbove for the next WDEF draw (Some(window)), or Some(0) to open
+    /// the Window Manager port's clip again.
+    static CLIP_ABOVE: RefCell<Option<u32>> = const { RefCell::new(None) };
 }
 
 /// Resource IDs from 128 up are the application's; the system's WDEFs are
@@ -183,14 +189,22 @@ fn ppc_next_def_proc_call(cpu: &mut PpcCpu, memory: &mut PpcSectionMem) -> Optio
             if state.next >= state.calls.len() {
                 let state = stack.pop().expect("state present");
                 PORT_TO_RESTORE.with(|slot| *slot.borrow_mut() = Some(state.saved_port));
+                CLIP_ABOVE.with(|slot| *slot.borrow_mut() = Some(0));
                 cpu.lr = state.final_lr;
                 cpu.gpr[2] = state.restore_rtoc;
+                cpu.gpr[3..11].copy_from_slice(&state.saved_args);
                 return Some(state.completion);
             }
             let call = state.calls[state.next];
             state.next += 1;
             if let Some(port) = call.port {
                 PORT_TO_RESTORE.with(|slot| *slot.borrow_mut() = Some(port));
+            }
+            // Macintosh Toolbox Essentials (1992), 4-118: before a WDEF
+            // draws, the Window Manager port is clipped to the window's
+            // structure less the windows in front (ClipAbove).
+            if call.port.is_none() && call.args[2] == WDEF_DRAW {
+                CLIP_ABOVE.with(|slot| *slot.borrow_mut() = Some(call.args[1]));
             }
             // A WDEF computing regions takes the window's global origin from
             // portBits.bounds (GrafPort offsets 8 and 10), which in a
@@ -285,6 +299,10 @@ pub(super) fn ppc_resume_def_proc_calls(
 /// of a window with an application WDEF, call that WDEF now, then return
 /// the import's own result.
 /// The port to make current again once a batch of definition calls is done.
+pub(super) fn ppc_take_clip_above() -> Option<u32> {
+    CLIP_ABOVE.with(|slot| slot.borrow_mut().take())
+}
+
 pub(super) fn ppc_take_port_to_restore() -> Option<u32> {
     PORT_TO_RESTORE.with(|slot| slot.borrow_mut().take())
 }
@@ -303,9 +321,16 @@ pub(super) fn ppc_begin_pending_def_procs(
         return action;
     }
     let completion = match action {
-        Some(action @ (PpcImportAction::Return(_) | PpcImportAction::ReturnPreserve)) => action,
-        // Anything else (a yield, a guest call of the import's own, a halt)
-        // keeps its meaning; the frames are drawn at a later import.
+        // A yield leaves the CPU at the import slot, so the calls can run
+        // first: ModalDialog draws its controls on an update event and then
+        // waits, and would otherwise never return to let them be drawn.
+        Some(
+            action @ (PpcImportAction::Return(_)
+            | PpcImportAction::ReturnPreserve
+            | PpcImportAction::Yield(_)),
+        ) => action,
+        // Anything else (a guest call of the import's own, a halt) keeps its
+        // meaning; the frames are drawn at a later import.
         other => {
             PENDING_WDEF_DRAWS.with(|slot| slot.borrow_mut().extend(pending));
             PENDING_CDEF_CALLS.with(|slot| slot.borrow_mut().extend(pending_controls));
@@ -376,6 +401,7 @@ pub(super) fn ppc_begin_pending_def_procs(
             import_pc: cpu.pc,
             final_lr: cpu.lr,
             restore_rtoc: cpu.gpr[2],
+            saved_args: cpu.gpr[3..11].try_into().expect("eight argument registers"),
             calls,
             next: 0,
             completion,

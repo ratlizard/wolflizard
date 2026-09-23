@@ -3261,16 +3261,22 @@ pub(super) fn ppc_open_resource_fork_access(
 ) -> Result<i16, i16> {
     let ref_num = *next_file_ref_num;
     let next_ref_num = next_file_ref_num.checked_add(1).ok_or(PPC_PARAM_ERR)?;
-    let Some(resource_index) = ppc_vfs_resource_file_index(vfs_resource_files, path) else {
-        return Err(PPC_FNF_ERR);
+    let resource_index = ppc_vfs_resource_file_index(vfs_resource_files, path);
+    let path = match resource_index {
+        Some(index) => vfs_resource_files[index].path.clone(),
+        None => match ppc_vfs_file_index(vfs_files, path) {
+            Some(index) => vfs_files[index].path.clone(),
+            None => return Err(PPC_FNF_ERR),
+        },
     };
-    let path = vfs_resource_files[resource_index].path.clone();
     let open_path = format!("{PPC_OPEN_RESOURCE_FORK_PREFIX}{path}");
     if ppc_vfs_file_index(vfs_files, &open_path).is_none() {
-        let bytes = vfs_resource_files
-            .fork(&path)
-            .cloned()
-            .or_else(|| ppc_serialized_resource_fork(&vfs_resource_files[resource_index], vfs_resources))
+        let bytes = resource_index
+            .and_then(|index| {
+                vfs_resource_files.fork(&path).cloned().or_else(|| {
+                    ppc_serialized_resource_fork(&vfs_resource_files[index], vfs_resources)
+                })
+            })
             .unwrap_or_default();
         vfs_files.push(PpcVfsFileRecord {
             path: open_path.clone(),
@@ -3595,6 +3601,23 @@ pub(super) fn ppc_sync_open_resource_fork(
             resource_file.raw_data = Some(data.clone().into());
             resource_file.resource_len = u32::try_from(data.len()).unwrap_or(u32::MAX);
             resource_file.dirty = true;
+        } else {
+            // A fork opened empty on a file that had none now exists.
+            let (creator, file_type, finder_flags) = ppc_vfs_file_index(vfs_files, path)
+                .map_or((0, 0, 0), |index| {
+                    let file = &vfs_files[index];
+                    (file.creator, file.file_type, file.finder_flags)
+                });
+            vfs_resource_files.push(PpcVfsResourceFileRecord {
+                path: path.to_string(),
+                creator,
+                file_type,
+                finder_flags,
+                resource_len: u32::try_from(data.len()).unwrap_or(u32::MAX),
+                raw_data: Some(data.clone().into()),
+                map_attrs: 0,
+                dirty: true,
+            });
         }
         vfs_resources.retain(|resource| !resource.path.eq_ignore_ascii_case(path));
     }

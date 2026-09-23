@@ -2579,6 +2579,7 @@ pub(crate) fn dispatch_supported_import(
         | PpcImportDispatcherTarget::StdCalloc
         | PpcImportDispatcherTarget::StdRealloc
         | PpcImportDispatcherTarget::StdStrcpy
+        | PpcImportDispatcherTarget::StdPascalString(_)
         | PpcImportDispatcherTarget::StdStrncpy
         | PpcImportDispatcherTarget::StdStrcat
         | PpcImportDispatcherTarget::StdStrncat

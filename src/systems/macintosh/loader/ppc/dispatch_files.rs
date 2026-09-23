@@ -1862,3 +1862,4 @@ pub(super) fn ppc_flush_vol(cpu: &mut PpcCpu, memory: &mut PpcSectionMem) -> i16
     }
     PPC_NO_ERR
 }
+

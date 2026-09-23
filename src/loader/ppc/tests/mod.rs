@@ -940,3 +940,19 @@ fn get_resource_searches_files_opened_before_the_current_one_first() {
     assert_eq!(found(0), Some(0));
     assert_eq!(ppc_vfs_resource_index(&resources, 129, txst, 128, true), None);
 }
+
+#[test]
+fn drag_gray_rgn_pins_the_offset_to_limit_rect_and_gives_up_outside_slop_rect() {
+    let limit = (0, 0, 600, 800);
+    let slop = (-20, -20, 620, 820);
+    let start = (463, 160);
+    assert_eq!(ppc_drag_gray_rgn_offset(start, (403, 200), limit, slop, 0), Some((-60, 40)));
+    // Past limitRect but inside slopRect: the offset point stops at the edge.
+    assert_eq!(ppc_drag_gray_rgn_offset(start, (-10, 160), limit, slop, 0), Some((-463, 0)));
+    assert_eq!(ppc_drag_gray_rgn_offset(start, (463, 815), limit, slop, 0), Some((0, 639)));
+    // Outside slopRect: both words $8000.
+    assert_eq!(ppc_drag_gray_rgn_offset(start, (463, 900), limit, slop, 0), None);
+    // hAxisOnly and vAxisOnly.
+    assert_eq!(ppc_drag_gray_rgn_offset(start, (403, 200), limit, slop, 1), Some((0, 40)));
+    assert_eq!(ppc_drag_gray_rgn_offset(start, (403, 200), limit, slop, 2), Some((-60, 0)));
+}

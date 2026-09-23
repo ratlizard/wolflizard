@@ -579,28 +579,6 @@ pub(super) fn dispatch_window_import(
             }
             Some(PpcImportAction::ReturnPreserve)
         }
-        PpcImportDispatcherTarget::GetAuxWin => {
-            let window_ptr = cpu.gpr[3];
-            let aw_ctable_ptr = cpu.gpr[4];
-            let can_write = aw_ctable_ptr == 0
-                || ppc_memory_can_write_bytes(memory, aw_ctable_ptr, 4);
-            if let Ok(params) = crate::window_manager::evaluate_get_aux_win_parameters(
-                window_ptr,
-                aw_ctable_ptr,
-                can_write,
-            ) {
-                let is_tracked = window_list.contains_window(params.window_ptr());
-                let color_table = ppc_window_color_table_handle(memory, params.window_ptr());
-                let (ctab, success) =
-                    crate::window_manager::evaluate_get_aux_win(color_table, is_tracked);
-                if params.out_aux_ctable_ptr() != 0 {
-                    let _ = memory.write_u32_be(params.out_aux_ctable_ptr(), ctab);
-                }
-                Some(PpcImportAction::Return(if success { 1 } else { 0 }))
-            } else {
-                Some(PpcImportAction::Return(0))
-            }
-        }
         PpcImportDispatcherTarget::LMGetWindowList => {
             let first = window_list.first();
             let low_mem = memory.read_u32_be(PPC_LM_WINDOW_LIST_ADDR);

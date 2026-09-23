@@ -3054,7 +3054,13 @@ fn ppc_modal_dialog(
     };
     *current_gworld = dialog;
     *current_gdevice = ppc_gworld_device(gworlds, dialog).unwrap_or(*current_gdevice);
-    let event = event_queue.pop_front();
+    // ModalDialog's event loop does not take high-level events; an 'oapp'
+    // queued behind a dialog shown at launch waits for the application's own
+    // event loop instead of being consumed here.
+    let event = event_queue
+        .iter()
+        .position(|event| event.what != 23)
+        .and_then(|index| event_queue.remove(index));
     let mut handled_edit_event = false;
     let hit = match event.as_ref().map(|event| event.what) {
         Some(1) => event.as_ref().and_then(|event| {

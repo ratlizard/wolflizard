@@ -1688,6 +1688,24 @@ pub(super) fn ppc_draw_existing_window_frame(
     window: u32,
     host_menu_bar_hidden: bool,
 ) {
+    ppc_with_open_window_manager_port(memory, |memory| {
+        ppc_draw_existing_window_frame_in_open_port(
+            memory,
+            gworlds,
+            window_list,
+            window,
+            host_menu_bar_hidden,
+        )
+    });
+}
+
+fn ppc_draw_existing_window_frame_in_open_port(
+    memory: &mut PpcSectionMem,
+    gworlds: &[PpcGWorldRecord],
+    window_list: &SharedProcessWindowList,
+    window: u32,
+    host_menu_bar_hidden: bool,
+) {
     let Some((top, left, bottom, right)) = ppc_read_rect(memory, window.wrapping_add(16)) else {
         return;
     };

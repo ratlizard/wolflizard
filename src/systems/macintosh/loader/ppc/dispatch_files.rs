@@ -674,6 +674,19 @@ pub(super) fn dispatch_file_import(context: PpcFileDispatchContext<'_>) -> Optio
                 mount_flags,
             ))))
         }
+        PpcImportDispatcherTarget::FileCompatibility(
+            PpcFileCompatibilityOperation::PbHOpenRfSync,
+        ) => Some(PpcImportAction::Return(ppc_i16_result(ppc_pbh_open_rf(
+            cpu,
+            memory,
+            vfs_directories,
+            vfs_files,
+            vfs_resource_files,
+            vfs_resources,
+            files,
+            writable_refnums,
+            next_file_ref_num,
+        )))),
         PpcImportDispatcherTarget::FileCompatibility(operation) => {
             Some(ppc_dispatch_file_compatibility(
                 operation,
@@ -1097,8 +1110,8 @@ pub(super) fn ppc_dispatch_file_compatibility(
         PpcFileCompatibilityOperation::PbHGetVolParmsSync => PpcImportAction::Return(
             ppc_i16_result(ppc_complete_pb(memory, cpu.gpr[3], PPC_NO_ERR)),
         ),
-        PpcFileCompatibilityOperation::PbHOpenRfSync
-        | PpcFileCompatibilityOperation::PbCatSearchSync
+        PpcFileCompatibilityOperation::PbHOpenRfSync => unreachable!("opened by ppc_pbh_open_rf"),
+        PpcFileCompatibilityOperation::PbCatSearchSync
         | PpcFileCompatibilityOperation::PbDirCreateSync => PpcImportAction::Return(
             ppc_i16_result(ppc_complete_pb(memory, cpu.gpr[3], PPC_FNF_ERR)),
         ),
@@ -1450,6 +1463,70 @@ fn ppc_store_resource_fork(
         map_attrs: 0,
         dirty: true,
     });
+}
+
+/// PBHOpenRF: ioNamePtr, ioVRefNum and ioDirID name the file, ioPermssn the
+/// access, and the refnum goes back in ioRefNum (Inside Macintosh: Files
+/// (1992), pp. 2-184--2-185). The file is found as PBHOpenDF finds it.
+/// MoreFiles' FileCopy, which Cythera's Save As and Backup As use, opens the
+/// new copy's resource fork this way; answering fnfErr made it delete the
+/// copy and the save did not happen.
+#[allow(clippy::too_many_arguments)]
+fn ppc_pbh_open_rf(
+    cpu: &PpcCpu,
+    memory: &mut PpcSectionMem,
+    vfs_directories: &[PpcVfsDirectory],
+    vfs_files: &mut ProcessVfsFileRecords,
+    vfs_resource_files: &mut ProcessVfsResourceFileRecords,
+    vfs_resources: &[PpcVfsResourceRecord],
+    files: &mut Vec<PpcFileRecord>,
+    writable_refnums: &mut HashSet<u16>,
+    next_file_ref_num: &mut i16,
+) -> i16 {
+    let pb = cpu.gpr[3];
+    if pb == 0 || !ppc_memory_can_write_bytes(memory, pb, 52) {
+        return PPC_PARAM_ERR;
+    }
+    let (Some(name_ptr), Some(dir_id), Some(permission)) = (
+        memory.read_u32_be(pb + 18),
+        memory.read_u32_be(pb + 48),
+        memory.read_u8(pb + 27),
+    ) else {
+        return ppc_complete_pb(memory, pb, PPC_PARAM_ERR);
+    };
+    let Some(name_bytes) = ppc_read_pstring_bytes(memory, name_ptr) else {
+        return ppc_complete_pb(memory, pb, PPC_PARAM_ERR);
+    };
+    let name = ppc_normalize_vfs_path(&decode_mac_roman(&name_bytes));
+    if name.is_empty() {
+        return ppc_complete_pb(memory, pb, PPC_PARAM_ERR);
+    }
+    let path = ppc_directory_path_for_id(vfs_directories, dir_id)
+        .map(|parent| ppc_join_vfs_path(parent, &name))
+        .and_then(|path| {
+            ppc_vfs_file_index(vfs_files, &path).map(|index| vfs_files[index].path.clone())
+        })
+        .or_else(|| ppc_vfs_file_path_by_suffix_or_unique_basename(vfs_files, &name));
+    let Some(path) = path else {
+        return ppc_complete_pb(memory, pb, PPC_FNF_ERR);
+    };
+    let result = match ppc_open_resource_fork_as_file(
+        &path,
+        permission,
+        vfs_files,
+        vfs_resource_files,
+        vfs_resources,
+        files,
+        writable_refnums,
+        next_file_ref_num,
+    ) {
+        Ok(ref_num) => {
+            let _ = memory.write_u16_be(pb + 24, ref_num as u16);
+            PPC_NO_ERR
+        }
+        Err(err) => err,
+    };
+    ppc_complete_pb(memory, pb, result)
 }
 
 /// FSpExchangeFiles(source, dest): Inside Macintosh: Files (1992), 2-180.

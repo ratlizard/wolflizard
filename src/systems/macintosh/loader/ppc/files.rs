@@ -2886,16 +2886,61 @@ pub(super) fn ppc_fsp_open_rf(
         Ok(path) => path,
         Err(err) => return err,
     };
-    let Some(resource_index) = ppc_vfs_resource_file_index(vfs_resource_files, &path) else {
-        return PPC_FNF_ERR;
+    match ppc_open_resource_fork_as_file(
+        &path,
+        permission,
+        vfs_files,
+        vfs_resource_files,
+        vfs_resources,
+        files,
+        writable_refnums,
+        next_file_ref_num,
+    ) {
+        Ok(ref_num) => {
+            let _ = memory.write_u16_be(ref_num_out_ptr, ref_num as u16);
+            if ppc_hle_trace_enabled() {
+                eprintln!(
+                    "[PPC-TRACE] FSpOpenRF path=\"{}\" permission={} -> ref={}",
+                    path, permission, ref_num
+                );
+            }
+            PPC_NO_ERR
+        }
+        Err(err) => err,
+    }
+}
+
+/// Open the resource fork of the file at `path` as a byte stream and return
+/// its refnum. A file with no resource fork opens as an empty one, as a new
+/// file's does on a Mac: MoreFiles' FileCopy, which Cythera's Save As uses,
+/// opens a new copy's resource fork before the fork exists.
+#[allow(clippy::too_many_arguments)]
+pub(super) fn ppc_open_resource_fork_as_file(
+    path: &str,
+    permission: u8,
+    vfs_files: &mut ProcessVfsFileRecords,
+    vfs_resource_files: &mut ProcessVfsResourceFileRecords,
+    vfs_resources: &[PpcVfsResourceRecord],
+    files: &mut Vec<PpcFileRecord>,
+    writable_refnums: &mut HashSet<u16>,
+    next_file_ref_num: &mut i16,
+) -> Result<i16, i16> {
+    let resource_index = ppc_vfs_resource_file_index(vfs_resource_files, path);
+    let path = match resource_index {
+        Some(index) => vfs_resource_files[index].path.clone(),
+        None => match ppc_vfs_file_index(vfs_files, path) {
+            Some(index) => vfs_files[index].path.clone(),
+            None => return Err(PPC_FNF_ERR),
+        },
     };
-    let path = vfs_resource_files[resource_index].path.clone();
     let open_path = format!("{PPC_OPEN_RESOURCE_FORK_PREFIX}{path}");
     if ppc_vfs_file_index(vfs_files, &open_path).is_none() {
-        let bytes = vfs_resource_files
-            .fork(&path)
-            .cloned()
-            .or_else(|| ppc_serialized_resource_fork(&vfs_resource_files[resource_index], vfs_resources))
+        let bytes = resource_index
+            .and_then(|index| {
+                vfs_resource_files.fork(&path).cloned().or_else(|| {
+                    ppc_serialized_resource_fork(&vfs_resource_files[index], vfs_resources)
+                })
+            })
             .unwrap_or_default();
         vfs_files.push(PpcVfsFileRecord {
             path: open_path.clone(),
@@ -2908,9 +2953,8 @@ pub(super) fn ppc_fsp_open_rf(
     }
     let ref_num = *next_file_ref_num;
     let Some(next_ref_num) = next_file_ref_num.checked_add(1) else {
-        return PPC_PARAM_ERR;
+        return Err(PPC_PARAM_ERR);
     };
-    let _ = memory.write_u16_be(ref_num_out_ptr, ref_num as u16);
     files.push(PpcFileRecord {
         ref_num,
         path: open_path,
@@ -2920,10 +2964,7 @@ pub(super) fn ppc_fsp_open_rf(
         writable_refnums.insert(ref_num as u16);
     }
     *next_file_ref_num = next_ref_num;
-    if ppc_hle_trace_enabled() {
-        eprintln!("[PPC-TRACE] FSpOpenRF path=\"{}\" permission={} -> ref={}", path, permission, ref_num);
-    }
-    PPC_NO_ERR
+    Ok(ref_num)
 }
 
 pub(super) fn ppc_h_open(
@@ -3208,6 +3249,23 @@ pub(super) fn ppc_sync_open_resource_fork(
             resource_file.raw_data = Some(data.clone().into());
             resource_file.resource_len = u32::try_from(data.len()).unwrap_or(u32::MAX);
             resource_file.dirty = true;
+        } else {
+            // A fork opened empty on a file that had none now exists.
+            let (creator, file_type, finder_flags) = ppc_vfs_file_index(vfs_files, path)
+                .map_or((0, 0, 0), |index| {
+                    let file = &vfs_files[index];
+                    (file.creator, file.file_type, file.finder_flags)
+                });
+            vfs_resource_files.push(PpcVfsResourceFileRecord {
+                path: path.to_string(),
+                creator,
+                file_type,
+                finder_flags,
+                resource_len: u32::try_from(data.len()).unwrap_or(u32::MAX),
+                raw_data: Some(data.clone().into()),
+                map_attrs: 0,
+                dirty: true,
+            });
         }
         vfs_resources.retain(|resource| !resource.path.eq_ignore_ascii_case(path));
     }

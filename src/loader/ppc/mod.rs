@@ -1968,6 +1968,8 @@ pub enum PpcImportDispatcherTarget {
     FSpCreateResFile,
     HCreateResFile,
     FSpOpenDF,
+    FSpOpenRF,
+    FSpExchangeFiles,
     PBOpen,
     PBHOpenDF,
     HOpen,
@@ -2087,6 +2089,9 @@ pub enum PpcImportDispatcherTarget {
     LDispose,
     LAddRow,
     LDelRow,
+    LAddColumn,
+    LDelColumn,
+    LRect,
     LGetSelect,
     LSetSelect,
     LSetCell,
@@ -15876,6 +15881,12 @@ fn dispatcher_target_for_import(
         // a port's fields were changed directly. Drawing here reads the port's
         // fields at each call, so there is nothing to refresh.
         ("InterfaceLib", "PortChanged") => PpcImportDispatcherTarget::NoOpPreserve,
+        // Nothing here reads the system font globals, and LastSPExtra only
+        // invalidates the Font Manager's width cache; Cythera sets all three
+        // around PopUpMenuSelect to draw a pop-up in the current font.
+        ("InterfaceLib", "LMSetSysFontFam" | "LMSetSysFontSize" | "LMSetLastSPExtra") => {
+            PpcImportDispatcherTarget::NoOpPreserve
+        }
         ("InterfaceLib", "ClearMenuBar") => PpcImportDispatcherTarget::ClearMenuBar,
         ("InterfaceLib", "SetMenuBar") => PpcImportDispatcherTarget::SetMenuBar,
         ("InterfaceLib", "GetMenuHandle") => PpcImportDispatcherTarget::GetMenuHandle,
@@ -16240,6 +16251,8 @@ fn dispatcher_target_for_import(
             PpcImportDispatcherTarget::PBCreate(PpcParameterBlockCreateOperation::Legacy)
         }
         ("InterfaceLib", "FSpDelete") => PpcImportDispatcherTarget::FSpDelete,
+        ("InterfaceLib", "FSpOpenRF") => PpcImportDispatcherTarget::FSpOpenRF,
+        ("InterfaceLib", "FSpExchangeFiles") => PpcImportDispatcherTarget::FSpExchangeFiles,
         ("InterfaceLib", "HDelete") => PpcImportDispatcherTarget::DeleteByName(
             PpcDeleteByNameOperation::HierarchicalHighLevel,
         ),
@@ -16368,6 +16381,9 @@ fn dispatcher_target_for_import(
         ("InterfaceLib", "LDispose") => PpcImportDispatcherTarget::LDispose,
         ("InterfaceLib", "LAddRow") => PpcImportDispatcherTarget::LAddRow,
         ("InterfaceLib", "LDelRow") => PpcImportDispatcherTarget::LDelRow,
+        ("InterfaceLib", "LAddColumn") => PpcImportDispatcherTarget::LAddColumn,
+        ("InterfaceLib", "LDelColumn") => PpcImportDispatcherTarget::LDelColumn,
+        ("InterfaceLib", "LRect") => PpcImportDispatcherTarget::LRect,
         ("InterfaceLib", "LGetSelect") => PpcImportDispatcherTarget::LGetSelect,
         ("InterfaceLib", "LSetSelect") => PpcImportDispatcherTarget::LSetSelect,
         ("InterfaceLib", "LSetCell") => PpcImportDispatcherTarget::LSetCell,
@@ -18816,6 +18832,8 @@ fn dispatch_supported_import(context: PpcDispatchContext<'_>) -> Option<PpcImpor
         | PpcImportDispatcherTarget::HCreateResFile
         | PpcImportDispatcherTarget::FSpOpenResFile
         | PpcImportDispatcherTarget::FSpOpenDF
+        | PpcImportDispatcherTarget::FSpOpenRF
+        | PpcImportDispatcherTarget::FSpExchangeFiles
         | PpcImportDispatcherTarget::HOpen
         | PpcImportDispatcherTarget::PBOpen
         | PpcImportDispatcherTarget::PBHOpenDF
@@ -19251,6 +19269,9 @@ fn dispatch_supported_import(context: PpcDispatchContext<'_>) -> Option<PpcImpor
         | PpcImportDispatcherTarget::LDispose
         | PpcImportDispatcherTarget::LAddRow
         | PpcImportDispatcherTarget::LDelRow
+        | PpcImportDispatcherTarget::LAddColumn
+        | PpcImportDispatcherTarget::LDelColumn
+        | PpcImportDispatcherTarget::LRect
         | PpcImportDispatcherTarget::LGetSelect
         | PpcImportDispatcherTarget::LSetSelect
         | PpcImportDispatcherTarget::LSetCell

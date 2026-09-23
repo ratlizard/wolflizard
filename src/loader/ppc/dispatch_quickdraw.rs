@@ -631,8 +631,14 @@ pub(super) fn dispatch_quickdraw_import(
         }
         PpcImportDispatcherTarget::EraseRect => {
             if ppc_hle_trace_enabled() {
+                let bbox = |memory: &mut PpcSectionMem, offset: u32| {
+                    memory
+                        .read_u32_be(current_gworld.wrapping_add(offset))
+                        .and_then(|rgn| ppc_region_storage(memory, rgn))
+                        .and_then(|storage| ppc_region_storage_bbox(&storage))
+                };
                 eprintln!(
-                    "[PPC-TRACE] EraseRect tick={} port=${:08X} rect=${:08X} bounds={:?} back=({:04X},{:04X},{:04X})",
+                    "[PPC-TRACE] EraseRect tick={} port=${:08X} rect=${:08X} bounds={:?} back=({:04X},{:04X},{:04X}) portRect={:?} clip={:?} vis={:?} visHandle=${:08X} visPtr=${:08X} visSize={:?} surface={:?} record={:?}",
                     tick_count,
                     current_gworld,
                     cpu.gpr[3],
@@ -640,6 +646,24 @@ pub(super) fn dispatch_quickdraw_import(
                     quickdraw_back_color.red,
                     quickdraw_back_color.green,
                     quickdraw_back_color.blue,
+                    ppc_read_rect(memory, current_gworld.wrapping_add(16)),
+                    bbox(memory, PPC_CGRAF_PORT_CLIP_RGN_OFFSET),
+                    bbox(memory, PPC_CGRAF_PORT_VIS_RGN_OFFSET),
+                    memory.read_u32_be(current_gworld.wrapping_add(PPC_CGRAF_PORT_VIS_RGN_OFFSET)).unwrap_or(0),
+                    memory
+                        .read_u32_be(current_gworld.wrapping_add(PPC_CGRAF_PORT_VIS_RGN_OFFSET))
+                        .and_then(|handle| memory.read_u32_be(handle))
+                        .unwrap_or(0),
+                    memory
+                        .read_u32_be(current_gworld.wrapping_add(PPC_CGRAF_PORT_VIS_RGN_OFFSET))
+                        .and_then(|handle| memory.read_u32_be(handle))
+                        .and_then(|ptr| memory.read_u16_be(ptr)),
+                    ppc_live_quickdraw_surface(memory, gworlds, current_gworld)
+                        .map(|surface| (surface.front_buffer.base_addr, surface.top, surface.left)),
+                    gworlds
+                        .iter()
+                        .find(|record| record.port == current_gworld)
+                        .map(|record| (record.pixmap, record.width, record.height)),
                 );
             }
             // Imaging With QuickDraw (1994), 4-73: EraseRect fills with the

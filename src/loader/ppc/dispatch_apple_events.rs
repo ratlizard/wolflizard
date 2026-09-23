@@ -608,6 +608,9 @@ pub(super) fn ppc_enqueue_open_application_event_if_needed(
     {
         return;
     }
+    if std::env::var_os("SYSTEMLESS_PPC_TRACE_IMPORTS_FROM_TICK").is_some() {
+        eprintln!("[PPC-OAPP] queued at when={when} mask=${event_mask:04X}");
+    }
     event_queue.push_front(PpcQueuedEvent {
         what: PPC_HIGH_LEVEL_EVENT,
         message: PPC_CORE_EVENT_CLASS,

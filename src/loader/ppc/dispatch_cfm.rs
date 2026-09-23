@@ -764,6 +764,7 @@ pub(super) fn ppc_is_explicit_hle_cfm_library(library_name: &str) -> bool {
             | "DriverServicesLib"
             | "ObjectSupportLib"
             | "AppearanceLib"
+            | "ThreadsLib"
             | "DisplayLib"
             | "DrawSprocketLib"
             | "3DfxGlideLib2.x"

@@ -528,12 +528,12 @@ pub(super) fn dispatch_event_import(
                     screen_clut,
                     toolbox_startup,
                 );
-                ppc_enqueue_open_application_event_if_needed(
-                    apple_events,
-                    event_queue,
-                    event_mask,
-                    tick_count,
-                );
+                // Trial: EventAvail does not claim the launch event. Cythera
+                // polls EventAvail at start-up and then runs a ModalDialog,
+                // whose event loop would take a queued 'oapp' and drop it,
+                // so the start screen never opened. GetNextEvent and
+                // WaitNextEvent still queue it.
+                let _ = (&apple_events, event_mask);
             }
             let (what, message, when, where_v, where_h, modifiers, has_event) =
                 ppc_peek_event(event_queue, event_mask, input, os_only, tick_count);

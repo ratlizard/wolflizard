@@ -81,6 +81,19 @@ pub(super) fn dispatch_list_import(context: PpcListDispatchContext<'_>) -> Optio
             } else {
                 PPC_NO_ERR
             };
+            // More Macintosh Toolbox (1993), p. 4-72: theProc names the
+            // list's 'LDEF'. Cythera's is a shell over a procedure it keeps
+            // in the refCon, which the emulator calls in its place.
+            if list != 0 {
+                let proc_id = cpu.gpr[6] as u16 as i16;
+                let shell = vfs_resources
+                    .iter()
+                    .find(|record| {
+                        record.res_type == u32::from_be_bytes(*b"LDEF") && record.res_id == proc_id
+                    })
+                    .is_some_and(|record| dispatch_defproc::ppc_ldef_is_refcon_shell(&record.data));
+                dispatch_defproc::ppc_register_list_proc(list, shell);
+            }
             list_manager.with_record_ref(list, |record| {
                 if record.draw_enabled {
                     ppc_list_redraw(
@@ -97,6 +110,7 @@ pub(super) fn dispatch_list_import(context: PpcListDispatchContext<'_>) -> Optio
             Some(PpcImportAction::Return(list))
         }
         PpcImportDispatcherTarget::LDispose => {
+            dispatch_defproc::ppc_forget_list(cpu.gpr[3]);
             if let Some(record) = list_manager.remove_record(cpu.gpr[3]) {
                 let mut allocator = PpcProcessAllocatorView {
                     memory_manager: process_memory_manager,
@@ -697,7 +711,11 @@ pub(super) fn dispatch_list_import(context: PpcListDispatchContext<'_>) -> Optio
                         }
                     }
                 }
-                if draw_enabled {
+                // More Macintosh Toolbox (1993), p. 4-84: after enabling the
+                // drawing mode, the application redraws the list itself. An
+                // application LDEF is not called here: Cythera turns drawing
+                // on while its list object is still being built.
+                if draw_enabled && !dispatch_defproc::ppc_list_has_app_ldef(record.handle) {
                     ppc_list_redraw(
                         memory,
                         handles,
@@ -764,8 +782,21 @@ pub(super) fn dispatch_list_import(context: PpcListDispatchContext<'_>) -> Optio
             Some(PpcImportAction::ReturnPreserve)
         }
         PpcImportDispatcherTarget::LUpdate => {
+            // More Macintosh Toolbox (1993), p. 4-88: LUpdate redraws the
+            // cells that intersect the update region. For a list drawn by
+            // its own LDEF that decides which cells the application is asked
+            // to draw; an empty region, as in a hidden window, asks for none.
+            let update_bounds = memory
+                .read_u32_be(cpu.gpr[3])
+                .filter(|_| cpu.gpr[3] != 0)
+                .and_then(|_| ppc_region_storage(memory, cpu.gpr[3]))
+                .and_then(|storage| ppc_region_storage_bbox(&storage))
+                .unwrap_or((0, 0, 0, 0));
+            let app_ldef = dispatch_defproc::ppc_list_has_app_ldef(cpu.gpr[4]);
             list_manager.with_record_ref(cpu.gpr[4], |record| {
-                if record.draw_enabled {
+                if record.draw_enabled && app_ldef {
+                    ppc_list_draw_within(memory, gworlds, record, Some(update_bounds));
+                } else if record.draw_enabled {
                     ppc_list_redraw(
                         memory,
                         handles,
@@ -1374,6 +1405,17 @@ pub(super) fn ppc_list_draw(
     gworlds: &[PpcGWorldRecord],
     record: &PpcListRecord,
 ) {
+    ppc_list_draw_within(memory, gworlds, record, None);
+}
+
+/// Draw the list's visible cells; with `limit`, only those whose rectangle
+/// meets it (port-local).
+fn ppc_list_draw_within(
+    memory: &mut PpcSectionMem,
+    gworlds: &[PpcGWorldRecord],
+    record: &PpcListRecord,
+    limit: Option<(i16, i16, i16, i16)>,
+) {
     let Some(list_ptr) = memory.read_u32_be(record.handle).filter(|ptr| *ptr != 0) else {
         return;
     };
@@ -1399,6 +1441,18 @@ pub(super) fn ppc_list_draw(
         .read_u32_be(list_ptr + PPC_LIST_PORT_OFFSET)
         .unwrap_or(PPC_MAIN_GWORLD);
     if ppc_live_quickdraw_surface(memory, gworlds, port).is_none() {
+        return;
+    }
+    if dispatch_defproc::ppc_list_has_app_ldef(record.handle) {
+        ppc_list_queue_app_ldef_draws(
+            record,
+            visible,
+            (view_top, view_left, view_bottom, view_right),
+            (cell_v, cell_h),
+            active,
+            port,
+            limit,
+        );
         return;
     }
     let font = ppc_current_text_font(memory, port);
@@ -1562,4 +1616,59 @@ fn ppc_list_delete_columns(record: &mut PpcListRecord, column: i16, count: i16) 
         .collect();
     record.data_bounds.3 = record.data_bounds.3.saturating_sub(delete.min(i16::MAX as usize) as i16);
     true
+}
+
+/// Ask the list's own LDEF to draw each visible cell (lDrawMsg), with the
+/// cell's data located as LGetCellDataLocation reports it. The rectangle is
+/// clipped to the view, as LRect reports it.
+fn ppc_list_queue_app_ldef_draws(
+    record: &PpcListRecord,
+    visible: (i16, i16, i16, i16),
+    view: (i16, i16, i16, i16),
+    (cell_v, cell_h): (i16, i16),
+    active: bool,
+    port: u32,
+    limit: Option<(i16, i16, i16, i16)>,
+) {
+    let (columns, rows) = ppc_list_dimensions(record.data_bounds);
+    let mut offsets = vec![0u16; columns * rows + 1];
+    for index in 0..columns * rows {
+        let length = ppc_list_cell_for_index(record, index)
+            .and_then(|cell| record.cells.get(&cell))
+            .map_or(0, |bytes| bytes.len() as u16);
+        offsets[index + 1] = offsets[index].saturating_add(length);
+    }
+    for row in visible.0..visible.2 {
+        for column in visible.1..visible.3 {
+            let Some(index) = ppc_list_cell_index(record, row, column) else {
+                continue;
+            };
+            let top = view.0.saturating_add(row.saturating_sub(visible.0).saturating_mul(cell_v.max(1)));
+            let left = view.1.saturating_add(column.saturating_sub(visible.1).saturating_mul(cell_h.max(1)));
+            let rect = (
+                top,
+                left,
+                top.saturating_add(cell_v.max(1)).min(view.2),
+                left.saturating_add(cell_h.max(1)).min(view.3),
+            );
+            if rect.0 >= rect.2 || rect.1 >= rect.3 {
+                continue;
+            }
+            if let Some((top, left, bottom, right)) = limit {
+                if rect.0 >= bottom || rect.2 <= top || rect.1 >= right || rect.3 <= left {
+                    continue;
+                }
+            }
+            dispatch_defproc::ppc_note_app_ldef_call(dispatch_defproc::PpcLdefCall {
+                list: record.handle,
+                message: dispatch_defproc::LDEF_DRAW,
+                select: active && record.selected.contains(&(row, column)),
+                rect,
+                cell: (row, column),
+                data_offset: offsets[index],
+                data_len: offsets[index + 1] - offsets[index],
+                port,
+            });
+        }
+    }
 }

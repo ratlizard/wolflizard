@@ -4523,6 +4523,24 @@ pub(super) fn ppc_maintain_window_vis_regions(
     let mut covering: Vec<Vec<u8>> = Vec::new();
     for window in windows {
         if !ppc_window_is_visible(memory, window) {
+            // Macintosh Toolbox Essentials (1992), p. 4-15: a hidden window
+            // has an empty visRgn, so nothing drawn in it reaches the screen
+            // and an update limited to it draws nothing.
+            let vis_rgn = memory
+                .read_u32_be(window.wrapping_add(PPC_CGRAF_PORT_VIS_RGN_OFFSET))
+                .unwrap_or(0);
+            if vis_rgn != 0 {
+                let _ = ppc_write_region_storage(
+                    allocator.as_deref_mut(),
+                    memory,
+                    heap_cursor,
+                    heap_limit,
+                    last_mem_error,
+                    handles,
+                    vis_rgn,
+                    &[0, 10, 0, 0, 0, 0, 0, 0, 0, 0],
+                );
+            }
             continue;
         }
         let (Some(port), Some(pixel)) =

@@ -25,9 +25,81 @@ pub(super) const WDEF_NEW: u32 = 3;
 #[derive(Clone, Copy)]
 struct DefProcCall {
     target: PpcCallbackTarget,
-    args: [u32; 4],
+    args: [u32; 7],
+    arg_count: usize,
     /// The port to make current for the call (a CDEF draws in its window).
     port: Option<u32>,
+    /// A Rect to place on the guest stack, passed as the third argument.
+    rect: Option<(i16, i16, i16, i16)>,
+}
+
+impl DefProcCall {
+    fn new(target: PpcCallbackTarget, args: &[u32], port: Option<u32>) -> Self {
+        let mut all = [0; 7];
+        all[..args.len()].copy_from_slice(args);
+        Self {
+            target,
+            args: all,
+            arg_count: args.len(),
+            port,
+            rect: None,
+        }
+    }
+}
+
+/// LDEF messages (More Macintosh Toolbox (1993), pp. 4-99 to 4-103).
+pub(super) const LDEF_DRAW: u32 = 1;
+
+/// One cell for an application LDEF to draw.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(super) struct PpcLdefCall {
+    pub(super) list: u32,
+    pub(super) message: u32,
+    pub(super) select: bool,
+    /// The cell's rectangle in the list port's local coordinates.
+    pub(super) rect: (i16, i16, i16, i16),
+    /// (row, column).
+    pub(super) cell: (i16, i16),
+    pub(super) data_offset: u16,
+    pub(super) data_len: u16,
+    pub(super) port: u32,
+}
+
+/// Whether an 'LDEF' is the 68K shell Cythera ships as LDEF 128: on lInitMsg
+/// it clears the list's refCon, and for every other message it calls the
+/// procedure the application has since stored there, with the LDEF's own
+/// arguments. The emulator makes that call itself.
+pub(super) fn ppc_ldef_is_refcon_shell(code: &[u8]) -> bool {
+    code.get(4..8) == Some(b"LDEF")
+        && code.windows(4).any(|window| window == [0x24, 0x68, 0x00, 0x3C])
+}
+
+pub(super) fn ppc_register_list_proc(list: u32, refcon_shell: bool) {
+    APP_LDEF_LISTS.with(|lists| {
+        let mut lists = lists.borrow_mut();
+        if refcon_shell {
+            lists.insert(list);
+        } else {
+            lists.remove(&list);
+        }
+    });
+}
+
+pub(super) fn ppc_list_has_app_ldef(list: u32) -> bool {
+    APP_LDEF_LISTS.with(|lists| lists.borrow().contains(&list))
+}
+
+pub(super) fn ppc_forget_list(list: u32) {
+    APP_LDEF_LISTS.with(|lists| lists.borrow_mut().remove(&list));
+    PENDING_LDEF_CALLS.with(|pending| pending.borrow_mut().retain(|call| call.list != list));
+}
+
+pub(super) fn ppc_note_app_ldef_call(call: PpcLdefCall) {
+    PENDING_LDEF_CALLS.with(|pending| {
+        let mut pending = pending.borrow_mut();
+        pending.retain(|queued| !(queued.list == call.list && queued.cell == call.cell));
+        pending.push(call);
+    });
 }
 
 /// CDEF messages (Macintosh Toolbox Essentials (1992), pp. 5-104 to 5-116).
@@ -72,6 +144,9 @@ struct DefProcCallState {
     import_pc: u32,
     final_lr: u32,
     restore_rtoc: u32,
+    /// The stack pointer at the import; calls that need a Rect on the
+    /// stack place it below this, and it is restored at the end.
+    saved_sp: u32,
     /// The import's argument registers, which the calls clobber; a yielding
     /// import is dispatched again with them.
     saved_args: [u32; 8],
@@ -90,6 +165,10 @@ thread_local! {
     static APP_CDEF_CONTROLS: RefCell<std::collections::HashMap<u32, i16>> =
         RefCell::new(std::collections::HashMap::new());
     static PENDING_CDEF_CALLS: RefCell<Vec<(u32, u32, u32)>> = const { RefCell::new(Vec::new()) };
+    /// Lists whose LDEF is the refCon shell.
+    static APP_LDEF_LISTS: RefCell<std::collections::HashSet<u32>> =
+        RefCell::new(std::collections::HashSet::new());
+    static PENDING_LDEF_CALLS: RefCell<Vec<PpcLdefCall>> = const { RefCell::new(Vec::new()) };
     static DEF_PROC_STACK: RefCell<Vec<DefProcCallState>> = const { RefCell::new(Vec::new()) };
     static PORT_TO_RESTORE: RefCell<Option<u32>> = const { RefCell::new(None) };
     /// ClipAbove for the next WDEF draw (Some(window)), or Some(0) to open
@@ -191,6 +270,7 @@ fn ppc_next_def_proc_call(cpu: &mut PpcCpu, memory: &mut PpcSectionMem) -> Optio
                 PORT_TO_RESTORE.with(|slot| *slot.borrow_mut() = Some(state.saved_port));
                 CLIP_ABOVE.with(|slot| *slot.borrow_mut() = Some(0));
                 cpu.lr = state.final_lr;
+                cpu.gpr[1] = state.saved_sp;
                 cpu.gpr[2] = state.restore_rtoc;
                 cpu.gpr[3..11].copy_from_slice(&state.saved_args);
                 return Some(state.completion);
@@ -211,7 +291,7 @@ fn ppc_next_def_proc_call(cpu: &mut PpcCpu, memory: &mut PpcSectionMem) -> Optio
             // CGrafPort is where grafVars lives. For the length of the call
             // put the colour port's PixMap bounds there, as a basic port
             // would hold them, and restore the handle afterwards.
-            if call.args[2] == WDEF_CALC_REGIONS {
+            if call.port.is_none() && call.args[2] == WDEF_CALC_REGIONS {
                 let window = call.args[1];
                 let bounds = memory
                     .read_u32_be(window.wrapping_add(2))
@@ -255,7 +335,20 @@ fn ppc_next_def_proc_call(cpu: &mut PpcCpu, memory: &mut PpcSectionMem) -> Optio
                 );
             }
             let restore_rtoc = state.restore_rtoc;
-            if install_powerpc_call_arguments(cpu, memory, &call.args).is_none() {
+            let mut args = call.args;
+            cpu.gpr[1] = state.saved_sp;
+            if let Some((top, left, bottom, right)) = call.rect {
+                // Below the import caller's frame, clear of the linkage and
+                // parameter areas the callee will write.
+                let sp = state.saved_sp.wrapping_sub(128) & !15;
+                let rect = sp.wrapping_add(96);
+                for (offset, value) in [(0, top), (2, left), (4, bottom), (6, right)] {
+                    let _ = memory.write_u16_be(rect + offset, value as u16);
+                }
+                args[2] = rect;
+                cpu.gpr[1] = sp;
+            }
+            if install_powerpc_call_arguments(cpu, memory, &args[..call.arg_count]).is_none() {
                 continue;
             }
             return GuestCallEffect::call_guest(
@@ -317,7 +410,9 @@ pub(super) fn ppc_begin_pending_def_procs(
     let pending = PENDING_WDEF_DRAWS.with(|pending| std::mem::take(&mut *pending.borrow_mut()));
     let pending_controls =
         PENDING_CDEF_CALLS.with(|pending| std::mem::take(&mut *pending.borrow_mut()));
-    if pending.is_empty() && pending_controls.is_empty() {
+    let pending_lists =
+        PENDING_LDEF_CALLS.with(|pending| std::mem::take(&mut *pending.borrow_mut()));
+    if pending.is_empty() && pending_controls.is_empty() && pending_lists.is_empty() {
         return action;
     }
     let completion = match action {
@@ -334,6 +429,7 @@ pub(super) fn ppc_begin_pending_def_procs(
         other => {
             PENDING_WDEF_DRAWS.with(|slot| slot.borrow_mut().extend(pending));
             PENDING_CDEF_CALLS.with(|slot| slot.borrow_mut().extend(pending_controls));
+            PENDING_LDEF_CALLS.with(|slot| slot.borrow_mut().extend(pending_lists));
             return other;
         }
     };
@@ -363,11 +459,7 @@ pub(super) fn ppc_begin_pending_def_procs(
                 );
             }
             let target = target?;
-            Some(DefProcCall {
-                target,
-                args: [var_code, window, message, 0],
-                port: None,
-            })
+            Some(DefProcCall::new(target, &[var_code, window, message, 0], None))
         })
         .collect();
     let cdef = u32::from_be_bytes(*b"CDEF");
@@ -387,11 +479,37 @@ pub(super) fn ppc_begin_pending_def_procs(
             }
         }
         let owner = memory.read_u32_be(control.wrapping_add(4)).filter(|ptr| *ptr != 0);
-        Some(DefProcCall {
+        Some(DefProcCall::new(target, &[var_code, handle, message, param], owner))
+    }));
+    // LDEF(lMessage, lSelect, lRect, lCell, lDataOffset, lDataLen, lHandle),
+    // through the procedure in the list's refCon, as the shell calls it.
+    let rtoc = cpu.gpr[2];
+    calls.extend(pending_lists.into_iter().filter_map(|call| {
+        let list_ptr = memory.read_u32_be(call.list).filter(|ptr| *ptr != 0)?;
+        let refcon = memory.read_u32_be(list_ptr + 60).filter(|refcon| *refcon != 0)?;
+        let target = ppc_resolve_callback_target(memory, refcon, rtoc, None)?;
+        if ppc_trace_defproc_enabled() {
+            eprintln!(
+                "[PPC-DEFPROC] LDEF list=${:08X} refCon=${refcon:08X} entry=${:08X} rtoc=${:08X} msg={} cell={:?} rect={:?} data={}+{}",
+                call.list, target.entry, target.rtoc, call.message, call.cell, call.rect, call.data_offset, call.data_len
+            );
+        }
+        let cell = (u32::from(call.cell.0 as u16) << 16) | u32::from(call.cell.1 as u16);
+        let mut def_call = DefProcCall::new(
             target,
-            args: [var_code, handle, message, param],
-            port: owner,
-        })
+            &[
+                call.message,
+                u32::from(call.select),
+                0,
+                cell,
+                u32::from(call.data_offset),
+                u32::from(call.data_len),
+                call.list,
+            ],
+            Some(call.port),
+        );
+        def_call.rect = Some(call.rect);
+        Some(def_call)
     }));
     if calls.is_empty() {
         return Some(completion);
@@ -401,6 +519,7 @@ pub(super) fn ppc_begin_pending_def_procs(
             import_pc: cpu.pc,
             final_lr: cpu.lr,
             restore_rtoc: cpu.gpr[2],
+            saved_sp: cpu.gpr[1],
             saved_args: cpu.gpr[3..11].try_into().expect("eight argument registers"),
             calls,
             next: 0,

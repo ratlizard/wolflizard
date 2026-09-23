@@ -598,24 +598,10 @@ pub fn evaluate_styled_line_break(
             remaining_width: remaining,
         }
     } else {
-        // Break after at least one character even when this is not the
-        // first style run on the line. Returning the start unchanged
-        // reports "nothing fits" without advancing, and a caller that
-        // lays text out by looping until the offset moves never
-        // terminates -- Cythera's message log adds a row per attempt.
-        //
-        // Inside Macintosh does not settle the case; Executor's
-        // src/script.c StyledLineBreak always moves the offset, in
-        // both of its first-word branches.
-        let char_offset = (start + 1).min(end);
-        let mut char_width = 0i32;
-        for offset in start..char_offset {
-            char_width = char_width.saturating_add(measure_char(text[offset]).max(0));
-        }
         StyledLineBreakEvaluation {
             code: SM_BREAK_WORD,
-            output_offset: char_offset as u32,
-            remaining_width: available.saturating_sub(char_width),
+            output_offset: start as u32,
+            remaining_width: available,
         }
     }
 }

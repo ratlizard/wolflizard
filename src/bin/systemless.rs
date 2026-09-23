@@ -987,6 +987,9 @@ struct App {
     last_presented_guest_tick: Option<u32>,
     /// Force the next host present even if the guest tick has not advanced.
     force_next_render: bool,
+    /// Set once a PowerPC application has taken its menu bar away by setting
+    /// MBarHeight to zero; see `native_menu_bar_height`.
+    guest_owns_menu_bar_rows: std::cell::Cell<bool>,
     /// Force a Metal submission even if all visible guest inputs are
     /// unchanged, for native expose/resize events that need a fresh drawable.
     #[cfg(target_os = "macos")]
@@ -1141,6 +1144,7 @@ impl App {
             frame_count: 0,
             last_presented_guest_tick: None,
             force_next_render: true,
+            guest_owns_menu_bar_rows: std::cell::Cell::new(false),
             #[cfg(target_os = "macos")]
             force_gpu_present: true,
             start_fullscreen,
@@ -1202,7 +1206,7 @@ impl App {
                 }),
                 sw,
                 sh,
-                native_menu_bar_height(self.runner.as_ref(), self.native_integrations),
+                native_menu_bar_height(self.runner.as_ref(), self.native_integrations, &self.guest_owns_menu_bar_rows),
             )
         };
         #[cfg(not(target_os = "macos"))]
@@ -1970,7 +1974,7 @@ impl App {
                     None,
                     game_w,
                     game_h,
-                    native_menu_bar_height(Some(runner), self.native_integrations),
+                    native_menu_bar_height(Some(runner), self.native_integrations, &self.guest_owns_menu_bar_rows),
                 );
                 if let Some(window) = self.window.as_ref() {
                     if let Some(scale) = window_guest_resize_scale(window, self.display_scale) {
@@ -1995,7 +1999,7 @@ impl App {
                 None,
                 game_w,
                 game_h,
-                native_menu_bar_height(Some(runner), self.native_integrations),
+                native_menu_bar_height(Some(runner), self.native_integrations, &self.guest_owns_menu_bar_rows),
             );
             let desired_content = presentation_content_rect(
                 stable_content,
@@ -2004,7 +2008,7 @@ impl App {
                     .visible_dialog_structure_bounds(runner.bus()),
                 game_w,
                 game_h,
-                native_menu_bar_height(Some(runner), self.native_integrations),
+                native_menu_bar_height(Some(runner), self.native_integrations, &self.guest_owns_menu_bar_rows),
             );
             let allow_guest_resize = self.window.as_ref().is_some_and(|window| {
                 window_guest_resize_scale(window, self.display_scale).is_some()
@@ -2507,17 +2511,34 @@ fn crop_argb_frame(frame: &mut Vec<u32>, screen_width: u32, content: ContentRect
 }
 
 #[cfg(target_os = "macos")]
-fn native_menu_bar_height(runner: Option<&FixtureRunner>, native_integrations: bool) -> u32 {
+/// The guest rows the native menu bar stands in for, which the presentation
+/// leaves out. A PowerPC application that sets MBarHeight to zero has taken
+/// the whole screen, and one that brings its own menu bar back while the
+/// pointer is at the top (Cythera does) would otherwise resize the picture
+/// each time; after the first zero its rows stay in the picture.
+fn native_menu_bar_height(
+    runner: Option<&FixtureRunner>,
+    native_integrations: bool,
+    guest_owns_menu_bar_rows: &std::cell::Cell<bool>,
+) -> u32 {
     use systemless::memory::MemoryBus;
     if !native_integrations {
         return 0;
     }
     runner.map_or(0, |runner| {
-        u32::from(
+        let height = u32::from(
             runner
                 .bus()
                 .read_word(systemless::memory::globals::addr::MBAR_HEIGHT),
-        )
+        );
+        if height == 0 && runner.is_powerpc_app() {
+            guest_owns_menu_bar_rows.set(true);
+        }
+        if guest_owns_menu_bar_rows.get() {
+            0
+        } else {
+            height
+        }
     })
 }
 
@@ -2912,7 +2933,7 @@ impl App {
                     .visible_dialog_structure_bounds(runner.bus()),
                 sw,
                 sh,
-                native_menu_bar_height(Some(runner), self.native_integrations),
+                native_menu_bar_height(Some(runner), self.native_integrations, &self.guest_owns_menu_bar_rows),
             )
         };
         #[cfg(target_os = "windows")]
@@ -2960,7 +2981,7 @@ impl ApplicationHandler for App {
                     None,
                     initial_screen_width(),
                     initial_screen_height(),
-                    native_menu_bar_height(self.runner.as_ref(), self.native_integrations),
+                    native_menu_bar_height(self.runner.as_ref(), self.native_integrations, &self.guest_owns_menu_bar_rows),
                 );
                 (content.width, content.height)
             };
@@ -5804,11 +5825,16 @@ mod tests {
         use systemless::memory::{globals::addr::MBAR_HEIGHT, MemoryBus};
         let mut runner = FixtureRunner::new(8 * 1024 * 1024, Default::default());
         runner.bus_mut().write_word(MBAR_HEIGHT, 24);
-        assert_eq!(native_menu_bar_height(Some(&runner), true), 24);
-        assert_eq!(native_menu_bar_height(Some(&runner), false), 0);
+        let owns = std::cell::Cell::new(false);
+        assert_eq!(native_menu_bar_height(Some(&runner), true, &owns), 24);
+        assert_eq!(native_menu_bar_height(Some(&runner), false, &owns), 0);
         assert_eq!(runner.bus().read_word(MBAR_HEIGHT), 24);
         runner.bus_mut().write_word(MBAR_HEIGHT, 0);
-        assert_eq!(native_menu_bar_height(Some(&runner), true), 0);
+        assert_eq!(native_menu_bar_height(Some(&runner), true, &owns), 0);
+        // A 68K application's rows follow MBarHeight back.
+        runner.bus_mut().write_word(MBAR_HEIGHT, 24);
+        assert_eq!(native_menu_bar_height(Some(&runner), true, &owns), 24);
+        assert!(!owns.get());
     }
 
     #[cfg(target_os = "macos")]

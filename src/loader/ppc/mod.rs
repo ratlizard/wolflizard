@@ -2147,6 +2147,8 @@ pub enum PpcImportDispatcherTarget {
     LMGetSFSaveDisk,
     LMSetSFSaveDisk,
     LMGetRndSeed,
+    LMGetHiliteMode,
+    LMSetHiliteMode,
     LMSetRndSeed,
     SetCurrentA5,
     SetA5,
@@ -16435,6 +16437,8 @@ fn dispatcher_target_for_import(
         ("InterfaceLib", "LMGetSFSaveDisk") => PpcImportDispatcherTarget::LMGetSFSaveDisk,
         ("InterfaceLib", "LMSetSFSaveDisk") => PpcImportDispatcherTarget::LMSetSFSaveDisk,
         ("InterfaceLib", "LMGetRndSeed") => PpcImportDispatcherTarget::LMGetRndSeed,
+        ("InterfaceLib", "LMGetHiliteMode") => PpcImportDispatcherTarget::LMGetHiliteMode,
+        ("InterfaceLib", "LMSetHiliteMode") => PpcImportDispatcherTarget::LMSetHiliteMode,
         ("InterfaceLib", "LMSetRndSeed") => PpcImportDispatcherTarget::LMSetRndSeed,
         ("InterfaceLib", "SetCurrentA5") => PpcImportDispatcherTarget::SetCurrentA5,
         ("InterfaceLib", "SetA5") => PpcImportDispatcherTarget::SetA5,
@@ -19891,6 +19895,8 @@ fn dispatch_supported_import(context: PpcDispatchContext<'_>) -> Option<PpcImpor
         | PpcImportDispatcherTarget::LMGetSFSaveDisk
         | PpcImportDispatcherTarget::LMSetSFSaveDisk
         | PpcImportDispatcherTarget::LMGetRndSeed
+        | PpcImportDispatcherTarget::LMGetHiliteMode
+        | PpcImportDispatcherTarget::LMSetHiliteMode
         | PpcImportDispatcherTarget::LMSetRndSeed
         | PpcImportDispatcherTarget::SetCurrentA5
         | PpcImportDispatcherTarget::SetA5

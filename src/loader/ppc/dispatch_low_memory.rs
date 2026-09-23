@@ -2,6 +2,8 @@
 
 use super::*;
 
+const PPC_HILITE_MODE_ADDR: u32 = 0x0938;
+
 pub(super) struct PpcLowMemoryDispatchContext<'a> {
     pub(super) target: &'a PpcImportDispatcherTarget,
     pub(super) cpu: &'a PpcCpu,
@@ -133,6 +135,16 @@ pub(super) fn dispatch_low_memory_import(
         PpcImportDispatcherTarget::LMGetRndSeed => Some(PpcImportAction::Return(
             memory.read_u32_be(PPC_RAND_SEED_ADDR).unwrap_or(1),
         )),
+        // Imaging With QuickDraw (1994), p. 4-42: HiliteMode is the low-memory
+        // byte at $0938; clearing its bit 7 makes the next inverting drawing
+        // use the highlight colour. The drawing here does not read it.
+        PpcImportDispatcherTarget::LMGetHiliteMode => Some(PpcImportAction::Return(u32::from(
+            memory.read_u8(PPC_HILITE_MODE_ADDR).unwrap_or(0xFF),
+        ))),
+        PpcImportDispatcherTarget::LMSetHiliteMode => {
+            let _ = memory.write_u8(PPC_HILITE_MODE_ADDR, cpu.gpr[3] as u8);
+            Some(PpcImportAction::ReturnPreserve)
+        }
         PpcImportDispatcherTarget::LMSetRndSeed => {
             // Inside Macintosh: Memory (1992), pp. 2-6--2-8: RndSeed is the
             // 32-bit random-number seed low-memory global at $0156.

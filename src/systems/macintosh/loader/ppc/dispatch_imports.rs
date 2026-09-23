@@ -2838,6 +2838,7 @@ pub(crate) fn dispatch_supported_import(
         | PpcImportDispatcherTarget::LMGetRndSeed
         | PpcImportDispatcherTarget::LMGetHiliteMode
         | PpcImportDispatcherTarget::LMSetHiliteMode
+        | PpcImportDispatcherTarget::LMGetMenuHook
         | PpcImportDispatcherTarget::LMSetRndSeed
         | PpcImportDispatcherTarget::SetCurrentA5
         | PpcImportDispatcherTarget::SetA5

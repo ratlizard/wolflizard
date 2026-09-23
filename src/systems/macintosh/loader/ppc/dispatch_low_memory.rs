@@ -3,6 +3,7 @@
 use super::*;
 
 const PPC_HILITE_MODE_ADDR: u32 = 0x0938;
+const PPC_MENU_HOOK_ADDR: u32 = 0x0a30;
 
 pub(super) struct PpcLowMemoryDispatchContext<'a> {
     pub(super) target: &'a PpcImportDispatcherTarget,
@@ -29,7 +30,7 @@ pub(super) fn dispatch_low_memory_import(
         PpcImportDispatcherTarget::LMSetMenuHook => {
             // Inside Macintosh Volume III (1985), low-memory globals:
             // MenuHook at $A30 is the callback address used by MenuSelect.
-            let _ = memory.write_u32_be(0x0a30, cpu.gpr[3]);
+            let _ = memory.write_u32_be(PPC_MENU_HOOK_ADDR, cpu.gpr[3]);
             Some(PpcImportAction::ReturnPreserve)
         }
         PpcImportDispatcherTarget::LMGetMenuFlash => Some(PpcImportAction::Return(ppc_i16_result(
@@ -237,6 +238,13 @@ pub(super) fn dispatch_low_memory_import(
             let _ = memory.write_u8(PPC_HILITE_MODE_ADDR, cpu.gpr[3] as u8);
             Some(PpcImportAction::ReturnPreserve)
         }
+        // Inside Macintosh Volume I (1985), p. I-356: MenuHook, the long word
+        // at $0A30, is a routine MenuSelect calls repeatedly while the mouse
+        // is down. It is kept here; the menu tracking here does not call it.
+        // Cythera sets one around InputSprocket's configuration dialog.
+        PpcImportDispatcherTarget::LMGetMenuHook => Some(PpcImportAction::Return(
+            memory.read_u32_be(PPC_MENU_HOOK_ADDR).unwrap_or(0),
+        )),
         PpcImportDispatcherTarget::LMSetRndSeed => {
             // Inside Macintosh: Memory (1992), pp. 2-6--2-8: RndSeed is the
             // 32-bit random-number seed low-memory global at $0156.

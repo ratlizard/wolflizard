@@ -10181,6 +10181,7 @@
             double_buffer_play_count: 0,
             last_double_buffer_channel: 0,
             last_double_buffer_header: 0,
+            tunes: Default::default(),
         });
         {
             let ppc_app = app.ppc.as_mut().expect("PPC app");
@@ -10320,6 +10321,7 @@
             double_buffer_play_count: 0,
             last_double_buffer_channel: 0,
             last_double_buffer_header: 0,
+            tunes: Default::default(),
         });
         {
             let ppc_app = app.ppc.as_mut().expect("PPC app");

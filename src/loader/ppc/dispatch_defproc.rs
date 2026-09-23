@@ -155,7 +155,7 @@ fn ppc_app_def_proc_target(
     default_rtoc: u32,
 ) -> Option<PpcCallbackTarget> {
     let handle = ppc_app_def_proc_handle(vfs_resources, res_type, res_id)?;
-    if std::env::var_os("SYSTEMLESS_PPC_TRACE_DEFPROC").is_some() {
+    if ppc_trace_defproc_enabled() {
         let records: Vec<String> = vfs_resources
             .iter()
             .filter(|record| record.res_type == res_type && record.res_id == res_id)
@@ -224,7 +224,7 @@ fn ppc_next_def_proc_call(cpu: &mut PpcCpu, memory: &mut PpcSectionMem) -> Optio
                     let _ = memory.write_u32_be(window.wrapping_add(8), bounds);
                 }
             }
-            if std::env::var_os("SYSTEMLESS_PPC_TRACE_DEFPROC").is_some() {
+            if ppc_trace_defproc_enabled() {
                 let window = call.args[1];
                 let bbox = |memory: &mut PpcSectionMem, rgn_handle: u32| -> String {
                     memory
@@ -356,7 +356,7 @@ pub(super) fn ppc_begin_pending_def_procs(
                     let _ = memory.write_u32_be(window.wrapping_add(126), handle);
                 }
             }
-            if std::env::var_os("SYSTEMLESS_PPC_TRACE_DEFPROC").is_some() {
+            if ppc_trace_defproc_enabled() {
                 eprintln!(
                     "[PPC-DEFPROC] WDEF {res_id} var={var_code} window=${window:08X} message={message} target={}",
                     target.map_or("none".to_string(), |t| format!("${:08X}", t.entry))

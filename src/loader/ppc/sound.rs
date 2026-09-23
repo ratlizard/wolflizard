@@ -129,6 +129,19 @@ pub struct PpcSoundState {
     pub double_buffer_play_count: u32,
     pub last_double_buffer_channel: u32,
     pub last_double_buffer_header: u32,
+    /// QuickTime music: the `'tune'` components the application opened.
+    pub(crate) tunes: PpcTuneState,
+}
+
+/// The `'tune'` component instances opened through `OpenDefaultComponent`,
+/// played by the same player as the 68K Component Manager path.
+#[derive(Debug, Clone, Default)]
+pub(crate) struct PpcTuneState {
+    pub(crate) players: std::collections::HashMap<u32, crate::trap::dispatch::TunePlayerState>,
+    pub(crate) next_instance: u32,
+    /// Substitute music the host installed, keyed by tune checksum; the
+    /// runner keeps it equal to the 68K dispatcher's `installed_tunes`.
+    pub(crate) installed: std::collections::HashMap<u32, Vec<u8>>,
 }
 
 impl PartialEq for PpcSoundState {

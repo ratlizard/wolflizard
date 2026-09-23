@@ -139,6 +139,8 @@ use std::sync::OnceLock;
 
 mod dispatch_cfm;
 mod dispatch_defproc;
+mod dispatch_tunes;
+pub use dispatch_tunes::PpcTuneOp;
 use dispatch_cfm::*;
 mod dispatch_apple_events;
 use dispatch_apple_events::*;
@@ -1942,6 +1944,7 @@ pub enum PpcImportDispatcherTarget {
     StdRealloc,
     StdStrcpy,
     StdPascalString(PpcPascalStringOp),
+    QuickTimeMusic(PpcTuneOp),
     StdStrcat,
     StdStrncpy,
     StdStrncat,
@@ -2893,6 +2896,21 @@ impl PpcMemoryWriteObserver for PpcWatchObserver {
 }
 
 static PPC_WATCH_RANGE: OnceLock<Option<PpcWatchRange>> = OnceLock::new();
+
+/// Trial trace switches, read once.
+fn ppc_trace_imports_from_tick() -> Option<u32> {
+    static FROM: OnceLock<Option<u32>> = OnceLock::new();
+    *FROM.get_or_init(|| {
+        std::env::var("SYSTEMLESS_PPC_TRACE_IMPORTS_FROM_TICK")
+            .ok()
+            .and_then(|value| value.parse::<u32>().ok())
+    })
+}
+
+pub(super) fn ppc_trace_defproc_enabled() -> bool {
+    static ENABLED: OnceLock<bool> = OnceLock::new();
+    *ENABLED.get_or_init(|| std::env::var_os("SYSTEMLESS_PPC_TRACE_DEFPROC").is_some())
+}
 
 fn ppc_watch_range() -> Option<PpcWatchRange> {
     *PPC_WATCH_RANGE.get_or_init(|| {
@@ -13024,6 +13042,11 @@ fn dispatcher_target_for_import(
         }
         // File previews and thumbnails are cosmetic and nothing reads them
         // back; decline them the way a missing codec does (codecUnimpErr).
+        ("QuickTimeLib", symbol) if dispatch_tunes::ppc_tune_symbol_op(symbol).is_some() => {
+            PpcImportDispatcherTarget::QuickTimeMusic(
+                dispatch_tunes::ppc_tune_symbol_op(symbol).expect("checked"),
+            )
+        }
         ("QuickTimeLib" | "InterfaceLib", "MakeFilePreview" | "AddFilePreview" | "MakeThumbnailFromPixMap") => {
             PpcImportDispatcherTarget::ReturnError(-8962)
         }
@@ -14391,10 +14414,7 @@ fn dispatch_supported_import(context: PpcDispatchContext<'_>) -> Option<PpcImpor
         draw_sprocket,
     } = context;
     // Trial trace: every import from a given tick on.
-    if let Some(from) = std::env::var("SYSTEMLESS_PPC_TRACE_IMPORTS_FROM_TICK")
-        .ok()
-        .and_then(|value| value.parse::<u32>().ok())
-    {
+    if let Some(from) = ppc_trace_imports_from_tick() {
         if *tick_count >= from {
             eprintln!(
                 "[PPC-IMPORT] tick={} {}:{} r3=${:08X} lr=${:08X} r4=${:08X} r5=${:08X} r6=${:08X}",
@@ -14402,6 +14422,11 @@ fn dispatch_supported_import(context: PpcDispatchContext<'_>) -> Option<PpcImpor
                 cpu.gpr[4], cpu.gpr[5], cpu.gpr[6]
             );
         }
+    }
+    if let Some(action) =
+        dispatch_tunes::dispatch_tune_import(binding, cpu, memory, sound, *tick_count)
+    {
+        return Some(action);
     }
     let _menu_root = (matches!(
         binding.dispatcher_target,
@@ -16776,6 +16801,9 @@ fn dispatch_supported_import(context: PpcDispatchContext<'_>) -> Option<PpcImpor
         | PpcImportDispatcherTarget::Microseconds
         | PpcImportDispatcherTarget::AbsoluteToNanoseconds => {
             unreachable!("time imports return through dispatch_time_import")
+        }
+        PpcImportDispatcherTarget::QuickTimeMusic(_) => {
+            unreachable!("tune imports return through dispatch_tune_import")
         }
         PpcImportDispatcherTarget::ReturnError(error) => {
             Some(PpcImportAction::Return(ppc_i16_result(error)))
@@ -19251,6 +19279,9 @@ fn ppc_gestalt_response(selector: u32) -> Option<(u32, i16)> {
         // gestaltQuickTimeFeatures: gestaltPPCQuickTimeLibPresent (bit 0),
         // since QuickTimeLib's imports are bound here.
         b"qtrs" => Some((1, PPC_NO_ERR)),
+        // gestaltComponentMgr: present. Cythera's GMSInit decides from this
+        // one answer whether the game has music, as on the 68K path.
+        b"cpnt" => Some((1, PPC_NO_ERR)),
         b"drag" => Some((0, PPC_NO_ERR)),
         b"os  " => Some((0x00FF, PPC_NO_ERR)),
         b"powr" => Some((0, PPC_NO_ERR)),
@@ -24748,7 +24779,7 @@ fn ppc_copy_bits(
         // port's own pixels, where its local coordinates are the
         // destination's. A rectangular result narrows the copy and keeps the
         // row path; anything else becomes (part of) the mask.
-        if std::env::var_os("SYSTEMLESS_PPC_TRACE_DEFPROC").is_some() {
+        if ppc_trace_defproc_enabled() {
             eprintln!(
                 "[PPC-CLIP] CopyBits dst=${dst_bits_ptr:08X} port=${current_gworld:08X} match={}",
                 dst_bits_ptr == current_gworld.wrapping_add(2)

@@ -4515,7 +4515,7 @@ pub(super) fn ppc_maintain_window_vis_regions(
     if !changed {
         return;
     }
-    if std::env::var_os("SYSTEMLESS_PPC_TRACE_DEFPROC").is_some() {
+    if ppc_trace_defproc_enabled() {
         eprintln!("[PPC-VIS] recompute {:?}", signature);
     }
     LAST_VIS_SIGNATURE.with(|last| *last.borrow_mut() = signature);
@@ -4554,7 +4554,7 @@ pub(super) fn ppc_maintain_window_vis_regions(
                 .unwrap_or(0);
             if let Some(storage) = ppc_region_storage_from_rows(top.saturating_add(dv), &local_rows) {
                 if vis_rgn != 0 {
-                    let trace = std::env::var_os("SYSTEMLESS_PPC_TRACE_DEFPROC").is_some();
+                    let trace = ppc_trace_defproc_enabled();
                     let result = ppc_write_region_storage(
                         allocator.as_deref_mut(),
                         memory,

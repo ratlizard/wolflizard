@@ -3558,6 +3558,9 @@ impl FixtureRunner {
         } else {
             SubstituteTune::Unusable
         };
+        if let Some(ppc_app) = self.native.application_mut() {
+            ppc_app.sound.tunes.installed.insert(checksum, bytes.clone());
+        }
         self.dispatcher.installed_tunes.insert(checksum, bytes);
         self.forget_rendered_tunes();
         kind
@@ -3566,6 +3569,9 @@ impl FixtureRunner {
     /// Forget every installed substitute, so the game's own music plays.
     pub fn clear_substitute_tunes(&mut self) {
         self.dispatcher.installed_tunes.clear();
+        if let Some(ppc_app) = self.native.application_mut() {
+            ppc_app.sound.tunes.installed.clear();
+        }
         self.forget_rendered_tunes();
     }
 
@@ -3581,6 +3587,11 @@ impl FixtureRunner {
     fn forget_rendered_tunes(&mut self) {
         for player in self.dispatcher.tune_players.values_mut() {
             player.rendered = None;
+        }
+        if let Some(ppc_app) = self.native.application_mut() {
+            for player in ppc_app.sound.tunes.players.values_mut() {
+                player.rendered = None;
+            }
         }
     }
 
@@ -3601,7 +3612,12 @@ impl FixtureRunner {
             d.tune_players.len(),
             self.audio_buffer.len(),
         );
-        for (instance, player) in &d.tune_players {
+        let native_players = self
+            .native
+            .application()
+            .map(|ppc_app| ppc_app.sound.tunes.players.iter().collect::<Vec<_>>())
+            .unwrap_or_default();
+        for (instance, player) in d.tune_players.iter().chain(native_players) {
             out.push_str(&format!(
                 " [tune ${instance:08X}: queue {} playing {} until {:?} volume {:.2} rendered {}]",
                 player.queue.len(),
@@ -4911,6 +4927,7 @@ impl FixtureRunner {
             crate::guest_procedure::GuestIsa::PowerPc
         ));
         ppc_app.set_ui_theme(self.config.ui_theme);
+        ppc_app.sound.tunes.installed = self.dispatcher.installed_tunes.clone();
         ppc_app
             .toolbox_startup
             .execution

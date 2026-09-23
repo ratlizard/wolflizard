@@ -1605,6 +1605,9 @@ pub enum PpcImportDispatcherTarget {
     GetIndPattern,
     GetPixPat,
     NewPixPat,
+    GetAuxiliaryControlRecord,
+    GetAuxWin,
+    GetMenuItemCommandID,
     PixPatChanged,
     DisposePixPat,
     GetPictInfo,
@@ -15640,6 +15643,13 @@ fn dispatcher_target_for_import(
         ("InterfaceLib", "GetIndPattern") => PpcImportDispatcherTarget::GetIndPattern,
         ("InterfaceLib", "GetPixPat") => PpcImportDispatcherTarget::GetPixPat,
         ("InterfaceLib", "NewPixPat") => PpcImportDispatcherTarget::NewPixPat,
+        ("InterfaceLib", "GetAuxiliaryControlRecord" | "GetAuxCtl") => {
+            PpcImportDispatcherTarget::GetAuxiliaryControlRecord
+        }
+        ("InterfaceLib", "GetAuxWin") => PpcImportDispatcherTarget::GetAuxWin,
+        ("AppearanceLib" | "InterfaceLib", "GetMenuItemCommandID") => {
+            PpcImportDispatcherTarget::GetMenuItemCommandID
+        }
         ("InterfaceLib", "PixPatChanged") => PpcImportDispatcherTarget::PixPatChanged,
         ("InterfaceLib", "DisposePixPat" | "DisposPixPat") => {
             PpcImportDispatcherTarget::DisposePixPat
@@ -18777,6 +18787,9 @@ fn dispatch_supported_import(context: PpcDispatchContext<'_>) -> Option<PpcImpor
         | PpcImportDispatcherTarget::GetIndPattern
         | PpcImportDispatcherTarget::GetPixPat
         | PpcImportDispatcherTarget::NewPixPat
+        | PpcImportDispatcherTarget::GetAuxiliaryControlRecord
+        | PpcImportDispatcherTarget::GetAuxWin
+        | PpcImportDispatcherTarget::GetMenuItemCommandID
         | PpcImportDispatcherTarget::PixPatChanged
         | PpcImportDispatcherTarget::DisposePixPat
         | PpcImportDispatcherTarget::GetIntlResource => {

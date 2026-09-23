@@ -827,6 +827,7 @@ pub enum PpcImportDispatcherTarget {
     LDispose,
     LAddRow,
     LDelRow,
+    LDelColumn,
     LGetSelect,
     LNextCell,
     LSetSelect,
@@ -3684,6 +3685,12 @@ pub(crate) fn dispatcher_target_for_import(
         // a port's fields were changed directly. Drawing here reads the port's
         // fields at each call, so there is nothing to refresh.
         ("InterfaceLib", "PortChanged") => PpcImportDispatcherTarget::NoOpPreserve,
+        // Nothing here reads the system font globals, and LastSPExtra only
+        // invalidates the Font Manager's width cache; Cythera sets all three
+        // around PopUpMenuSelect to draw a pop-up in the current font.
+        ("InterfaceLib", "LMSetSysFontFam" | "LMSetSysFontSize" | "LMSetLastSPExtra") => {
+            PpcImportDispatcherTarget::NoOpPreserve
+        }
         ("InterfaceLib" | "AppearanceLib" | "CarbonLib", "ClearMenuBar" | "clearmenubar") => {
             PpcImportDispatcherTarget::ClearMenuBar
         }
@@ -5235,6 +5242,7 @@ pub(crate) fn dispatcher_target_for_import(
         ("InterfaceLib", "LDispose") => PpcImportDispatcherTarget::LDispose,
         ("InterfaceLib", "LAddRow") => PpcImportDispatcherTarget::LAddRow,
         ("InterfaceLib", "LDelRow") => PpcImportDispatcherTarget::LDelRow,
+        ("InterfaceLib", "LDelColumn") => PpcImportDispatcherTarget::LDelColumn,
         ("InterfaceLib", "LGetSelect") => PpcImportDispatcherTarget::LGetSelect,
         ("InterfaceLib", "LNextCell") => PpcImportDispatcherTarget::LNextCell,
         ("InterfaceLib", "LSetSelect") => PpcImportDispatcherTarget::LSetSelect,

@@ -629,21 +629,24 @@ pub(super) fn dispatch_window_import(
             );
             Some(PpcImportAction::ReturnPreserve)
         }
+        // Macintosh Toolbox Essentials (1992), p. 4-119: CalcVisBehind
+        // recalculates the visRgn of startWindow and every window behind it.
+        // Each is its content within the gray region less the windows in
+        // front, so a backdrop's update cannot paint over a window above it.
         PpcImportDispatcherTarget::CalcVisBehind => {
-            let mut allocator = PpcProcessAllocatorView {
-                memory_manager: process_memory_manager,
-            };
-            ppc_calc_vis_behind(
-                Some(&mut allocator),
+            let gray_rgn = (!toolbox_startup.host_menu_bar_hidden).then_some(PPC_GRAY_RGN_HANDLE);
+            ppc_recalculate_vis_regions_behind(
+                process_memory_manager,
                 memory,
-                gworlds,
-                cpu.gpr[3],
-                cpu.gpr[4],
+                window_list,
+                Some(cpu.gpr[3]),
+                gray_rgn,
                 heap_cursor,
                 heap_limit,
                 last_mem_error,
                 handles,
             );
+            *last_mem_error = PPC_NO_ERR;
             Some(PpcImportAction::ReturnPreserve)
         }
         PpcImportDispatcherTarget::SelectWindow => {
@@ -1853,11 +1856,46 @@ pub(super) fn ppc_recalculate_window_vis_regions(
     last_mem_error: &mut i16,
     handles: &mut Vec<PpcHandleRecord>,
 ) {
+    ppc_recalculate_vis_regions_behind(
+        process_memory_manager,
+        memory,
+        window_list,
+        None,
+        None,
+        heap_cursor,
+        heap_limit,
+        last_mem_error,
+        handles,
+    );
+}
+
+/// Rebuild the visRgn of `start` and every window behind it, or of every
+/// window when `start` is `None`: the content region, intersected with
+/// `gray_rgn` when one is given, less the structure of each visible window
+/// in front.
+#[allow(clippy::too_many_arguments)]
+pub(super) fn ppc_recalculate_vis_regions_behind(
+    process_memory_manager: &mut ProcessNativeMemoryManager,
+    memory: &mut PpcSectionMem,
+    window_list: &SharedProcessWindowList,
+    start: Option<u32>,
+    gray_rgn: Option<u32>,
+    heap_cursor: &mut u32,
+    heap_limit: u32,
+    last_mem_error: &mut i16,
+    handles: &mut Vec<PpcHandleRecord>,
+) {
     let mut allocator = PpcProcessAllocatorView {
         memory_manager: process_memory_manager,
     };
     let front_to_back = window_list.windows();
-    for window in front_to_back.iter().copied() {
+    let first = start
+        .and_then(|start| front_to_back.iter().position(|&window| window == start))
+        .unwrap_or(0);
+    if start.is_some_and(|start| !front_to_back.contains(&start)) {
+        return;
+    }
+    for window in front_to_back[first..].iter().copied() {
         let Some(vis_rgn) = memory.read_u32_be(window + PPC_CGRAF_PORT_VIS_RGN_OFFSET) else {
             continue;
         };
@@ -1880,6 +1918,20 @@ pub(super) fn ppc_recalculate_window_vis_regions(
         ) != PPC_NO_ERR
         {
             continue;
+        }
+        if let Some(gray_rgn) = gray_rgn {
+            let _ = ppc_region_boolean_op(
+                Some(&mut allocator),
+                memory,
+                heap_cursor,
+                heap_limit,
+                last_mem_error,
+                handles,
+                vis_rgn,
+                gray_rgn,
+                vis_rgn,
+                PpcRegionBooleanOp::Intersection,
+            );
         }
         let occluders = crate::window_manager::window_occluders(
             front_to_back.iter().copied(),
@@ -2329,104 +2381,6 @@ pub(super) fn ppc_paint_one(
 }
 
 #[allow(clippy::too_many_arguments)]
-pub(super) fn ppc_calc_vis_behind(
-    mut allocator: Option<&mut PpcProcessAllocatorView<'_>>,
-    memory: &mut PpcSectionMem,
-    gworlds: &[PpcGWorldRecord],
-    start_window: u32,
-    clobbered_rgn: u32,
-    heap_cursor: &mut u32,
-    heap_limit: u32,
-    last_mem_error: &mut i16,
-    handles: &mut Vec<PpcHandleRecord>,
-) {
-    let Some(clobbered) = ppc_read_rgn_bbox(memory, clobbered_rgn) else {
-        return;
-    };
-    let mut windows = gworlds
-        .iter()
-        .rev()
-        .filter(|record| {
-            !matches!(record.port, PPC_MAIN_GWORLD | PPC_DSP_BACK_GWORLD)
-                && ppc_window_is_visible(memory, record.port)
-        })
-        .collect::<Vec<_>>();
-    if start_window != 0 {
-        if let Some(index) = windows
-            .iter()
-            .position(|record| record.port == start_window)
-        {
-            windows.drain(0..index);
-        } else {
-            windows.clear();
-        }
-    }
-
-    for record in windows {
-        let Some((port_top, port_left, port_bottom, port_right)) =
-            ppc_read_rect(memory, record.port.wrapping_add(16))
-        else {
-            continue;
-        };
-        let Some((pixel_top, pixel_left, _, _)) =
-            ppc_read_rect(memory, record.pixmap.wrapping_add(6))
-        else {
-            continue;
-        };
-        let global = (
-            port_top.saturating_sub(pixel_top),
-            port_left.saturating_sub(pixel_left),
-            port_bottom.saturating_sub(pixel_top),
-            port_right.saturating_sub(pixel_left),
-        );
-        let intersects = global.0 < clobbered.2
-            && clobbered.0 < global.2
-            && global.1 < clobbered.3
-            && clobbered.1 < global.3;
-        if !intersects {
-            continue;
-        }
-
-        let mbar_height = memory.read_u16_be(PPC_MBAR_HEIGHT_ADDR).unwrap_or(20) as i16;
-        let local_menu_bottom = mbar_height.saturating_add(pixel_top);
-        let local_top = port_top.max(local_menu_bottom);
-        let vis_rgn_addr = record.port.wrapping_add(24);
-        let mut vis_rgn = memory.read_u32_be(vis_rgn_addr).unwrap_or(0);
-        if ppc_rgn_ptr(memory, vis_rgn).is_none() {
-            vis_rgn = ppc_allocator_view_new_rgn(
-                allocator.as_deref_mut(),
-                memory,
-                heap_cursor,
-                heap_limit,
-                last_mem_error,
-                handles,
-            );
-            if vis_rgn == 0 || memory.write_u32_be(vis_rgn_addr, vis_rgn).is_none() {
-                *last_mem_error = PPC_MEM_FULL_ERR;
-                return;
-            }
-        }
-        if ppc_write_rgn_bbox(
-            memory,
-            vis_rgn,
-            local_top,
-            port_left,
-            port_bottom,
-            port_right,
-        )
-        .is_none()
-        {
-            *last_mem_error = PPC_PARAM_ERR;
-            return;
-        }
-    }
-
-    // Macintosh Toolbox Essentials (1992), p. 4-119: CalcVisBehind walks
-    // startWindow and every window behind it whose content intersects the
-    // clobbered desktop region, recalculating each window's local visRgn.
-    *last_mem_error = PPC_NO_ERR;
-}
-
 #[allow(clippy::too_many_arguments)]
 pub(super) fn ppc_paint_behind(
     mut allocator: Option<&mut PpcProcessAllocatorView<'_>>,

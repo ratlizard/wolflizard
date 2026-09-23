@@ -614,6 +614,9 @@ const PPC_MAIN_PIXMAP_HANDLE: u32 = 0x02f0_0300;
 const PPC_MAIN_PIXMAP: u32 = 0x02f0_0400;
 const PPC_GRAY_RGN_HANDLE: u32 = 0x02f0_0500;
 const PPC_GRAY_RGN: u32 = 0x02f0_0600;
+/// Room for GrayRgn's region data, which lies outside the application heap:
+/// everything up to the next fixed record.
+const PPC_GRAY_RGN_CAPACITY: u32 = 0x100;
 const PPC_MAIN_DCE_HANDLE: u32 = 0x02f0_0700;
 const PPC_MAIN_DCE: u32 = 0x02f0_0800;
 const PPC_MAIN_CTABLE_HANDLE: u32 = 0x02f0_0900;
@@ -10848,7 +10851,7 @@ fn load_pef_application_with_config_and_optional_system_reservation(
     memory.add_region(PPC_MAIN_PIXMAP_HANDLE, vec![0u8; 4]);
     memory.add_region(PPC_MAIN_PIXMAP, vec![0u8; PPC_PIXMAP_SIZE as usize]);
     memory.add_region(PPC_GRAY_RGN_HANDLE, vec![0u8; 4]);
-    memory.add_region(PPC_GRAY_RGN, vec![0u8; 10]);
+    memory.add_region(PPC_GRAY_RGN, vec![0u8; PPC_GRAY_RGN_CAPACITY as usize]);
     memory.add_region(PPC_MAIN_DCE_HANDLE, vec![0u8; 4]);
     memory.add_region(PPC_MAIN_DCE, vec![0u8; 52]);
     memory.add_region(PPC_MAIN_CTABLE_HANDLE, vec![0u8; 4]);
@@ -40480,6 +40483,20 @@ fn ppc_write_region_storage(
     rgn_handle: u32,
     storage: &[u8],
 ) -> i16 {
+    // GrayRgn is not a heap handle, so it cannot be resized, but an
+    // application may still change it: Cythera takes the menu bar out of it
+    // with DiffRgn and gives it back with UnionRgn when it shows and hides
+    // its menu bar.
+    if rgn_handle == PPC_GRAY_RGN_HANDLE
+        && memory.read_u32_be(rgn_handle) == Some(PPC_GRAY_RGN)
+        && storage.len() <= PPC_GRAY_RGN_CAPACITY as usize
+    {
+        return if memory.write_bytes(PPC_GRAY_RGN, storage).is_some() {
+            PPC_NO_ERR
+        } else {
+            PPC_PARAM_ERR
+        };
+    }
     let result = ppc_allocator_view_resize_handle(
         allocator,
         memory,

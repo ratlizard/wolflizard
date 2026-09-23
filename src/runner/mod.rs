@@ -3145,9 +3145,9 @@ impl FixtureRunner {
     }
 
     /// Explicitly select the display depth used by subsequently loaded native
-    /// PowerPC applications. Leaving this unset preserves the historical
-    /// 16-bit PowerPC architecture default, independently of the configured
-    /// 68K framebuffer depth.
+    /// PowerPC applications. Leaving this unset uses
+    /// `DEFAULT_POWERPC_SCREEN_DEPTH`, independently of the configured 68K
+    /// framebuffer depth.
     pub fn set_powerpc_screen_depth(
         &mut self,
         screen_depth: u16,

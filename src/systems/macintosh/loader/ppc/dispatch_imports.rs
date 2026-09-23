@@ -232,6 +232,18 @@ pub(crate) fn dispatch_supported_import(
         event_queue,
         draw_sprocket,
     } = context;
+    // Trial trace: every import from a given tick on.
+    if let Some(from) = std::env::var("SYSTEMLESS_PPC_TRACE_IMPORTS_FROM_TICK")
+        .ok()
+        .and_then(|value| value.parse::<u32>().ok())
+    {
+        if *tick_count >= from {
+            eprintln!(
+                "[PPC-IMPORT] tick={} {}:{} r3=${:08X} lr=${:08X}",
+                *tick_count, binding.library_name, binding.symbol_name, cpu.gpr[3], cpu.lr
+            );
+        }
+    }
     let _menu_root = (matches!(
         binding.dispatcher_target,
         PpcImportDispatcherTarget::MenuSelect | PpcImportDispatcherTarget::PopUpMenuSelect
@@ -2870,7 +2882,18 @@ pub(crate) fn dispatch_supported_import(
         | PpcImportDispatcherTarget::GlmGetError => {
             unreachable!("OpenGL memory imports return through the fast dispatcher")
         }
-        PpcImportDispatcherTarget::UnresolvedWeak | PpcImportDispatcherTarget::Unsupported => None,
+        PpcImportDispatcherTarget::UnresolvedWeak | PpcImportDispatcherTarget::Unsupported => {
+            // Trial survey switch: log the import and return 0 instead of
+            // stopping, so one run lists every unsupported import it reaches.
+            if std::env::var_os("SYSTEMLESS_PPC_CONTINUE_UNSUPPORTED").is_some() {
+                eprintln!(
+                    "[PPC-SKIP] {}:{} r3=${:08X} lr=${:08X}",
+                    binding.library_name, binding.symbol_name, cpu.gpr[3], cpu.lr
+                );
+                return Some(PpcImportAction::Return(0));
+            }
+            None
+        }
     }
 }
 

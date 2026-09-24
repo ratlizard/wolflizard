@@ -94,7 +94,7 @@ pub(super) fn dispatch_device_import(
             ))))
         }
         PpcImportDispatcherTarget::PBStatus => Some(PpcImportAction::Return(ppc_i16_result(
-            ppc_pb_status(cpu, memory),
+            ppc_pb_status(cpu, memory, display_gamma),
         ))),
         _ => None,
     }

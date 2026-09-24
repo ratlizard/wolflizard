@@ -10883,16 +10883,10 @@ fn load_pef_application_with_config_and_optional_system_reservation(
     memory.add_region(PPC_MAIN_CLIP_RGN_HANDLE, vec![0u8; 4]);
     memory.add_region(PPC_MAIN_CLIP_RGN, vec![0u8; 10]);
     // Universal Interfaces 3.4 Video.h defines GammaTbl as a six-word
-    // header followed by formula bytes and channel data. The main display's
-    // device-owned table is the standard one-channel, 8-bit linear ramp.
-    let mut gamma_table = vec![0u8; PPC_MAIN_GAMMA_TABLE_SIZE as usize];
-    gamma_table[6..8].copy_from_slice(&1u16.to_be_bytes()); // gChanCnt
-    gamma_table[8..10].copy_from_slice(&256u16.to_be_bytes()); // gDataCnt
-    gamma_table[10..12].copy_from_slice(&8u16.to_be_bytes()); // gDataWidth
-    for (value, output) in gamma_table[12..].iter_mut().enumerate() {
-        *output = value as u8;
-    }
-    memory.add_readonly_region(PPC_MAIN_GAMMA_TABLE, gamma_table);
+    // header followed by formula bytes and channel data. cscGetGamma fills
+    // this device-owned table from the display's current transfer each time
+    // it is asked (ppc_write_device_gamma_table).
+    memory.add_region(PPC_MAIN_GAMMA_TABLE, vec![0u8; PPC_MAIN_GAMMA_TABLE_SIZE as usize]);
     memory.add_region(PPC_PORT_LIST_HANDLE, vec![0u8; 4]);
     memory.add_region(PPC_PORT_LIST, vec![0u8; 2]);
     memory.add_region(PPC_UNIT_TABLE, vec![0u8; 64 * 4]);
@@ -30924,7 +30918,25 @@ fn ppc_pb_control(
     result
 }
 
-fn ppc_pb_status(cpu: &PpcCpu, memory: &mut PpcSectionMem) -> i16 {
+/// The display's current transfer as a one-channel GammaTbl, which applies
+/// to all three components (Designing Cards and Drivers, 3rd ed. (1992),
+/// pp. 245--248). A guest installing a table with differing channels gets
+/// the red one back.
+fn ppc_write_device_gamma_table(memory: &mut PpcSectionMem, display_gamma: &SharedProcessDisplayGamma) {
+    let table = display_gamma.table();
+    let mut bytes = vec![0u8; PPC_MAIN_GAMMA_TABLE_SIZE as usize];
+    bytes[6..8].copy_from_slice(&1u16.to_be_bytes()); // gChanCnt
+    bytes[8..10].copy_from_slice(&256u16.to_be_bytes()); // gDataCnt
+    bytes[10..12].copy_from_slice(&8u16.to_be_bytes()); // gDataWidth
+    bytes[12..].copy_from_slice(&table[0]);
+    let _ = memory.write_bytes(PPC_MAIN_GAMMA_TABLE, &bytes);
+}
+
+fn ppc_pb_status(
+    cpu: &PpcCpu,
+    memory: &mut PpcSectionMem,
+    display_gamma: &SharedProcessDisplayGamma,
+) -> i16 {
     const STATUS_ERR: i16 = -18;
 
     let parameter_block = cpu.gpr[3];
@@ -30946,8 +30958,13 @@ fn ppc_pb_status(cpu: &PpcCpu, memory: &mut PpcSectionMem) -> i16 {
             // Universal Interfaces 3.4 Video.h defines cscGetGamma (8) as a
             // status request whose csParam contains a VDGammaRecord pointer;
             // the driver stores its device-owned GammaTbl pointer there.
+            // The table is the one in force, not a linear ramp: Cythera
+            // reads it at launch, fades with cscSetGamma, and restores what
+            // it read, and a linear answer left every colour darker than on
+            // a real Mac (as the 68K path's cscGetGamma already answers).
             8 => {
                 let vd_gamma = memory.read_u32_be(cs_param)?;
+                ppc_write_device_gamma_table(memory, display_gamma);
                 memory
                     .write_u32_be(vd_gamma, PPC_MAIN_GAMMA_TABLE)
                     .map(|()| PPC_NO_ERR)

@@ -4125,7 +4125,10 @@ fn direct_video_set_entries_updates_screen_clut() {
 }
 
 #[test]
-fn video_status_returns_device_owned_linear_gamma_table() {
+fn video_status_returns_the_gamma_table_in_force() {
+    // cscGetGamma answers with the display's current transfer. Cythera reads
+    // it at launch, fades with cscSetGamma and restores what it read; a
+    // fixed linear answer left every colour darker than on a real Mac.
     let pef = synthetic_pef_with_import(b"PBStatusSync");
     let mut loaded = load_pef_application(&pef).unwrap();
     let parameter_block = PPC_DATA_BASE + 0x1000;
@@ -4137,30 +4140,39 @@ fn video_status_returns_device_owned_linear_gamma_table() {
         .memory
         .write_u32_be(parameter_block + 28, vd_gamma)
         .unwrap();
-    loaded.cpu.gpr[3] = parameter_block;
-
-    assert_eq!(ppc_pb_status(&loaded.cpu, &mut loaded.memory), PPC_NO_ERR);
-    assert_eq!(loaded.memory.read_u16_be(parameter_block + 16), Some(0));
-    assert_eq!(
-        loaded.memory.read_u32_be(vd_gamma),
-        Some(PPC_MAIN_GAMMA_TABLE)
-    );
-    assert_eq!(loaded.memory.read_u16_be(PPC_MAIN_GAMMA_TABLE), Some(0));
-    assert_eq!(loaded.memory.read_u16_be(PPC_MAIN_GAMMA_TABLE + 6), Some(1));
-    assert_eq!(
-        loaded.memory.read_u16_be(PPC_MAIN_GAMMA_TABLE + 8),
-        Some(256)
-    );
-    assert_eq!(
-        loaded.memory.read_u16_be(PPC_MAIN_GAMMA_TABLE + 10),
-        Some(8)
-    );
-    for value in 0..256u32 {
+    let display_gamma = SharedProcessDisplayGamma::default();
+    let read = |loaded: &mut PpcLoadedApp, display_gamma: &SharedProcessDisplayGamma| {
+        loaded.cpu.gpr[3] = parameter_block;
         assert_eq!(
-            loaded.memory.read_u8(PPC_MAIN_GAMMA_TABLE + 12 + value),
-            Some(value as u8)
+            ppc_pb_status(&loaded.cpu, &mut loaded.memory, display_gamma),
+            PPC_NO_ERR
         );
+        assert_eq!(loaded.memory.read_u16_be(parameter_block + 16), Some(0));
+        assert_eq!(loaded.memory.read_u32_be(vd_gamma), Some(PPC_MAIN_GAMMA_TABLE));
+        assert_eq!(loaded.memory.read_u16_be(PPC_MAIN_GAMMA_TABLE), Some(0));
+        assert_eq!(loaded.memory.read_u16_be(PPC_MAIN_GAMMA_TABLE + 6), Some(1));
+        assert_eq!(loaded.memory.read_u16_be(PPC_MAIN_GAMMA_TABLE + 8), Some(256));
+        assert_eq!(loaded.memory.read_u16_be(PPC_MAIN_GAMMA_TABLE + 10), Some(8));
+        (0..256u32)
+            .map(|value| loaded.memory.read_u8(PPC_MAIN_GAMMA_TABLE + 12 + value).unwrap())
+            .collect::<Vec<_>>()
+    };
+
+    // Before any guest table, the monitor's default transfer.
+    assert_eq!(
+        read(&mut loaded, &display_gamma),
+        crate::display::default_display_gamma()[0].to_vec()
+    );
+
+    // After a guest installs one, that one.
+    let mut installed = [[0u8; 256]; 3];
+    for channel in &mut installed {
+        for (index, value) in channel.iter_mut().enumerate() {
+            *value = (index / 2) as u8;
+        }
     }
+    display_gamma.install(installed);
+    assert_eq!(read(&mut loaded, &display_gamma), installed[0].to_vec());
 }
 
 #[test]

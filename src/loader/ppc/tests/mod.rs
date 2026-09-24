@@ -1887,3 +1887,99 @@ fn lupdate_redraws_the_scroll_bars_of_a_list_with_its_own_ldef() {
         "LUpdate left the scroll bar undrawn"
     );
 }
+
+#[test]
+fn track_go_away_asks_an_application_wdef_about_the_release() {
+    // Cythera's drawer windows carry their close tag left of the content,
+    // where no standard close box is; TrackGoAway asks the WDEF (wHit) where
+    // the button was released and answers true for wInGoAway (4).
+    let pef = synthetic_pef_with_import(b"TrackGoAway");
+    let mut loaded = load_pef_application(&pef).unwrap();
+    let scratch = PPC_DATA_BASE + 0x1000;
+    loaded.memory.add_region(scratch, vec![0; 0x100]);
+    let code = PPC_CODE_BASE + 0x1000;
+    loaded.memory.add_region(
+        code,
+        [0x3860_0004u32, 0x4e80_0020]
+            .into_iter()
+            .flat_map(u32::to_be_bytes)
+            .collect(),
+    );
+    let tvector = scratch + 0x80;
+    loaded.memory.write_u32_be(tvector, code).unwrap();
+    loaded.memory.write_u32_be(tvector + 4, loaded.cpu.gpr[2]).unwrap();
+    let stub = scratch + 0x90;
+    loaded.memory.write_u16_be(stub, 0x4ef9).unwrap();
+    loaded.memory.write_u32_be(stub + 2, tvector).unwrap();
+    let wdef_handle = scratch + 0xa0;
+    loaded.memory.write_u32_be(wdef_handle, stub).unwrap();
+    let current_resource_refnum = *loaded.process_file_system.current_resource_file;
+    loaded
+        .process_file_system
+        .push_vfs_resource(PpcVfsResourceRecord {
+            ref_num: current_resource_refnum,
+            path: String::new(),
+            res_type: u32::from_be_bytes(*b"WDEF"),
+            res_id: 128,
+            name: Vec::new(),
+            data: vec![0x4e, 0xf9, 0, 0, 0, 0],
+            raw_data: None,
+            raw_attrs: None,
+            attrs: 0,
+            handle: wdef_handle,
+        });
+    let run = |loaded: &mut PpcLoadedApp, target: PpcImportDispatcherTarget| {
+        loaded.cpu.pc = loaded.entry_pc;
+        loaded.cpu.lr = PPC_HALT_PC;
+        loaded.imports[0].dispatcher_target = target;
+        let probe = loaded.run_with_hle_imports(512);
+        assert_eq!(probe.unsupported_import_index, None);
+    };
+    ppc_write_rect(&mut loaded.memory, scratch, 100, 100, 200, 300).unwrap();
+    loaded.cpu.gpr[3] = 0;
+    loaded.cpu.gpr[4] = scratch;
+    loaded.cpu.gpr[5] = 0;
+    loaded.cpu.gpr[6] = 1;
+    loaded.cpu.gpr[7] = 128 << 4;
+    loaded.cpu.gpr[8] = u32::MAX;
+    loaded.cpu.gpr[9] = 1;
+    loaded.cpu.gpr[10] = 0;
+    run(&mut loaded, PpcImportDispatcherTarget::NewCWindow);
+    let window = loaded.cpu.gpr[3];
+
+    let track = |loaded: &mut PpcLoadedApp| {
+        loaded.cpu.gpr[3] = window;
+        loaded.cpu.gpr[4] = (120 << 16) | 90;
+        run(
+            loaded,
+            PpcImportDispatcherTarget::LegacyWindow(PpcLegacyWindowOperation::TrackGoAway),
+        );
+        loaded.cpu.gpr[3]
+    };
+    assert_eq!(track(&mut loaded), 1, "released in wInGoAway");
+    loaded.memory.write_u32_be(code, 0x3860_0001).unwrap();
+    assert_eq!(track(&mut loaded), 0, "released in wInContent");
+}
+
+#[test]
+fn show_hide_false_repaints_what_the_window_uncovered() {
+    // Hiding a window uncovers what was behind it, which is redrawn as when
+    // the window is disposed of. Cythera closes its drawers with
+    // ShowHide(false), and the backdrop under one kept the drawer's pixels.
+    let pef = synthetic_pef_with_import(b"ShowHide");
+    let mut loaded = load_pef_application(&pef).unwrap();
+    let scratch = PPC_DATA_BASE + 0x1000;
+    loaded.memory.add_region(scratch, vec![0; 32]);
+    let window = create_test_cwindow(&mut loaded, scratch, (100, 100, 200, 300), 0, true, u32::MAX);
+    let front = ppc_front_buffer_for_gworld(&loaded.gworlds, PPC_MAIN_GWORLD).unwrap();
+    let point = (150, 150);
+    assert!(ppc_quickdraw_write_raw_pixel(&mut loaded.memory, front, point, 0x7b));
+    loaded.cpu.gpr[3] = window;
+    loaded.cpu.gpr[4] = 0;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::ShowHide);
+    assert_ne!(
+        ppc_quickdraw_read_pixel(&mut loaded.memory, front, point),
+        Some(0x7b),
+        "the hidden window's pixels were left on the screen"
+    );
+}

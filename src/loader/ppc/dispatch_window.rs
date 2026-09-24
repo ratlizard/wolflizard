@@ -456,6 +456,9 @@ pub(super) fn dispatch_window_import(
         PpcImportDispatcherTarget::HideWindow => {
             let window = cpu.gpr[3];
             let previous_front = ppc_front_visible_process_window(memory, window_list);
+            let hidden_structure = ppc_window_is_visible(memory, window)
+                .then(|| ppc_window_global_structure_bounds(memory, gworlds, window))
+                .flatten();
             let _ = ppc_set_window_visible(memory, window, false);
             let _ = ppc_set_window_hilited(memory, window, false);
             ppc_recalculate_window_vis_regions(
@@ -485,6 +488,19 @@ pub(super) fn dispatch_window_import(
                     toolbox_startup,
                 );
             }
+            // Hiding a window (Macintosh Toolbox Essentials (1992), p. 4-89)
+            // uncovers what was behind it, which is redrawn as when a window
+            // is disposed of: desktop repainted, updates for the windows.
+            ppc_restore_window_removal_exposure(
+                memory,
+                gworlds,
+                window_list,
+                hidden_structure,
+                toolbox_startup.host_menu_bar_hidden,
+                event_queue,
+                tick_count,
+                input,
+            );
             if ppc_gworld_trace_enabled() {
                 eprintln!(
                     "[PPC-GWORLD-TRACE] HideWindow window=${:08X} current=${:08X}",
@@ -498,6 +514,9 @@ pub(super) fn dispatch_window_import(
             let visible = cpu.gpr[4] != 0;
             let previous_front = ppc_front_visible_process_window(memory, window_list);
             let was_visible = ppc_window_is_visible(memory, window);
+            let hidden_structure = (was_visible && !visible)
+                .then(|| ppc_window_global_structure_bounds(memory, gworlds, window))
+                .flatten();
             let _ = ppc_set_window_visible(memory, window, visible);
             ppc_recalculate_window_vis_regions(
                 process_memory_manager,
@@ -514,6 +533,21 @@ pub(super) fn dispatch_window_import(
                 window_list,
                 previous_front,
                 toolbox_startup.host_menu_bar_hidden,
+            );
+            // ShowHide(false) (Macintosh Toolbox Essentials (1992), p. 4-89)
+            // uncovers what was behind the window, redrawn as when a window
+            // is disposed of. Cythera closes its drawers (a dresser's
+            // contents) this way, and the backdrop under one stayed as the
+            // drawer had left it.
+            ppc_restore_window_removal_exposure(
+                memory,
+                gworlds,
+                window_list,
+                hidden_structure,
+                toolbox_startup.host_menu_bar_hidden,
+                event_queue,
+                tick_count,
+                input,
             );
             if visible && !was_visible {
                 ppc_erase_shown_window_with_back_pix_pat(memory, gworlds, window);
@@ -2761,6 +2795,15 @@ pub(super) fn ppc_find_window_at_point(
             }
             return (4, window);
         }
+        // Inside the structure region but not where a standard frame has a
+        // part: a window drawn by an application WDEF may have parts
+        // anywhere in it, and FindWindow asks that WDEF (wHit, see the
+        // FindWindow import). Cythera's drawer windows carry a close tag
+        // left of their content.
+        if structure.is_some() && super::dispatch_defproc::ppc_app_wdef_window_proc_id(window).is_some()
+        {
+            return (3, window);
+        }
     }
     (0, 0)
 }
@@ -4602,6 +4645,22 @@ pub(super) fn ppc_dispatch_track_go_away(
     // the pointer crosses its hit region. Macintosh Toolbox Essentials
     // (1992), pp. 4-103--4-104.
     let call = ppc_go_away_call(cpu);
+    // A window drawn by an application WDEF has its close part wherever the
+    // WDEF puts it (Cythera's drawers carry a tag left of their content):
+    // hold until mouse-up, then ask the WDEF about the release point.
+    if startup.go_away_tracking.is_none()
+        && super::dispatch_defproc::ppc_app_wdef_window_proc_id(call.window).is_some()
+    {
+        if input.mouse_button {
+            return PpcImportAction::Yield(u64::MAX);
+        }
+        if let Some(index) = event_queue.iter().position(|event| event.what == 2) {
+            event_queue.remove(index);
+        }
+        let point = (u32::from(input.mouse_v as u16) << 16) | u32::from(input.mouse_h as u16);
+        super::dispatch_defproc::ppc_note_app_wdef_go_away(call.window, point);
+        return PpcImportAction::Return(0);
+    }
     if let Some(state) = startup.go_away_tracking.as_ref() {
         if state.call != call {
             return PpcImportAction::Return(0);

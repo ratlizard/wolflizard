@@ -169,6 +169,22 @@ const WDEF_HIT: u32 = 1;
 enum HitTestKind {
     Control,
     Window,
+    /// TrackGoAway's answer: whether the release is in wInGoAway.
+    GoAway,
+}
+
+/// TrackGoAway on a window with an application WDEF: the standard close
+/// box's geometry means nothing there, so once the button is up ask the WDEF
+/// (wHit) whether the release is in its go-away part (wInGoAway, 4).
+pub(super) fn ppc_note_app_wdef_go_away(window: u32, point: u32) {
+    PENDING_HIT_TEST.with(|slot| {
+        *slot.borrow_mut() = Some(PendingHitTest {
+            kind: HitTestKind::GoAway,
+            target: window,
+            point,
+            out: 0,
+        })
+    });
 }
 
 #[derive(Clone, Copy)]
@@ -334,6 +350,7 @@ fn ppc_next_def_proc_call(cpu: &mut PpcCpu, memory: &mut PpcSectionMem) -> Optio
                             HitTestKind::Control => answer,
                             HitTestKind::Window if answer > 0 => answer + 2,
                             HitTestKind::Window => 0,
+                            HitTestKind::GoAway => i16::from(answer == 4),
                         };
                         if part == 0 && out != 0 {
                             let _ = memory.write_u32_be(out, 0);
@@ -613,7 +630,7 @@ pub(super) fn ppc_begin_pending_def_procs(
                         owner,
                     ))
                 }),
-            HitTestKind::Window => {
+            HitTestKind::Window | HitTestKind::GoAway => {
                 let proc_id = ppc_window_proc_id(memory, pending.target);
                 let res_id = (proc_id as u16 >> 4) as i16;
                 let var_code = u32::from(proc_id as u16 & 0x000F);

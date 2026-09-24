@@ -1501,6 +1501,58 @@ pub(super) fn ppc_offset_rect(memory: &mut PpcSectionMem, rect_ptr: u32, dh: i16
     )
 }
 
+/// MapPt and ScalePt share MapRect's proportion: Inside Macintosh Volume I
+/// (1985), pp. I-195--I-196. MapPt moves a point from srcRect's coordinate
+/// space into dstRect's; ScalePt treats the point as a width (h) and a
+/// height (v) and scales them by the rectangles' size ratio, with a minimum
+/// of 1 for each.
+pub(super) fn ppc_map_or_scale_pt(
+    memory: &mut PpcSectionMem,
+    pt_ptr: u32,
+    src_ptr: u32,
+    dst_ptr: u32,
+    scale: bool,
+) {
+    let (
+        Some(v),
+        Some(h),
+        Some((src_top, src_left, src_bottom, src_right)),
+        Some((dst_top, dst_left, dst_bottom, dst_right)),
+    ) = (
+        memory.read_u16_be(pt_ptr),
+        memory.read_u16_be(pt_ptr.wrapping_add(2)),
+        ppc_read_rect(memory, src_ptr),
+        ppc_read_rect(memory, dst_ptr),
+    )
+    else {
+        return;
+    };
+    let (v, h) = (i64::from(v as i16), i64::from(h as i16));
+    let src_width = i64::from(src_right) - i64::from(src_left);
+    let src_height = i64::from(src_bottom) - i64::from(src_top);
+    let dst_width = i64::from(dst_right) - i64::from(dst_left);
+    let dst_height = i64::from(dst_bottom) - i64::from(dst_top);
+    let (new_v, new_h) = if scale {
+        let scaled_h = if src_width == 0 { h } else { h * dst_width / src_width };
+        let scaled_v = if src_height == 0 { v } else { v * dst_height / src_height };
+        (scaled_v.max(1), scaled_h.max(1))
+    } else {
+        let mapped_h = if src_width == 0 {
+            h
+        } else {
+            i64::from(dst_left) + (h - i64::from(src_left)) * dst_width / src_width
+        };
+        let mapped_v = if src_height == 0 {
+            v
+        } else {
+            i64::from(dst_top) + (v - i64::from(src_top)) * dst_height / src_height
+        };
+        (mapped_v, mapped_h)
+    };
+    let _ = memory.write_u16_be(pt_ptr, new_v as i16 as u16);
+    let _ = memory.write_u16_be(pt_ptr.wrapping_add(2), new_h as i16 as u16);
+}
+
 pub(super) fn ppc_map_rect(memory: &mut PpcSectionMem, rect_ptr: u32, src_ptr: u32, dst_ptr: u32) {
     // Inside Macintosh Volume I (1985), p. I-197: MapRect maps all four
     // coordinates proportionally from srcRect's coordinate space into

@@ -1768,6 +1768,8 @@ pub(crate) fn dispatch_supported_import(
         | PpcImportDispatcherTarget::PtInRect
         | PpcImportDispatcherTarget::OffsetRect
         | PpcImportDispatcherTarget::MapRect
+        | PpcImportDispatcherTarget::MapPt
+        | PpcImportDispatcherTarget::ScalePt
         | PpcImportDispatcherTarget::InsetRect => {
             unreachable!("QuickDraw imports return through dispatch_quickdraw_import")
         }
@@ -2795,6 +2797,7 @@ pub(crate) fn dispatch_supported_import(
         | PpcImportDispatcherTarget::GetOSEvent
         | PpcImportDispatcherTarget::EventAvail
         | PpcImportDispatcherTarget::OSEventAvail
+        | PpcImportDispatcherTarget::CheckUpdate
         | PpcImportDispatcherTarget::PostEvent
         | PpcImportDispatcherTarget::Button
         | PpcImportDispatcherTarget::StillDown

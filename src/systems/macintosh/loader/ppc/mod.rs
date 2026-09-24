@@ -224,11 +224,14 @@ use pef_dump::{maybe_write, PefDumpContext};
 use theme::*;
 
 use dispatch_event::{
-    dispatch_button_import, dispatch_getkeys_import, dispatch_microseconds_import,
-    dispatch_still_down_import, dispatch_tick_count_import, ppc_event_idle_poll_action,
-    ppc_recurring_update_poll_action, ppc_still_down_result, ppc_wait_mouse_up_result,
-    PpcEventIdlePollState, PpcRecurringUpdatePollState, PpcTickCountIdlePollState,
+    dispatch_button_import, dispatch_getkeys_import, ppc_get_mouse_idle_poll_action,
+    dispatch_microseconds_import, dispatch_still_down_import, dispatch_tick_count_import,
+    ppc_event_idle_poll_action, ppc_recurring_update_poll_action, ppc_still_down_result,
+    ppc_wait_mouse_up_result, PpcEventIdlePollState, PpcRecurringUpdatePollState,
+    PpcTickCountIdlePollState,
 };
+#[cfg(test)]
+use dispatch_event::dispatch_get_mouse_import;
 
 mod constants;
 pub use constants::*;

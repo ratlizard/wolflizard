@@ -432,6 +432,8 @@ impl PpcLoadedApp {
         let trace_recent_on_halt = ppc_recent_imports_on_halt_enabled();
         let mut recent_imports = VecDeque::<PpcHleImportTraceEntry>::new();
         let mut idle_poll_counts = HashMap::<u32, u32>::new();
+        let mut get_mouse_idle_polls = HashMap::<u32, u32>::new();
+        let mut get_mouse_last_location: Option<(i16, i16)> = None;
         let mut tick_count_idle_poll = PpcTickCountIdlePollState::default();
         let needs_fetch_observer = trace_fetches || trace_ppc || trace_pc_range.is_some();
         let mut interrupt_return_work = None;
@@ -1381,7 +1383,14 @@ impl PpcLoadedApp {
                                     );
                                 }
                             }
-                            PpcImportAction::ReturnPreserve
+                            // Cythera's drawers poll GetMouse until the pointer moves,
+                            // which happens only between frontend ticks.
+                            ppc_get_mouse_idle_poll_action(
+                                cpu,
+                                (input.mouse_v, input.mouse_h),
+                                &mut get_mouse_idle_polls,
+                                &mut get_mouse_last_location,
+                            )
                         }
                         PpcImportDispatcherTarget::InitCursor => {
                             let _action = crate::cursor_manager::evaluate_init_cursor();

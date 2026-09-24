@@ -3922,6 +3922,46 @@ fn save_screenshot(runner: &FixtureRunner, num: usize) {
         ),
     };
     save_frame(&frame, runner.guest_tick(), num);
+    save_presented_frame(runner, num);
+}
+
+/// The window shows the outline presentation, not screen memory, while
+/// outline text is visible, and the two can disagree: a stale region in the
+/// presentation is invisible in the frame `save_frame` writes. With
+/// SYSTEMLESS_HEADLESS_PRESENTED_SCALE=<1..4>, also write what the window
+/// would show, before its final resize to the drawable.
+fn save_presented_frame(runner: &FixtureRunner, num: usize) {
+    let Some(scale) = std::env::var("SYSTEMLESS_HEADLESS_PRESENTED_SCALE")
+        .ok()
+        .and_then(|value| value.parse::<u32>().ok())
+    else {
+        return;
+    };
+    let dir = std::env::var_os("SYSTEMLESS_HEADLESS_SCREENSHOT_DIR")
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(std::env::temp_dir);
+    let mut guest = Vec::new();
+    display::render_screen_argb_with_gamma(
+        runner.bus(),
+        runner.dispatcher().screen_mode,
+        &runner.dispatcher().device_clut,
+        &runner.dispatcher().device_gamma(),
+        &mut guest,
+    );
+    let mut presented = Vec::new();
+    if let Some((pw, ph)) = runner
+        .bus()
+        .presented_argb_scaled(&guest, &guest, scale, &mut presented)
+    {
+        let img = image::RgbImage::from_fn(pw, ph, |x, y| {
+            let [_, r, g, b] = presented[(y * pw + x) as usize].to_be_bytes();
+            image::Rgb([r, g, b])
+        });
+        let path = dir.join(format!("systemless_presented_{:04}.png", num));
+        img.save(&path).expect("Failed to save presented frame");
+    } else {
+        eprintln!("[HEADLESS] Screenshot #{num}: no outline presentation to write");
+    }
 }
 
 // Both headless clocks use the same transport and command-safe point. A debug
@@ -4142,6 +4182,7 @@ fn run_headless(
             {
                 if let Some(frame) = session.video_frame() {
                     save_frame(&frame, session.status().guest_tick, screenshot_num);
+                    save_presented_frame(session.runner(), screenshot_num);
                 }
             }
         }
@@ -4161,6 +4202,7 @@ fn run_headless(
     save_store.sync_save_files_now(session.runner_mut());
     if let Some(frame) = session.video_frame() {
         save_frame(&frame, session.status().guest_tick, 9999);
+        save_presented_frame(session.runner(), 9999);
     }
     // Measurement-only: prints nothing unless SYSTEMLESS_WAIT_STATS is set.
     systemless::runner::dump_wait_stats();

@@ -135,7 +135,48 @@ pub(super) fn ppc_control_has_app_cdef(handle: u32) -> bool {
 /// the high word; `control_out`, when not 0, is FindControl's theControl,
 /// cleared if the CDEF says the point is in no part.
 pub(super) fn ppc_note_app_cdef_test(handle: u32, point: u32, control_out: u32) {
-    PENDING_CDEF_TEST.with(|slot| *slot.borrow_mut() = Some((handle, point, control_out)));
+    PENDING_HIT_TEST.with(|slot| {
+        *slot.borrow_mut() = Some(PendingHitTest {
+            kind: HitTestKind::Control,
+            target: handle,
+            point,
+            out: control_out,
+        })
+    });
+}
+
+/// FindWindow on a window with an application WDEF: ask the WDEF (wHit,
+/// Macintosh Toolbox Essentials (1992), pp. 4-122 and 4-131) once the import
+/// has finished. Its answer plus 2 is FindWindow's part code (inContent is
+/// wInContent + 2, inGrow wInGrow + 2); wNoHit makes it inDesk with no
+/// window. Cythera's To Do and Journal drawers answer wInGrow on their
+/// title, and the drawer is opened by the resize that follows.
+pub(super) fn ppc_note_app_wdef_hit(window: u32, point: u32, window_out: u32) {
+    PENDING_HIT_TEST.with(|slot| {
+        *slot.borrow_mut() = Some(PendingHitTest {
+            kind: HitTestKind::Window,
+            target: window,
+            point,
+            out: window_out,
+        })
+    });
+}
+
+/// wHit (Macintosh Toolbox Essentials (1992), p. 4-131).
+const WDEF_HIT: u32 = 1;
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum HitTestKind {
+    Control,
+    Window,
+}
+
+#[derive(Clone, Copy)]
+struct PendingHitTest {
+    kind: HitTestKind,
+    target: u32,
+    point: u32,
+    out: u32,
 }
 
 pub(super) fn ppc_note_app_cdef_message(handle: u32, message: u32, param: u32) {
@@ -165,9 +206,10 @@ struct DefProcCallState {
     calls: Vec<DefProcCall>,
     next: usize,
     completion: PpcImportAction,
-    /// Set when the last call is a CDEF testCntl whose answer is the
-    /// import's result: FindControl's theControl pointer, or 0.
-    part_result: Option<u32>,
+    /// Set when the last call is a CDEF testCntl or a WDEF wHit whose
+    /// answer is the import's result, with the import's control or window
+    /// pointer to clear on no hit (0 for none).
+    part_result: Option<(HitTestKind, u32)>,
 }
 
 thread_local! {
@@ -180,7 +222,7 @@ thread_local! {
     static APP_CDEF_CONTROLS: RefCell<std::collections::HashMap<u32, i16>> =
         RefCell::new(std::collections::HashMap::new());
     static PENDING_CDEF_CALLS: RefCell<Vec<(u32, u32, u32)>> = const { RefCell::new(Vec::new()) };
-    static PENDING_CDEF_TEST: RefCell<Option<(u32, u32, u32)>> = const { RefCell::new(None) };
+    static PENDING_HIT_TEST: RefCell<Option<PendingHitTest>> = const { RefCell::new(None) };
     /// Lists whose LDEF is the refCon shell.
     static APP_LDEF_LISTS: RefCell<std::collections::HashSet<u32>> =
         RefCell::new(std::collections::HashSet::new());
@@ -283,13 +325,18 @@ fn ppc_next_def_proc_call(cpu: &mut PpcCpu, memory: &mut PpcSectionMem) -> Optio
             }
             if state.next >= state.calls.len() {
                 let state = stack.pop().expect("state present");
-                // The last call was the CDEF's testCntl: its answer, in the
-                // low word of r3, is the part code the import returns.
+                // The last call was a CDEF's testCntl or a WDEF's wHit: its
+                // answer is the part code the import returns.
                 let completion = match state.part_result {
-                    Some(control_out) => {
-                        let part = cpu.gpr[3] as u16 as i16;
-                        if part == 0 && control_out != 0 {
-                            let _ = memory.write_u32_be(control_out, 0);
+                    Some((kind, out)) => {
+                        let answer = cpu.gpr[3] as u16 as i16;
+                        let part = match kind {
+                            HitTestKind::Control => answer,
+                            HitTestKind::Window if answer > 0 => answer + 2,
+                            HitTestKind::Window => 0,
+                        };
+                        if part == 0 && out != 0 {
+                            let _ = memory.write_u32_be(out, 0);
                         }
                         PpcImportAction::Return(u32::from(part as u16))
                     }
@@ -440,7 +487,7 @@ pub(super) fn ppc_begin_pending_def_procs(
         PENDING_CDEF_CALLS.with(|pending| std::mem::take(&mut *pending.borrow_mut()));
     let pending_lists =
         PENDING_LDEF_CALLS.with(|pending| std::mem::take(&mut *pending.borrow_mut()));
-    let pending_test = PENDING_CDEF_TEST.with(|slot| slot.borrow_mut().take());
+    let pending_test = PENDING_HIT_TEST.with(|slot| slot.borrow_mut().take());
     if pending.is_empty()
         && pending_controls.is_empty()
         && pending_lists.is_empty()
@@ -463,7 +510,7 @@ pub(super) fn ppc_begin_pending_def_procs(
             PENDING_WDEF_DRAWS.with(|slot| slot.borrow_mut().extend(pending));
             PENDING_CDEF_CALLS.with(|slot| slot.borrow_mut().extend(pending_controls));
             PENDING_LDEF_CALLS.with(|slot| slot.borrow_mut().extend(pending_lists));
-            PENDING_CDEF_TEST.with(|slot| *slot.borrow_mut() = pending_test);
+            PENDING_HIT_TEST.with(|slot| *slot.borrow_mut() = pending_test);
             return other;
         }
     };
@@ -545,27 +592,45 @@ pub(super) fn ppc_begin_pending_def_procs(
         def_call.rect = Some(call.rect);
         Some(def_call)
     }));
-    // testCntl goes last, so that its answer is in r3 when the batch ends.
+    // The hit test goes last, so that its answer is in r3 when the batch
+    // ends.
     let mut part_result = None;
-    if let Some((handle, point, control_out)) = pending_test {
-        let test = APP_CDEF_CONTROLS
-            .with(|controls| controls.borrow().get(&handle).copied())
-            .and_then(|proc_id| {
+    if let Some(pending) = pending_test {
+        let test = match pending.kind {
+            HitTestKind::Control => APP_CDEF_CONTROLS
+                .with(|controls| controls.borrow().get(&pending.target).copied())
+                .and_then(|proc_id| {
+                    let res_id = (proc_id as u16 >> 4) as i16;
+                    let var_code = u32::from(proc_id as u16 & 0x000F);
+                    let target =
+                        ppc_app_def_proc_target(memory, vfs_resources, cdef, res_id, cpu.gpr[2])?;
+                    let control = memory.read_u32_be(pending.target).filter(|ptr| *ptr != 0)?;
+                    let owner =
+                        memory.read_u32_be(control.wrapping_add(4)).filter(|ptr| *ptr != 0);
+                    Some(DefProcCall::new(
+                        target,
+                        &[var_code, pending.target, CDEF_TEST, pending.point],
+                        owner,
+                    ))
+                }),
+            HitTestKind::Window => {
+                let proc_id = ppc_window_proc_id(memory, pending.target);
                 let res_id = (proc_id as u16 >> 4) as i16;
                 let var_code = u32::from(proc_id as u16 & 0x000F);
-                let target =
-                    ppc_app_def_proc_target(memory, vfs_resources, cdef, res_id, cpu.gpr[2])?;
-                let control = memory.read_u32_be(handle).filter(|ptr| *ptr != 0)?;
-                let owner = memory.read_u32_be(control.wrapping_add(4)).filter(|ptr| *ptr != 0);
-                Some(DefProcCall::new(
-                    target,
-                    &[var_code, handle, CDEF_TEST, point],
-                    owner,
-                ))
-            });
+                ppc_app_def_proc_target(memory, vfs_resources, wdef, res_id, cpu.gpr[2]).map(
+                    |target| {
+                        DefProcCall::new(
+                            target,
+                            &[var_code, pending.target, WDEF_HIT, pending.point],
+                            None,
+                        )
+                    },
+                )
+            }
+        };
         if let Some(test) = test {
             calls.push(test);
-            part_result = Some(control_out);
+            part_result = Some((pending.kind, pending.out));
         }
     }
     if calls.is_empty() {

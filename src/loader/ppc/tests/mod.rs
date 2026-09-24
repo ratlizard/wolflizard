@@ -1660,3 +1660,36 @@ fn te_text_box_erases_with_the_ports_background_pixel_pattern() {
     // Outside the box nothing is touched.
     assert_eq!(loaded.memory.read_u8(scratch + 4), Some(100));
 }
+
+#[test]
+fn char_extra_narrows_every_character_but_the_space() {
+    // Inside Macintosh Volume V (1986), p. V-77. Cythera narrows a name that
+    // would not fit under a portrait this way.
+    let pef = synthetic_pef_with_import(b"DrawText");
+    let mut loaded = load_pef_application(&pef).unwrap();
+    let text = PPC_DATA_BASE + 0x1000;
+    loaded.memory.add_region(text, b"ab c".to_vec());
+    let pen_h = |loaded: &mut PpcLoadedApp| {
+        loaded
+            .memory
+            .read_u16_be(PPC_MAIN_GWORLD + PPC_CGRAF_PORT_PN_LOC_OFFSET + 2)
+            .unwrap() as i16
+    };
+    let draw = |loaded: &mut PpcLoadedApp| {
+        loaded.cpu.gpr[3] = 20;
+        loaded.cpu.gpr[4] = 10;
+        run_test_import(loaded, PpcImportDispatcherTarget::MoveTo);
+        loaded.cpu.gpr[3] = text;
+        loaded.cpu.gpr[4] = 0;
+        loaded.cpu.gpr[5] = 4;
+        run_test_import(loaded, PpcImportDispatcherTarget::DrawText);
+    };
+    draw(&mut loaded);
+    let plain = pen_h(&mut loaded) - 20;
+    assert!(plain > 3);
+
+    loaded.cpu.gpr[3] = (-1i32 << 16) as u32;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::CharExtra);
+    draw(&mut loaded);
+    assert_eq!(pen_h(&mut loaded) - 20, plain - 3);
+}

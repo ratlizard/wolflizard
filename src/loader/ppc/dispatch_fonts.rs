@@ -205,11 +205,35 @@ pub(super) fn dispatch_font_import(
             // While a picture is open, DrawText is recorded like DrawString
             // rather than drawn. Cythera lays a note's text out into a
             // picture with DrawText, and the note came out blank.
+            // Inside Macintosh Volume V (1986), p. V-77: CharExtra widens
+            // (or, negative, narrows) every character but the space. Cythera
+            // narrows a name that would not fit under its portrait.
+            let char_extra = (toolbox_startup.quickdraw_char_extra >> 16) as i16;
             let advance = if let Some(commands) =
                 ppc_open_picture_commands(toolbox_startup, current_gworld)
             {
                 pict::recording_push_long_text(commands, *quickdraw_pen_v, *quickdraw_pen_h, &bytes);
                 ppc_text_width_bytes(text_font, *quickdraw_text_size, text_style, &bytes)
+            } else if char_extra != 0 {
+                let mut pen_h = *quickdraw_pen_h;
+                for &byte in &bytes {
+                    let glyph = ppc_draw_text_bytes_styled(
+                        memory,
+                        gworlds,
+                        current_gworld,
+                        (pen_h, *quickdraw_pen_v),
+                        text_font,
+                        *quickdraw_text_size,
+                        *quickdraw_text_mode,
+                        *quickdraw_fore_color,
+                        quickdraw_fore_indices.get(&current_gworld).copied(),
+                        text_style,
+                        &[byte],
+                    );
+                    let extra = if byte == b' ' { 0 } else { char_extra };
+                    pen_h = pen_h.saturating_add(glyph).saturating_add(extra);
+                }
+                pen_h.saturating_sub(*quickdraw_pen_h)
             } else {
                 ppc_draw_text_bytes_styled(
                     memory,
@@ -227,6 +251,10 @@ pub(super) fn dispatch_font_import(
             };
             *quickdraw_pen_h = (*quickdraw_pen_h).saturating_add(advance);
             ppc_sync_gworld_pen(memory, current_gworld, *quickdraw_pen_h, *quickdraw_pen_v);
+            Some(PpcImportAction::ReturnPreserve)
+        }
+        PpcImportDispatcherTarget::CharExtra => {
+            toolbox_startup.quickdraw_char_extra = cpu.gpr[3] as i32;
             Some(PpcImportAction::ReturnPreserve)
         }
         PpcImportDispatcherTarget::DrawString => {

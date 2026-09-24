@@ -1472,6 +1472,7 @@ pub enum PpcImportDispatcherTarget {
     LineTo,
     Line,
     DrawChar,
+    CharExtra,
     DrawText,
     DrawString,
     TextFont,
@@ -3139,6 +3140,9 @@ pub struct PpcToolboxStartupState {
     /// foreground color and a clear bit selects the background color, as in
     /// the classic `Pattern` record used by BackPat.
     pub quickdraw_back_pattern: [u8; 8],
+    /// CharExtra's Fixed value: the pixels added to each character but the
+    /// space as text is drawn (Inside Macintosh Volume V (1986), p. V-77).
+    pub quickdraw_char_extra: i32,
     pub ae_interaction_allowed: u8,
     pub(crate) stdc_signal_state: PpcStdSignalState,
 }
@@ -3202,6 +3206,7 @@ impl Default for PpcToolboxStartupState {
             clut_reserved_by_device: HashMap::new(),
             quickdraw_pen_pattern: [0xff; 8],
             quickdraw_back_pattern: [0x00; 8],
+            quickdraw_char_extra: 0,
             ae_interaction_allowed: 1,
             stdc_signal_state: PpcStdSignalState::default(),
         }
@@ -13369,7 +13374,7 @@ fn dispatcher_target_for_import(
         ("InterfaceLib", "VisibleLength") => PpcImportDispatcherTarget::VisibleLength,
         // Inside Macintosh Volume V (1986), p. V-77: CharExtra widens every
         // character but the space. The text drawing here has no per-character extra yet.
-        ("InterfaceLib", "CharExtra") => PpcImportDispatcherTarget::NoOpPreserve,
+        ("InterfaceLib", "CharExtra") => PpcImportDispatcherTarget::CharExtra,
         ("InterfaceLib", "StringWidth") => PpcImportDispatcherTarget::StringWidth,
         ("InterfaceLib", "TruncString") => PpcImportDispatcherTarget::TruncString,
         ("InterfaceLib", "CharWidth") => PpcImportDispatcherTarget::CharWidth,
@@ -15964,6 +15969,7 @@ fn dispatch_supported_import(context: PpcDispatchContext<'_>) -> Option<PpcImpor
             unreachable!("QuickDraw imports return through dispatch_quickdraw_import")
         }
         PpcImportDispatcherTarget::DrawChar
+        | PpcImportDispatcherTarget::CharExtra
         | PpcImportDispatcherTarget::DrawText
         | PpcImportDispatcherTarget::DrawString
         | PpcImportDispatcherTarget::TextFont

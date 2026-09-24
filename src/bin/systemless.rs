@@ -437,7 +437,24 @@ fn automatic_window_size(
         bounds.width = bounds.width.min((f64::from(monitor.width) * 0.8) as u32);
         bounds.height = bounds.height.min((f64::from(monitor.height) * 0.8) as u32);
     }
-    fit_window_size(width, height, bounds)
+    let fitted = fit_window_size(width, height, bounds);
+    // Bitmap text and pixel art are sharp only at a whole number of drawable
+    // pixels per guest pixel. On a 1280-by-800-point Retina screen the 80%
+    // margin left 800-by-600 guests at about 1.9 pixels each, and Chicago
+    // and every other bitmap strike came out uneven. Take the whole scale up
+    // to one guest pixel per point when the window, title bar included, fits
+    // the space the menu bar and Dock leave, which `monitor` is on macOS.
+    #[cfg(target_os = "macos")]
+    if let Some(monitor) = monitor.filter(|m| m.width > 0 && m.height > 0) {
+        let title_bar = (32.0 * dpi).round() as u32;
+        let whole = (monitor.width / width.max(1))
+            .min(monitor.height.saturating_sub(title_bar) / height.max(1))
+            .min(dpi.round().max(1.0) as u32);
+        if whole >= 1 && width.saturating_mul(whole) >= fitted.width {
+            return winit::dpi::PhysicalSize::new(width * whole, height * whole);
+        }
+    }
+    fitted
 }
 
 /// Use the actual window's display, including the macOS menu bar and Dock
@@ -4729,6 +4746,23 @@ mod tests {
         }
     }
 
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn automatic_mac_windows_take_a_whole_scale_that_fits_the_screen() {
+        use winit::dpi::PhysicalSize;
+        // A 1280-by-800-point Retina screen less the menu bar and a Dock:
+        // 80% of it is under 2x for an 800-by-600 guest, the whole of it is not.
+        let visible = PhysicalSize::new(2560, 1410);
+        assert_eq!(
+            automatic_window_size(800, 600, Some(visible), 2.0),
+            PhysicalSize::new(1600, 1200)
+        );
+        // Too little room for 2x even without the margin: stay fitted.
+        let short = PhysicalSize::new(2560, 1200);
+        let size = automatic_window_size(800, 600, Some(short), 2.0);
+        assert!(size.height < 1200 && size.width < 1600, "{size:?}");
+    }
+
     #[test]
     fn automatic_windows_fit_small_and_portrait_monitors() {
         use winit::dpi::PhysicalSize;
@@ -4740,8 +4774,15 @@ mod tests {
             for (width, height) in [(640, 480), (320, 200), (480, 900), (4096, 2160)] {
                 let size = automatic_window_size(width, height, Some(monitor), 2.0);
                 assert!(size.width > 0 && size.height > 0);
-                assert!(size.width <= monitor.width * 4 / 5);
-                assert!(size.height <= monitor.height * 4 / 5);
+                // macOS may take a whole scale up to the space available;
+                // elsewhere the window keeps a fifth of the monitor free.
+                let (limit_w, limit_h) = if cfg!(target_os = "macos") {
+                    (monitor.width, monitor.height)
+                } else {
+                    (monitor.width * 4 / 5, monitor.height * 4 / 5)
+                };
+                assert!(size.width <= limit_w);
+                assert!(size.height <= limit_h);
                 assert!(
                     (f64::from(size.width) / f64::from(width)
                         - f64::from(size.height) / f64::from(height))

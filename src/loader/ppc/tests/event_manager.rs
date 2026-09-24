@@ -464,6 +464,41 @@ fn get_mouse_returns_current_port_local_coordinates() {
 }
 
 #[test]
+fn get_mouse_poll_fast_forwards_only_while_the_pointer_stays_put() {
+    // Cythera's drawers follow a drag by calling GetMouse until the pointer
+    // moves. Repeated reads of an unchanged location from one call site are
+    // charged extra cycles; a moved pointer starts the count again.
+    let point_ptr = PPC_DATA_BASE + 0x1000;
+    let mut memory = PpcSectionMem::new();
+    memory.add_region(point_ptr, vec![0; 4]);
+    let mut cpu = PpcCpu::new();
+    cpu.gpr[3] = point_ptr;
+    cpu.lr = 0x0100_5000;
+    let mut counts = HashMap::new();
+    let mut last = None;
+    let at = |v, h| PpcInputSnapshot {
+        mouse_v: v,
+        mouse_h: h,
+        ..PpcInputSnapshot::default()
+    };
+    let mut poll = |input, counts: &mut HashMap<u32, u32>, last: &mut Option<(i16, i16)>| {
+        dispatch_get_mouse_import(&cpu, &mut memory, input, 0, Some((counts, last)))
+    };
+    for _ in 0..=PPC_GET_MOUSE_IDLE_POLL_FAST_FORWARD_THRESHOLD {
+        assert_eq!(poll(at(100, 200), &mut counts, &mut last), PpcImportAction::ReturnPreserve);
+    }
+    assert_eq!(
+        poll(at(100, 200), &mut counts, &mut last),
+        PpcImportAction::ReturnPreserveWithExtraCycles(PPC_GET_MOUSE_IDLE_POLL_EXTRA_CYCLES)
+    );
+    // The pointer moved: the read is returned at once and the count restarts.
+    assert_eq!(poll(at(90, 200), &mut counts, &mut last), PpcImportAction::ReturnPreserve);
+    assert_eq!(poll(at(90, 200), &mut counts, &mut last), PpcImportAction::ReturnPreserve);
+    assert_eq!(memory.read_u16_be(point_ptr), Some(90));
+    assert_eq!(memory.read_u16_be(point_ptr + 2), Some(200));
+}
+
+#[test]
 fn getkeys_poll_fast_forward_requires_repeated_idle_caller() {
     let key_map_ptr = PPC_DATA_BASE + 0x1000;
     let mut memory = PpcSectionMem::new();

@@ -215,9 +215,9 @@ pub(crate) use dispatch_time::{
 };
 
 use dispatch_event::{
-    dispatch_button_import, dispatch_getkeys_import, dispatch_microseconds_import,
-    dispatch_still_down_import, dispatch_tick_count_import, ppc_still_down_result,
-    ppc_wait_mouse_up_result, PpcTickCountIdlePollState,
+    dispatch_button_import, dispatch_get_mouse_import, dispatch_getkeys_import,
+    dispatch_microseconds_import, dispatch_still_down_import, dispatch_tick_count_import,
+    ppc_still_down_result, ppc_wait_mouse_up_result, PpcTickCountIdlePollState,
 };
 
 pub mod graphics;
@@ -798,6 +798,9 @@ const PPC_MICROSECONDS_IDLE_POLL_EXTRA_CYCLES: u64 = PPC_GETKEYS_IDLE_POLL_EXTRA
 const PPC_BUTTON_IDLE_POLL_FAST_FORWARD_THRESHOLD: u32 =
     PPC_GETKEYS_IDLE_POLL_FAST_FORWARD_THRESHOLD;
 const PPC_BUTTON_IDLE_POLL_EXTRA_CYCLES: u64 = PPC_GETKEYS_IDLE_POLL_EXTRA_CYCLES;
+const PPC_GET_MOUSE_IDLE_POLL_FAST_FORWARD_THRESHOLD: u32 =
+    PPC_GETKEYS_IDLE_POLL_FAST_FORWARD_THRESHOLD;
+const PPC_GET_MOUSE_IDLE_POLL_EXTRA_CYCLES: u64 = PPC_GETKEYS_IDLE_POLL_EXTRA_CYCLES;
 const PPC_TICK_COUNT_IDLE_POLL_FAST_FORWARD_THRESHOLD: u32 =
     PPC_GETKEYS_IDLE_POLL_FAST_FORWARD_THRESHOLD;
 const PPC_MATH_HOT_IMPORT_EXTRA_CYCLES: u64 = 128;
@@ -8150,6 +8153,8 @@ impl PpcLoadedApp {
         let trace_recent_on_halt = ppc_recent_imports_on_halt_enabled();
         let mut recent_imports = VecDeque::<PpcHleImportTraceEntry>::new();
         let mut idle_poll_counts = HashMap::<u32, u32>::new();
+        let mut get_mouse_idle_polls = HashMap::<u32, u32>::new();
+        let mut get_mouse_last_location: Option<(i16, i16)> = None;
         let mut tick_count_idle_poll = PpcTickCountIdlePollState::default();
         let needs_fetch_observer = trace_fetches || trace_ppc || trace_pc_range.is_some();
         let mut fetch_observer = PpcHleFetchObserver {
@@ -8498,6 +8503,7 @@ impl PpcLoadedApp {
                             | PpcImportDispatcherTarget::StillDown
                             | PpcImportDispatcherTarget::WaitMouseUp
                             | PpcImportDispatcherTarget::GetKeys
+                            | PpcImportDispatcherTarget::GetMouse
                             | PpcImportDispatcherTarget::TickCount
                             | PpcImportDispatcherTarget::Microseconds
                             | PpcImportDispatcherTarget::GetCurrentThread
@@ -8557,6 +8563,16 @@ impl PpcLoadedApp {
                         }
                         PpcImportDispatcherTarget::GetKeys => {
                             dispatch_getkeys_import(cpu, memory, input, Some(&mut idle_poll_counts))
+                        }
+                        PpcImportDispatcherTarget::GetMouse => {
+                            let port = current_gworld.with_mut(|port| *port);
+                            dispatch_get_mouse_import(
+                                cpu,
+                                memory,
+                                input,
+                                port,
+                                Some((&mut get_mouse_idle_polls, &mut get_mouse_last_location)),
+                            )
                         }
                         PpcImportDispatcherTarget::TickCount => dispatch_tick_count_import(
                             cpu,

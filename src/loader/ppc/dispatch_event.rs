@@ -112,6 +112,54 @@ pub(super) fn dispatch_getkeys_import(
     }
 }
 
+/// GetMouse writes the pointer's location in the current port's local
+/// coordinates (Macintosh Toolbox Essentials, 1992, p. 2-25).
+///
+/// Cythera's drawers track a drag by calling GetMouse in a loop until the
+/// pointer moves, and the pointer moves only between frontend ticks here, so
+/// the loop spent each tick's budget on millions of calls: a drawer took
+/// seconds per step to follow the mouse. Like the other polls, a call site
+/// that keeps reading the same location is charged extra cycles, which ends
+/// the tick sooner and brings the next pointer position.
+pub(super) fn dispatch_get_mouse_import(
+    cpu: &PpcCpu,
+    memory: &mut PpcSectionMem,
+    input: PpcInputSnapshot,
+    current_gworld: u32,
+    idle_poll: Option<(&mut HashMap<u32, u32>, &mut Option<(i16, i16)>)>,
+) -> PpcImportAction {
+    let point_ptr = cpu.gpr[3];
+    if point_ptr != 0 && ppc_memory_can_write_bytes(memory, point_ptr, 4) {
+        let _ = memory.write_u16_be(point_ptr, input.mouse_v as u16);
+        let _ = memory.write_u16_be(point_ptr + 2, input.mouse_h as u16);
+        let _ = ppc_transform_port_point(memory, current_gworld, point_ptr, false);
+    }
+    if crate::trap::dispatch::trace_input_enabled() {
+        let local_v = memory
+            .read_u16_be(point_ptr)
+            .unwrap_or(input.mouse_v as u16) as i16;
+        let local_h = memory
+            .read_u16_be(point_ptr.saturating_add(2))
+            .unwrap_or(input.mouse_h as u16) as i16;
+        eprintln!("[INPUT] PPC GetMouse ptr=${point_ptr:08X} -> ({local_v}, {local_h})");
+    }
+    let Some((idle_poll_counts, last_location)) = idle_poll else {
+        return PpcImportAction::ReturnPreserve;
+    };
+    let location = (input.mouse_v, input.mouse_h);
+    if cpu.lr == 0 || last_location.replace(location) != Some(location) {
+        idle_poll_counts.remove(&cpu.lr);
+        return PpcImportAction::ReturnPreserve;
+    }
+    let count = idle_poll_counts.entry(cpu.lr).or_default();
+    *count = count.saturating_add(1);
+    if *count > PPC_GET_MOUSE_IDLE_POLL_FAST_FORWARD_THRESHOLD {
+        PpcImportAction::ReturnPreserveWithExtraCycles(PPC_GET_MOUSE_IDLE_POLL_EXTRA_CYCLES)
+    } else {
+        PpcImportAction::ReturnPreserve
+    }
+}
+
 pub(super) fn dispatch_button_import(
     cpu: &PpcCpu,
     input: PpcInputSnapshot,
@@ -619,30 +667,13 @@ pub(super) fn dispatch_event_import(
         PpcImportDispatcherTarget::GetKeys => {
             Some(dispatch_getkeys_import(cpu, memory, input, None))
         }
-        PpcImportDispatcherTarget::GetMouse => {
-            let point_ptr = cpu.gpr[3];
-            if point_ptr != 0 && ppc_memory_can_write_bytes(memory, point_ptr, 4) {
-                let _ = memory.write_u16_be(point_ptr, input.mouse_v as u16);
-                let _ = memory.write_u16_be(point_ptr + 2, input.mouse_h as u16);
-                // GetMouse reports the position in the current graphics port's
-                // local coordinate system. EventRecord.where remains global.
-                // Inside Macintosh: Macintosh Toolbox Essentials (1992), p. 2-25.
-                let _ = ppc_transform_port_point(memory, current_gworld, point_ptr, false);
-            }
-            if crate::trap::dispatch::trace_input_enabled() {
-                let local_v = memory
-                    .read_u16_be(point_ptr)
-                    .unwrap_or(input.mouse_v as u16) as i16;
-                let local_h = memory
-                    .read_u16_be(point_ptr.saturating_add(2))
-                    .unwrap_or(input.mouse_h as u16) as i16;
-                eprintln!(
-                    "[INPUT] PPC GetMouse ptr=${point_ptr:08X} -> ({}, {})",
-                    local_v, local_h
-                );
-            }
-            Some(PpcImportAction::ReturnPreserve)
-        }
+        PpcImportDispatcherTarget::GetMouse => Some(dispatch_get_mouse_import(
+            cpu,
+            memory,
+            input,
+            current_gworld,
+            None,
+        )),
         _ => None,
     }
 }

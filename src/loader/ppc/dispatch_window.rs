@@ -851,6 +851,13 @@ pub(super) fn dispatch_window_import(
             if window_out != 0 && ppc_memory_can_write_bytes(memory, window_out, 4) {
                 let _ = memory.write_u32_be(window_out, window);
             }
+            // A window with an application WDEF names its own parts.
+            if window != 0
+                && part >= 3
+                && super::dispatch_defproc::ppc_app_wdef_window_proc_id(window).is_some()
+            {
+                super::dispatch_defproc::ppc_note_app_wdef_hit(window, cpu.gpr[3], window_out);
+            }
             Some(PpcImportAction::Return(part as u32))
         }
         PpcImportDispatcherTarget::LegacyWindow(operation) => ppc_dispatch_legacy_window(

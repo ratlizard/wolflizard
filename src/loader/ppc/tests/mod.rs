@@ -1750,3 +1750,140 @@ fn appearance_static_text_wraps_in_its_style() {
     // rows 13..20 of the rectangle.
     assert!((13..21).any(|row| inked_row(&mut loaded, row)), "no second line");
 }
+
+#[test]
+fn find_window_asks_an_application_wdef_which_part_is_hit() {
+    // Macintosh Toolbox Essentials (1992), pp. 4-122 and 4-131: FindWindow
+    // sends wHit and returns the answer plus 2. Cythera's To Do and Journal
+    // drawers answer wInGrow on their title bar, and open by the resize.
+    let pef = synthetic_pef_with_import(b"FindWindow");
+    let mut loaded = load_pef_application(&pef).unwrap();
+    let scratch = PPC_DATA_BASE + 0x1000;
+    loaded.memory.add_region(scratch, vec![0; 0x100]);
+
+    // 'WDEF' 128 as Cythera ships its own: a 68K JMP to a PowerPC procedure,
+    // here `li r3,3; blr` (wInGrow).
+    let code = PPC_CODE_BASE + 0x1000;
+    loaded.memory.add_region(
+        code,
+        [0x3860_0003u32, 0x4e80_0020]
+            .into_iter()
+            .flat_map(u32::to_be_bytes)
+            .collect(),
+    );
+    let tvector = scratch + 0x80;
+    loaded.memory.write_u32_be(tvector, code).unwrap();
+    loaded.memory.write_u32_be(tvector + 4, loaded.cpu.gpr[2]).unwrap();
+    let stub = scratch + 0x90;
+    loaded.memory.write_u16_be(stub, 0x4ef9).unwrap();
+    loaded.memory.write_u32_be(stub + 2, tvector).unwrap();
+    let wdef_handle = scratch + 0xa0;
+    loaded.memory.write_u32_be(wdef_handle, stub).unwrap();
+    let current_resource_refnum = *loaded.process_file_system.current_resource_file;
+    loaded
+        .process_file_system
+        .push_vfs_resource(PpcVfsResourceRecord {
+            ref_num: current_resource_refnum,
+            path: String::new(),
+            res_type: u32::from_be_bytes(*b"WDEF"),
+            res_id: 128,
+            name: Vec::new(),
+            data: vec![0x4e, 0xf9, 0, 0, 0, 0],
+            raw_data: None,
+            raw_attrs: None,
+            attrs: 0,
+            handle: wdef_handle,
+        });
+    let run = |loaded: &mut PpcLoadedApp, target: PpcImportDispatcherTarget| {
+        loaded.cpu.pc = loaded.entry_pc;
+        loaded.cpu.lr = PPC_HALT_PC;
+        loaded.imports[0].dispatcher_target = target;
+        let probe = loaded.run_with_hle_imports(512);
+        assert_eq!(probe.unsupported_import_index, None);
+    };
+
+    ppc_write_rect(&mut loaded.memory, scratch, 100, 100, 200, 300).unwrap();
+    loaded.cpu.gpr[3] = 0;
+    loaded.cpu.gpr[4] = scratch;
+    loaded.cpu.gpr[5] = 0;
+    loaded.cpu.gpr[6] = 1;
+    loaded.cpu.gpr[7] = 128 << 4;
+    loaded.cpu.gpr[8] = u32::MAX;
+    loaded.cpu.gpr[9] = 1;
+    loaded.cpu.gpr[10] = 0;
+    run(&mut loaded, PpcImportDispatcherTarget::NewCWindow);
+    let window = loaded.cpu.gpr[3];
+    assert_ne!(window, 0);
+
+    let out = scratch + 0x40;
+    let find = |loaded: &mut PpcLoadedApp| {
+        loaded.cpu.gpr[3] = (150 << 16) | 200;
+        loaded.cpu.gpr[4] = out;
+        run(loaded, PpcImportDispatcherTarget::FindWindow);
+    };
+    find(&mut loaded);
+    assert_eq!(loaded.cpu.gpr[3], 5, "wInGrow is inGrow");
+    assert_eq!(loaded.memory.read_u32_be(out), Some(window));
+
+    // wNoHit: not in this window, inDesk.
+    loaded.memory.write_u32_be(code, 0x3860_0000).unwrap();
+    find(&mut loaded);
+    assert_eq!(loaded.cpu.gpr[3], 0);
+    assert_eq!(loaded.memory.read_u32_be(out), Some(0));
+}
+
+#[test]
+fn lupdate_redraws_the_scroll_bars_of_a_list_with_its_own_ldef() {
+    // More Macintosh Toolbox (1993), p. 4-86: LUpdate redraws the cells and
+    // the scroll bars that meet the region. Cythera's To Do and Journal
+    // drawers are updated with LUpdate alone.
+    let pef = synthetic_pef_with_import(b"LNew");
+    let mut loaded = load_pef_application(&pef).unwrap();
+    let scratch = PPC_DATA_BASE + 0x1000;
+    loaded.memory.add_region(scratch, vec![0; 64]);
+    let window = create_test_cwindow(&mut loaded, scratch + 32, (60, 60, 260, 360), 0, true, u32::MAX);
+    ppc_write_rect(&mut loaded.memory, scratch, 10, 20, 90, 120).unwrap();
+    ppc_write_rect(&mut loaded.memory, scratch + 8, 0, 0, 10, 1).unwrap();
+    loaded.cpu.gpr[3] = scratch;
+    loaded.cpu.gpr[4] = scratch + 8;
+    loaded.cpu.gpr[5] = (20u32 << 16) | 100;
+    loaded.cpu.gpr[6] = 0;
+    loaded.cpu.gpr[7] = window;
+    loaded.cpu.gpr[8] = 1;
+    loaded.cpu.gpr[9] = 0;
+    loaded.cpu.gpr[10] = 0;
+    loaded
+        .memory
+        .write_u32_be(
+            ppc_parameter_area_slot_addr(loaded.cpu.gpr[1], PPC_NATIVE_PARAMETER_GPR_COUNT)
+                .unwrap(),
+            1,
+        )
+        .unwrap();
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::LNew);
+    let list = loaded.cpu.gpr[3];
+    assert_ne!(list, 0);
+    super::dispatch_defproc::ppc_register_list_proc(list, true);
+
+    // The bar runs down the right of rView, h 120..136; mark its middle.
+    let front = ppc_front_buffer_for_gworld(&loaded.gworlds, PPC_MAIN_GWORLD).unwrap();
+    let points: Vec<(i32, i32)> = (40..60).map(|v| (60 + 128, 60 + v)).collect();
+    for &point in &points {
+        assert!(ppc_quickdraw_write_raw_pixel(&mut loaded.memory, front, point, 0x7b));
+    }
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::NewRgn);
+    let region = loaded.cpu.gpr[3];
+    ppc_write_rect(&mut loaded.memory, scratch + 16, 0, 0, 200, 300).unwrap();
+    loaded.cpu.gpr[3] = region;
+    loaded.cpu.gpr[4] = scratch + 16;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::RectRgn);
+    loaded.cpu.gpr[3] = region;
+    loaded.cpu.gpr[4] = list;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::LUpdate);
+    assert!(
+        points
+            .iter()
+            .any(|&point| ppc_quickdraw_read_pixel(&mut loaded.memory, front, point) != Some(0x7b)),
+        "LUpdate left the scroll bar undrawn"
+    );
+}

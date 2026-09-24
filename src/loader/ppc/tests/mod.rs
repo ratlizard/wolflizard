@@ -1693,3 +1693,60 @@ fn char_extra_narrows_every_character_but_the_space() {
     draw(&mut loaded);
     assert_eq!(pen_h(&mut loaded) - 20, plain - 3);
 }
+
+#[test]
+fn appearance_static_text_wraps_in_its_style() {
+    // Cythera's Preferences labels: static text (procID 288) with a
+    // ControlFontStyleRec of flags 0x47, font -2 (small system), centred
+    // (Universal Interfaces 3.4.2 Controls.h). "Better Performance" wraps
+    // onto a second line in its narrow rectangle, as on Mac OS 8.5.
+    use super::appearance_controls::PpcAppearanceControlOperation as Op;
+    let pef = synthetic_pef_with_import(b"NewControl");
+    let mut loaded = load_pef_application(&pef).unwrap();
+    let scratch = PPC_DATA_BASE + 0x1000;
+    loaded.memory.add_region(scratch, vec![0; 0x100]);
+    let window = create_test_cwindow(&mut loaded, scratch, (40, 40, 200, 300), 0, true, u32::MAX);
+    let title = scratch + 0x60;
+    loaded.memory.write_u8(title, 18).unwrap();
+    loaded.memory.write_bytes(title + 1, b"Better Performance").unwrap();
+    ppc_write_rect(&mut loaded.memory, scratch + 0x50, 20, 20, 50, 80).unwrap();
+    loaded.cpu.gpr[3] = window;
+    loaded.cpu.gpr[4] = scratch + 0x50;
+    loaded.cpu.gpr[5] = title;
+    loaded.cpu.gpr[6] = 1;
+    loaded.cpu.gpr[7] = 0;
+    loaded.cpu.gpr[8] = 0;
+    loaded.cpu.gpr[9] = 0;
+    loaded.cpu.gpr[10] = 288;
+    run_test_import(
+        &mut loaded,
+        PpcImportDispatcherTarget::LegacyControl(PpcLegacyControlOperation::NewControl),
+    );
+    let control = loaded.cpu.gpr[3];
+    let style = scratch + 0x90;
+    loaded.memory.write_bytes(style, &[0x00, 0x47, 0xff, 0xfe, 0, 0, 0, 0, 0, 0, 0, 1]).unwrap();
+    loaded.cpu.gpr[3] = control;
+    loaded.cpu.gpr[4] = 0;
+    loaded.cpu.gpr[5] = u32::from_be_bytes(*b"font");
+    loaded.cpu.gpr[6] = 24;
+    loaded.cpu.gpr[7] = style;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::AppearanceControl(Op::SetControlData));
+    assert_eq!(loaded.cpu.gpr[3], 0);
+
+    let front = ppc_front_buffer_for_gworld(&loaded.gworlds, PPC_MAIN_GWORLD).unwrap();
+    let origin = (40 + 20, 40 + 20); // the window's content origin plus the rect
+    let white = ppc_quickdraw_read_pixel(&mut loaded.memory, front, (0, 599));
+    let inked_row = |loaded: &mut PpcLoadedApp, row: i32| {
+        (origin.1..origin.1 + 60).any(|x| {
+            ppc_quickdraw_read_pixel(&mut loaded.memory, front, (x, origin.0 + row)) != white
+        })
+    };
+    loaded.cpu.gpr[3] = control;
+    run_test_import(
+        &mut loaded,
+        PpcImportDispatcherTarget::LegacyControl(PpcLegacyControlOperation::DrawOneControl),
+    );
+    // Geneva 9 lines are 11 pixels apart; the second line's letters sit in
+    // rows 13..20 of the rectangle.
+    assert!((13..21).any(|row| inked_row(&mut loaded, row)), "no second line");
+}

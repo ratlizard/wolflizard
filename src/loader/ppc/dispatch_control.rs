@@ -1607,6 +1607,7 @@ pub(super) fn ppc_draw_control_inner(
             memory,
             gworlds,
             owner,
+            handle,
             control,
             proc_id,
             (top, left, bottom, right),
@@ -2124,6 +2125,7 @@ fn ppc_draw_appearance_control(
     memory: &mut PpcSectionMem,
     gworlds: &[PpcGWorldRecord],
     owner: u32,
+    handle: u32,
     control: u32,
     proc_id: i16,
     (top, left, bottom, right): (i16, i16, i16, i16),
@@ -2158,10 +2160,47 @@ fn ppc_draw_appearance_control(
         )
     };
     match proc_id {
-        // Static text: the title at the top left, no frame, no fill.
+        // Static text: the title wrapped into the control's rectangle, no
+        // frame, no fill, in the font and justification its
+        // ControlFontStyleRec asks for (flags 1 font, 2 face, 4 size, 0x40
+        // just; Universal Interfaces 3.4.2 Controls.h). Cythera's slider
+        // labels ask for the small system font, centred; Mac OS 8.5 draws
+        // that font as Geneva 9 (measured from its Preferences window).
         288 => {
             if !title.is_empty() {
-                text(memory, (left, top + metrics.ascent));
+                let (mut font, mut size, mut just) =
+                    (PPC_QD_TEXT_FONT_DEFAULT, PPC_QD_TEXT_SIZE_SYSTEM, 0);
+                if let Some([flags, style_font, style_size, _, _, style_just]) =
+                    super::appearance_controls::ppc_control_font_style(handle)
+                {
+                    if flags & 0x0001 != 0 {
+                        match style_font {
+                            // kControlFontSmallSystemFont and its bold.
+                            -2 | -3 => (font, size) = (3, 9),
+                            f if f > 0 => font = f,
+                            _ => {}
+                        }
+                    }
+                    if flags & 0x0004 != 0 && style_size > 0 {
+                        size = style_size;
+                    }
+                    if flags & 0x0040 != 0 {
+                        just = style_just;
+                    }
+                }
+                ppc_draw_wrapped_text(
+                    memory,
+                    gworlds,
+                    owner,
+                    &title,
+                    (top, left, bottom, right),
+                    font,
+                    size,
+                    just,
+                    PPC_QD_TEXT_MODE_SRC_OR,
+                    ink,
+                    None,
+                );
             }
         }
         // A titled group box: a one-pixel frame whose top edge runs through

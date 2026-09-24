@@ -32870,10 +32870,41 @@ fn ppc_te_draw_text_box(
     color: PpcRgbColor,
     explicit_index: Option<u8>,
 ) {
-    let Some((top, left, bottom, right)) = ppc_read_rect(memory, rect_ptr) else {
+    let Some(rect) = ppc_read_rect(memory, rect_ptr) else {
         return;
     };
     let font = ppc_current_text_font(memory, port);
+    ppc_draw_wrapped_text(
+        memory,
+        gworlds,
+        port,
+        text,
+        rect,
+        font,
+        text_size,
+        alignment,
+        text_mode,
+        color,
+        explicit_index,
+    );
+}
+
+/// Text wrapped into a rectangle, one aligned line under another, as
+/// TETextBox lays it out (Inside Macintosh: Text (1993), pp. 2-88--2-89).
+#[allow(clippy::too_many_arguments)]
+pub(super) fn ppc_draw_wrapped_text(
+    memory: &mut PpcSectionMem,
+    gworlds: &[PpcGWorldRecord],
+    port: u32,
+    text: &[u8],
+    (top, left, bottom, right): (i16, i16, i16, i16),
+    font: i16,
+    text_size: i16,
+    alignment: i16,
+    text_mode: i16,
+    color: PpcRgbColor,
+    explicit_index: Option<u8>,
+) {
     let (face, scale) = get_font_face_scaled(font, text_size);
     let ascent = face.metrics.ascent.saturating_mul(scale);
     let line_height = ascent

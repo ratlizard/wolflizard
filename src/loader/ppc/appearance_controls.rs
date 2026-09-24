@@ -237,6 +237,19 @@ pub(super) fn ppc_set_control_data(memory: &mut PpcSectionMem, cpu: &PpcCpu) -> 
     }
 }
 
+/// A control's ControlFontStyleRec, as SetControlData('font') left it:
+/// flags, font, size, style, mode, just (Universal Interfaces 3.4.2
+/// Controls.h). None when it was never given one.
+pub(super) fn ppc_control_font_style(control: u32) -> Option<[i16; 6]> {
+    TAGGED.with(|tagged| {
+        tagged
+            .borrow()
+            .get(&(control, 0, CONTROL_FONT_STYLE_TAG))
+            .filter(|bytes| bytes.len() >= 12)
+            .map(|bytes| std::array::from_fn(|i| i16::from_be_bytes([bytes[2 * i], bytes[2 * i + 1]])))
+    })
+}
+
 /// GetControlData(inControl, inPart, inTagName, inBufferSize, outBuffer,
 /// VAR outActualSize): OSErr. A control never given a font style has one of
 /// all zeroes, "use the window's font".

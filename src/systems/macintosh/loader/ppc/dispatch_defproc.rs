@@ -104,6 +104,9 @@ pub(super) fn ppc_note_app_ldef_call(call: PpcLdefCall) {
 
 /// CDEF messages (Macintosh Toolbox Essentials (1992), pp. 5-104 to 5-116).
 pub(super) const CDEF_DRAW: u32 = 0;
+/// testCntl: the CDEF answers with the part code under a point, or 0
+/// (Macintosh Toolbox Essentials (1992), pp. 5-110 and 5-112).
+pub(super) const CDEF_TEST: u32 = 1;
 pub(super) const CDEF_INIT: u32 = 3;
 
 /// Record a new control; one naming an application CDEF is told of it.
@@ -124,6 +127,15 @@ pub(super) fn ppc_register_control_proc(handle: u32, proc_id: i16) {
 
 pub(super) fn ppc_control_has_app_cdef(handle: u32) -> bool {
     APP_CDEF_CONTROLS.with(|controls| controls.borrow().contains_key(&handle))
+}
+
+/// FindControl and TestControl on a control with an application CDEF: ask
+/// the CDEF (testCntl) once the import has finished, and make its answer the
+/// import's result. `point` is packed as the CDEF receives it, vertical in
+/// the high word; `control_out`, when not 0, is FindControl's theControl,
+/// cleared if the CDEF says the point is in no part.
+pub(super) fn ppc_note_app_cdef_test(handle: u32, point: u32, control_out: u32) {
+    PENDING_CDEF_TEST.with(|slot| *slot.borrow_mut() = Some((handle, point, control_out)));
 }
 
 pub(super) fn ppc_note_app_cdef_message(handle: u32, message: u32, param: u32) {
@@ -153,6 +165,9 @@ struct DefProcCallState {
     calls: Vec<DefProcCall>,
     next: usize,
     completion: PpcImportAction,
+    /// Set when the last call is a CDEF testCntl whose answer is the
+    /// import's result: FindControl's theControl pointer, or 0.
+    part_result: Option<u32>,
 }
 
 thread_local! {
@@ -165,6 +180,7 @@ thread_local! {
     static APP_CDEF_CONTROLS: RefCell<std::collections::HashMap<u32, i16>> =
         RefCell::new(std::collections::HashMap::new());
     static PENDING_CDEF_CALLS: RefCell<Vec<(u32, u32, u32)>> = const { RefCell::new(Vec::new()) };
+    static PENDING_CDEF_TEST: RefCell<Option<(u32, u32, u32)>> = const { RefCell::new(None) };
     /// Lists whose LDEF is the refCon shell.
     static APP_LDEF_LISTS: RefCell<std::collections::HashSet<u32>> =
         RefCell::new(std::collections::HashSet::new());
@@ -267,13 +283,25 @@ fn ppc_next_def_proc_call(cpu: &mut PpcCpu, memory: &mut PpcSectionMem) -> Optio
             }
             if state.next >= state.calls.len() {
                 let state = stack.pop().expect("state present");
+                // The last call was the CDEF's testCntl: its answer, in the
+                // low word of r3, is the part code the import returns.
+                let completion = match state.part_result {
+                    Some(control_out) => {
+                        let part = cpu.gpr[3] as u16 as i16;
+                        if part == 0 && control_out != 0 {
+                            let _ = memory.write_u32_be(control_out, 0);
+                        }
+                        PpcImportAction::Return(u32::from(part as u16))
+                    }
+                    None => state.completion,
+                };
                 PORT_TO_RESTORE.with(|slot| *slot.borrow_mut() = Some(state.saved_port));
                 CLIP_ABOVE.with(|slot| *slot.borrow_mut() = Some(0));
                 cpu.lr = state.final_lr;
                 cpu.gpr[1] = state.saved_sp;
                 cpu.gpr[2] = state.restore_rtoc;
                 cpu.gpr[3..11].copy_from_slice(&state.saved_args);
-                return Some(state.completion);
+                return Some(completion);
             }
             let call = state.calls[state.next];
             state.next += 1;
@@ -412,7 +440,12 @@ pub(super) fn ppc_begin_pending_def_procs(
         PENDING_CDEF_CALLS.with(|pending| std::mem::take(&mut *pending.borrow_mut()));
     let pending_lists =
         PENDING_LDEF_CALLS.with(|pending| std::mem::take(&mut *pending.borrow_mut()));
-    if pending.is_empty() && pending_controls.is_empty() && pending_lists.is_empty() {
+    let pending_test = PENDING_CDEF_TEST.with(|slot| slot.borrow_mut().take());
+    if pending.is_empty()
+        && pending_controls.is_empty()
+        && pending_lists.is_empty()
+        && pending_test.is_none()
+    {
         return action;
     }
     let completion = match action {
@@ -430,6 +463,7 @@ pub(super) fn ppc_begin_pending_def_procs(
             PENDING_WDEF_DRAWS.with(|slot| slot.borrow_mut().extend(pending));
             PENDING_CDEF_CALLS.with(|slot| slot.borrow_mut().extend(pending_controls));
             PENDING_LDEF_CALLS.with(|slot| slot.borrow_mut().extend(pending_lists));
+            PENDING_CDEF_TEST.with(|slot| *slot.borrow_mut() = pending_test);
             return other;
         }
     };
@@ -511,6 +545,29 @@ pub(super) fn ppc_begin_pending_def_procs(
         def_call.rect = Some(call.rect);
         Some(def_call)
     }));
+    // testCntl goes last, so that its answer is in r3 when the batch ends.
+    let mut part_result = None;
+    if let Some((handle, point, control_out)) = pending_test {
+        let test = APP_CDEF_CONTROLS
+            .with(|controls| controls.borrow().get(&handle).copied())
+            .and_then(|proc_id| {
+                let res_id = (proc_id as u16 >> 4) as i16;
+                let var_code = u32::from(proc_id as u16 & 0x000F);
+                let target =
+                    ppc_app_def_proc_target(memory, vfs_resources, cdef, res_id, cpu.gpr[2])?;
+                let control = memory.read_u32_be(handle).filter(|ptr| *ptr != 0)?;
+                let owner = memory.read_u32_be(control.wrapping_add(4)).filter(|ptr| *ptr != 0);
+                Some(DefProcCall::new(
+                    target,
+                    &[var_code, handle, CDEF_TEST, point],
+                    owner,
+                ))
+            });
+        if let Some(test) = test {
+            calls.push(test);
+            part_result = Some(control_out);
+        }
+    }
     if calls.is_empty() {
         return Some(completion);
     }
@@ -524,6 +581,7 @@ pub(super) fn ppc_begin_pending_def_procs(
             calls,
             next: 0,
             completion,
+            part_result,
             restore: None,
             saved_port: current_port,
         })

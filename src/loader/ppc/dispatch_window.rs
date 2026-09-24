@@ -1896,10 +1896,29 @@ pub(super) fn ppc_restore_window_removal_exposure(
         exposed.3.min(ppc_main_screen_width() as i16),
     );
     if paint.0 < paint.2 && paint.1 < paint.3 {
+        // The desktop pattern has two colours. Resolve each to its pixel
+        // value once: an indexed pixel's value comes from the screen's colour
+        // table, and reading the table for every pixel took 17 seconds to
+        // repaint the whole screen, which froze Cythera's title when a click
+        // hid its full-screen window.
+        let mut resolved: Vec<(PpcRgbColor, Option<u16>)> = Vec::with_capacity(2);
         for v in i32::from(paint.0)..i32::from(paint.2) {
             for h in i32::from(paint.1)..i32::from(paint.3) {
                 let color = ppc_standard_desktop_color(gworlds, h, v);
-                let _ = ppc_quickdraw_write_pixel(memory, front_buffer, (h, v), color);
+                let value = match resolved.iter().find(|(known, _)| *known == color) {
+                    Some(&(_, value)) => value,
+                    None => {
+                        let value = ppc_quickdraw_indexed_pixel_value(memory, front_buffer, color);
+                        resolved.push((color, value));
+                        value
+                    }
+                };
+                let _ = match value {
+                    Some(value) => {
+                        ppc_quickdraw_write_raw_pixel(memory, front_buffer, (h, v), value)
+                    }
+                    None => ppc_quickdraw_write_pixel(memory, front_buffer, (h, v), color),
+                };
             }
         }
     }
@@ -2800,7 +2819,8 @@ pub(super) fn ppc_find_window_at_point(
         // anywhere in it, and FindWindow asks that WDEF (wHit, see the
         // FindWindow import). Cythera's drawer windows carry a close tag
         // left of their content.
-        if structure.is_some() && super::dispatch_defproc::ppc_app_wdef_window_proc_id(window).is_some()
+        if structure.is_some()
+            && super::dispatch_defproc::ppc_app_wdef_window_proc_id(window).is_some()
         {
             return (3, window);
         }

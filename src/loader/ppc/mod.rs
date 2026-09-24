@@ -10203,6 +10203,32 @@ fn ppc_quickdraw_surface_fore_pixel(
     ppc_quickdraw_surface_color_pixel(memory, surface, color)
 }
 
+/// The colour-table index an indexed front buffer stores for `color`, or
+/// None at a direct depth. It reads the screen's colour table, so a caller
+/// filling many pixels with a few colours resolves each colour once.
+pub(super) fn ppc_quickdraw_indexed_pixel_value(
+    memory: &mut PpcSectionMem,
+    front_buffer: PpcFrontBuffer,
+    color: PpcRgbColor,
+) -> Option<u16> {
+    let depth @ (1 | 2 | 4 | 8) = front_buffer.depth else {
+        return None;
+    };
+    let fallback = TrapDispatcher::standard_mac_indexed_clut(depth as u16)
+        .map(|(clut, _)| clut)
+        .unwrap_or_else(TrapDispatcher::standard_mac_8bpp_clut);
+    let clut = if front_buffer.base_addr == PPC_MAIN_SCREEN_BASE {
+        ppc_read_ctable_clut(memory, PPC_MAIN_CTABLE_HANDLE, &fallback).unwrap_or(fallback)
+    } else {
+        fallback
+    };
+    Some(u16::from(ppc_rgb_color_to_index_in_clut(
+        color,
+        &clut,
+        ppc_indexed_depth_entry_count(depth).unwrap_or(1),
+    )))
+}
+
 pub(super) fn ppc_quickdraw_write_pixel(
     memory: &mut PpcSectionMem,
     front_buffer: PpcFrontBuffer,
@@ -10210,21 +10236,11 @@ pub(super) fn ppc_quickdraw_write_pixel(
     color: PpcRgbColor,
 ) -> bool {
     match front_buffer.depth {
-        depth @ (1 | 2 | 4 | 8) => {
-            let fallback = TrapDispatcher::standard_mac_indexed_clut(depth as u16)
-                .map(|(clut, _)| clut)
-                .unwrap_or_else(TrapDispatcher::standard_mac_8bpp_clut);
-            let clut = if front_buffer.base_addr == PPC_MAIN_SCREEN_BASE {
-                ppc_read_ctable_clut(memory, PPC_MAIN_CTABLE_HANDLE, &fallback).unwrap_or(fallback)
-            } else {
-                fallback
+        1 | 2 | 4 | 8 => {
+            let Some(pixel) = ppc_quickdraw_indexed_pixel_value(memory, front_buffer, color) else {
+                return false;
             };
-            let pixel = ppc_rgb_color_to_index_in_clut(
-                color,
-                &clut,
-                ppc_indexed_depth_entry_count(depth).unwrap_or(1),
-            );
-            ppc_quickdraw_write_raw_pixel(memory, front_buffer, point, u16::from(pixel))
+            ppc_quickdraw_write_raw_pixel(memory, front_buffer, point, pixel)
         }
         16 => {
             ppc_q3_write_software_pixel(memory, front_buffer, point, ppc_rgb_color_to_rgb555(color))

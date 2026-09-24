@@ -169,17 +169,41 @@ fragment float4 guest_raster_fragment(
     constant GuestFrameUniforms& frame [[buffer(2)]],
     constant GuestCursorData& cursor [[buffer(3)]])
 {
-    // The same sharp enlargement as raster_fragment, filtering by hand
-    // because the guest's pixels arrive as indexed bytes, not a texture.
+    // The same filtering as raster_fragment, done by hand because the
+    // guest's pixels arrive as indexed bytes, not a texture.
     float2 dimensions = float2(frame.width, frame.height);
     float2 footprint = abs(float2(dfdx(in.tex_coord.x), dfdy(in.tex_coord.y))) * dimensions;
+    uint2 origin = uint2(frame.content_left, frame.content_top);
+    int2 last = int2(frame.width, frame.height) - 1;
+    if (any(footprint > 1.0)) {
+        // Shrinking, even slightly: a window fitted to the screen is often a
+        // little under twice the guest's size, where sampling of any kind
+        // makes some columns heavier than others. Average each drawable
+        // pixel's area instead.
+        footprint = max(footprint, float2(1.0));
+        float2 center = in.tex_coord * dimensions;
+        float2 lower = center - footprint * 0.5;
+        float2 upper = center + footprint * 0.5;
+        int2 first = int2(floor(lower));
+        int2 end = int2(ceil(upper));
+        float4 color = float4(0.0);
+        for (int y = first.y; y < end.y; ++y) {
+            float wy = min(upper.y, float(y + 1)) - max(lower.y, float(y));
+            for (int x = first.x; x < end.x; ++x) {
+                float wx = min(upper.x, float(x + 1)) - max(lower.x, float(x));
+                uint2 texel = uint2(clamp(int2(x, y), int2(0), last));
+                color += unpack_argb(guest_argb(
+                    origin.x + texel.x, origin.y + texel.y, framebuffer, palette, frame, cursor))
+                    * (wx * wy);
+            }
+        }
+        return color / (footprint.x * footprint.y);
+    }
     float2 texel = sharp_texel(in.tex_coord * dimensions, footprint) - 0.5;
     float2 cell = floor(texel);
     float2 weight = texel - cell;
-    int2 last = int2(frame.width, frame.height) - 1;
     uint2 near = uint2(clamp(int2(cell), int2(0), last));
     uint2 far = uint2(clamp(int2(cell) + 1, int2(0), last));
-    uint2 origin = uint2(frame.content_left, frame.content_top);
     float4 top = mix(
         unpack_argb(guest_argb(origin.x + near.x, origin.y + near.y, framebuffer, palette, frame, cursor)),
         unpack_argb(guest_argb(origin.x + far.x, origin.y + near.y, framebuffer, palette, frame, cursor)),

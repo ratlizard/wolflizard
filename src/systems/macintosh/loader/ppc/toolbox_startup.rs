@@ -93,6 +93,9 @@ pub struct PpcToolboxStartupState {
     /// foreground color and a clear bit selects the background color, as in
     /// the classic `Pattern` record used by BackPat.
     pub quickdraw_back_pattern: [u8; 8],
+    /// CharExtra's Fixed value: the pixels added to each character but the
+    /// space as text is drawn (Inside Macintosh Volume V (1986), p. V-77).
+    pub quickdraw_char_extra: i32,
     pub ae_interaction_allowed: u8,
     pub(crate) stdc_signal_state: PpcStdSignalState,
     pub(super) mp_semaphores: dispatch_threads::PpcMpSemaphoreState,
@@ -182,6 +185,7 @@ impl Default for PpcToolboxStartupState {
             clut_reserved_by_device: HashMap::new(),
             quickdraw_pen_pattern: [0xff; 8],
             quickdraw_back_pattern: [0x00; 8],
+            quickdraw_char_extra: 0,
             ae_interaction_allowed: 1,
             stdc_signal_state: PpcStdSignalState::default(),
             mp_semaphores: dispatch_threads::PpcMpSemaphoreState::default(),

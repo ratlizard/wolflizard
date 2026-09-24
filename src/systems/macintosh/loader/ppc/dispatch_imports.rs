@@ -1825,6 +1825,7 @@ pub(crate) fn dispatch_supported_import(
             unreachable!("QuickDraw imports return through dispatch_quickdraw_import")
         }
         PpcImportDispatcherTarget::DrawChar
+        | PpcImportDispatcherTarget::CharExtra
         | PpcImportDispatcherTarget::DrawText
         | PpcImportDispatcherTarget::DrawString
         | PpcImportDispatcherTarget::TextFont

@@ -186,6 +186,7 @@ pub enum PpcImportDispatcherTarget {
     LineTo,
     Line,
     DrawChar,
+    CharExtra,
     DrawText,
     DrawString,
     TextFont,
@@ -4029,7 +4030,7 @@ pub(crate) fn dispatcher_target_for_import(
         ("InterfaceLib", "VisibleLength") => PpcImportDispatcherTarget::VisibleLength,
         // Inside Macintosh Volume V (1986), p. V-77: CharExtra widens every
         // character but the space. The text drawing here has no per-character extra yet.
-        ("InterfaceLib", "CharExtra") => PpcImportDispatcherTarget::NoOpPreserve,
+        ("InterfaceLib", "CharExtra") => PpcImportDispatcherTarget::CharExtra,
         ("InterfaceLib", "StringWidth") => PpcImportDispatcherTarget::StringWidth,
         ("InterfaceLib", "TruncString") => PpcImportDispatcherTarget::TruncString,
         ("InterfaceLib", "CharWidth") => PpcImportDispatcherTarget::CharWidth,

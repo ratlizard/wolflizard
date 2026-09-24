@@ -1896,6 +1896,39 @@ mod tests {
     }
 
     #[test]
+    fn guest_shader_averages_area_when_the_window_is_a_little_smaller() {
+        // A window fitted to the screen is often a little under twice the
+        // guest's size. The guest shader must then average each drawable
+        // pixel's area as the texture shader does, not blend two samples.
+        let source = image::RgbaImage::from_fn(16, 2, |x, _| {
+            let shade = if x % 2 == 0 { 0 } else { 255 };
+            image::Rgba([shade, shade, shade, 255])
+        });
+        let mut palette = [0xFF00_0000u32; 256];
+        palette[1] = 0xFFFF_FFFF;
+        let framebuffer: Vec<u8> = (0..32).map(|i| (i % 2) as u8).collect();
+        let uniforms = GuestFrameUniforms {
+            row_bytes: 16,
+            width: 16,
+            height: 2,
+            pixel_size: 8,
+            ..GuestFrameUniforms::default()
+        };
+        for width in [15, 11, 7] {
+            let texture = render_rgba(&source, width, 2);
+            let guest = render_guest(&framebuffer, &palette, uniforms, width, 2);
+            for x in 0..width {
+                assert!(
+                    guest.get_pixel(x, 1)[0].abs_diff(texture.get_pixel(x, 1)[0]) <= 1,
+                    "width {width}, column {x}: guest {} texture {}",
+                    guest.get_pixel(x, 1)[0],
+                    texture.get_pixel(x, 1)[0]
+                );
+            }
+        }
+    }
+
+    #[test]
     #[ignore = "writes actual Metal output; set SYSTEMLESS_METAL_FONT_CAPTURE"]
     fn capture_showcase_at_mac_window_size() {
         let path = std::env::var_os("SYSTEMLESS_METAL_FONT_CAPTURE").expect("capture output path");

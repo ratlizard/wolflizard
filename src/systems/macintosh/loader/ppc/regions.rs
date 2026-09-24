@@ -1700,6 +1700,35 @@ pub(super) fn ppc_map_pt(memory: &mut PpcSectionMem, point_ptr: u32, src_ptr: u3
     let _ = memory.write_u16_be(point_ptr + 2, mapped_horizontal as u16);
 }
 
+/// ScalePt shares MapRect's proportion: Inside Macintosh Volume I (1985),
+/// pp. I-195--I-196. It treats the point as a width (h) and a height (v) and
+/// scales them by the rectangles' size ratio, with a minimum of 1 for each.
+pub(super) fn ppc_scale_pt(memory: &mut PpcSectionMem, pt_ptr: u32, src_ptr: u32, dst_ptr: u32) {
+    let (
+        Some(v),
+        Some(h),
+        Some((src_top, src_left, src_bottom, src_right)),
+        Some((dst_top, dst_left, dst_bottom, dst_right)),
+    ) = (
+        memory.read_u16_be(pt_ptr),
+        memory.read_u16_be(pt_ptr.wrapping_add(2)),
+        ppc_read_rect(memory, src_ptr),
+        ppc_read_rect(memory, dst_ptr),
+    )
+    else {
+        return;
+    };
+    let (v, h) = (i64::from(v as i16), i64::from(h as i16));
+    let src_width = i64::from(src_right) - i64::from(src_left);
+    let src_height = i64::from(src_bottom) - i64::from(src_top);
+    let dst_width = i64::from(dst_right) - i64::from(dst_left);
+    let dst_height = i64::from(dst_bottom) - i64::from(dst_top);
+    let scaled_h = if src_width == 0 { h } else { h * dst_width / src_width };
+    let scaled_v = if src_height == 0 { v } else { v * dst_height / src_height };
+    let _ = memory.write_u16_be(pt_ptr, scaled_v.max(1) as i16 as u16);
+    let _ = memory.write_u16_be(pt_ptr.wrapping_add(2), scaled_h.max(1) as i16 as u16);
+}
+
 pub(super) fn ppc_map_rect(memory: &mut PpcSectionMem, rect_ptr: u32, src_ptr: u32, dst_ptr: u32) {
     // Inside Macintosh Volume I (1985), p. I-197: MapRect maps all four
     // coordinates proportionally from srcRect's coordinate space into

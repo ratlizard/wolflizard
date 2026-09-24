@@ -305,6 +305,7 @@ pub enum PpcImportDispatcherTarget {
     GetMouse,
     GetGlobalMouse,
     GetCurrentKeyModifiers,
+    CheckUpdate,
     ActivatePalette,
     NSetPalette,
     GetPalette,
@@ -467,6 +468,7 @@ pub enum PpcImportDispatcherTarget {
     OffsetRect,
     MapPt,
     MapRect,
+    ScalePt,
     InsetRect,
     FindWindow,
     PinRect,
@@ -3522,6 +3524,7 @@ pub(crate) fn dispatcher_target_for_import(
         ("InterfaceLib", "OffsetRect") => PpcImportDispatcherTarget::OffsetRect,
         ("InterfaceLib", "MapRect") => PpcImportDispatcherTarget::MapRect,
         ("InterfaceLib", "MapPt") => PpcImportDispatcherTarget::MapPt,
+        ("InterfaceLib", "ScalePt") => PpcImportDispatcherTarget::ScalePt,
         ("InterfaceLib", "InsetRect") => PpcImportDispatcherTarget::InsetRect,
         ("InterfaceLib" | "AppearanceLib" | "CarbonLib", "FindWindow" | "findwindow") => {
             PpcImportDispatcherTarget::FindWindow
@@ -4307,6 +4310,7 @@ pub(crate) fn dispatcher_target_for_import(
         ("InterfaceLib", "GetOSEvent") => PpcImportDispatcherTarget::GetOSEvent,
         ("InterfaceLib" | "CarbonLib", "EventAvail") => PpcImportDispatcherTarget::EventAvail,
         ("InterfaceLib", "OSEventAvail") => PpcImportDispatcherTarget::OSEventAvail,
+        ("InterfaceLib", "CheckUpdate") => PpcImportDispatcherTarget::CheckUpdate,
         ("InterfaceLib", "PostEvent") => PpcImportDispatcherTarget::PostEvent,
         ("InterfaceLib", "Button") => PpcImportDispatcherTarget::Button,
         ("InterfaceLib", "StillDown") => PpcImportDispatcherTarget::StillDown,
@@ -5047,9 +5051,6 @@ pub(crate) fn dispatcher_target_for_import(
         ) => PpcImportDispatcherTarget::LegacyWindow(
             PpcLegacyWindowOperation::ChangeWindowPropertyAttributes,
         ),
-        ("InterfaceLib" | "AppearanceLib" | "CarbonLib", "CheckUpdate" | "checkupdate") => {
-            PpcImportDispatcherTarget::LegacyWindow(PpcLegacyWindowOperation::CheckUpdate)
-        }
         ("InterfaceLib" | "AppearanceLib" | "CarbonLib", "CreateNewWindow" | "createnewwindow") => {
             PpcImportDispatcherTarget::LegacyWindow(PpcLegacyWindowOperation::CreateNewWindow)
         }

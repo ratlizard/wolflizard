@@ -3938,6 +3938,64 @@ fn hle_import_runner_handles_color_cursor_procedures() {
 }
 
 #[test]
+fn set_ccursor_installs_the_colour_image_of_a_crsr_resource() {
+    // A compiled 'crsr' (Imaging With QuickDraw, pp. 8-34--8-36): the
+    // record's PixMap, pixel data and colour table are offsets from its
+    // start. Cythera sets its cursors from these, and the call used to be
+    // ignored, leaving whatever cursor was there before.
+    let pef = synthetic_pef_with_import(b"SetCCursor");
+    let mut loaded = load_pef_application(&pef).unwrap();
+    let record = PPC_DATA_BASE + 0x1000;
+    let handle = PPC_DATA_BASE + 0x0f00;
+    let mut crsr = vec![0u8; 96 + 50 + 32 + 24];
+    crsr[0..2].copy_from_slice(&0x8001u16.to_be_bytes());
+    crsr[2..6].copy_from_slice(&96u32.to_be_bytes());
+    crsr[6..10].copy_from_slice(&146u32.to_be_bytes());
+    crsr[20] = 0x80; // 1-bit image
+    crsr[52] = 0xc0; // mask
+    crsr[84..86].copy_from_slice(&1u16.to_be_bytes());
+    crsr[86..88].copy_from_slice(&2u16.to_be_bytes());
+    let pixmap = 96;
+    crsr[pixmap + 4..pixmap + 6].copy_from_slice(&(0x8000u16 | 2).to_be_bytes());
+    crsr[pixmap + 10..pixmap + 12].copy_from_slice(&16u16.to_be_bytes());
+    crsr[pixmap + 12..pixmap + 14].copy_from_slice(&16u16.to_be_bytes());
+    crsr[pixmap + 32..pixmap + 34].copy_from_slice(&1u16.to_be_bytes());
+    crsr[pixmap + 42..pixmap + 46].copy_from_slice(&178u32.to_be_bytes());
+    // Pixel data: the first pixel is index 1, the rest index 0.
+    crsr[146] = 0x80;
+    // Colour table: 0 is white, 1 is pure red.
+    let table = 178;
+    crsr[table + 6..table + 8].copy_from_slice(&1u16.to_be_bytes());
+    crsr[table + 8..table + 16].copy_from_slice(&[0, 0, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff]);
+    crsr[table + 16..table + 24].copy_from_slice(&[0, 1, 0xff, 0xff, 0, 0, 0, 0]);
+    loaded.memory.add_region(record, crsr);
+    loaded.memory.add_region(handle, record.to_be_bytes().to_vec());
+    loaded.cpu.gpr[3] = handle;
+    loaded.cursor_state.init();
+
+    let probe = loaded.run_with_hle_imports(64);
+
+    assert_eq!(probe.handled_import_count, 1);
+    let (data, mask, hot_v, hot_h) = loaded.cursor_data().expect("installed cursor");
+    assert_eq!((data[0], mask[0], hot_v, hot_h), (0x80, 0xc0, 1, 2));
+    let image = loaded.cursor_state.visible_image().cloned();
+    let Some(crate::display::CursorImage::Color {
+        width,
+        height,
+        pixels_argb,
+        ..
+    }) = image
+    else {
+        panic!("SetCCursor installed no colour cursor: {image:?}");
+    };
+    assert_eq!((width, height), (16, 16));
+    let [_, r, g, b] = pixels_argb[0].to_be_bytes();
+    assert!(r > 200 && g < 60 && b < 60, "first pixel is red: {:08x}", pixels_argb[0]);
+    let [_, r, g, b] = pixels_argb[1].to_be_bytes();
+    assert!(r > 200 && g > 200 && b > 200, "second pixel is white: {:08x}", pixels_argb[1]);
+}
+
+#[test]
 fn hle_import_runner_handles_color2_index() {
     let pef = synthetic_pef_with_import(b"Color2Index");
     let mut loaded = load_pef_application(&pef).unwrap();

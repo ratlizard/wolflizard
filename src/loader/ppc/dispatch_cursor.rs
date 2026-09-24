@@ -127,11 +127,103 @@ pub(super) fn dispatch_cursor_import(
             );
             Some(PpcImportAction::ReturnPreserve)
         }
-        PpcImportDispatcherTarget::SetCCursor | PpcImportDispatcherTarget::DisposeCCursor => {
+        PpcImportDispatcherTarget::SetCCursor => {
+            if let Some(cursor) = ppc_cursor_image_from_crsr_handle(memory, cpu.gpr[3]) {
+                cursor_state.install(cursor);
+            }
             Some(PpcImportAction::ReturnPreserve)
         }
+        PpcImportDispatcherTarget::DisposeCCursor => Some(PpcImportAction::ReturnPreserve),
         _ => None,
     }
+}
+
+/// Decode the colour cursor behind a `CCrsrHandle` for the host to draw.
+///
+/// GetCCursor here hands back the 'crsr' resource as it is stored, and
+/// Cythera loads its cursors without GetCCursor, so the record's PixMap,
+/// pixel data and colour table are offsets from the start of the record, as
+/// in the compiled resource (Imaging With QuickDraw, 1994, pp. 8-34--8-36),
+/// rather than the handles a Color QuickDraw copy would carry. A type other
+/// than $8001, or a part that does not decode, installs the record's 1-bit
+/// image and mask instead, which is what a 1-bit screen shows.
+pub(super) fn ppc_cursor_image_from_crsr_handle(
+    memory: &mut PpcSectionMem,
+    handle: u32,
+) -> Option<crate::display::CursorImage> {
+    let record = memory.read_u32_be(handle).filter(|record| *record != 0)?;
+    let mut mono_data = [0; 32];
+    let mut mono_mask = [0; 32];
+    memory.read_bytes_into(record.checked_add(20)?, &mut mono_data)?;
+    memory.read_bytes_into(record.checked_add(52)?, &mut mono_mask)?;
+    let hot_v = memory.read_u16_be(record.checked_add(84)?)? as i16;
+    let hot_h = memory.read_u16_be(record.checked_add(86)?)? as i16;
+    let mono = crate::display::CursorImage::mono(mono_data, mono_mask, hot_v, hot_h);
+    if memory.read_u16_be(record)? != 0x8001 {
+        return Some(mono);
+    }
+    let color = (|| {
+        let pixmap = record.checked_add(memory.read_u32_be(record.checked_add(2)?)?)?;
+        let pixels = record.checked_add(memory.read_u32_be(record.checked_add(6)?)?)?;
+        let row_bytes = u32::from(memory.read_u16_be(pixmap.checked_add(4)?)? & 0x3FFF);
+        let top = memory.read_u16_be(pixmap.checked_add(6)?)? as i16;
+        let left = memory.read_u16_be(pixmap.checked_add(8)?)? as i16;
+        let bottom = memory.read_u16_be(pixmap.checked_add(10)?)? as i16;
+        let right = memory.read_u16_be(pixmap.checked_add(12)?)? as i16;
+        let pixel_size = memory.read_u16_be(pixmap.checked_add(32)?)?;
+        let table = record.checked_add(memory.read_u32_be(pixmap.checked_add(42)?)?)?;
+        let width = u16::try_from(right.checked_sub(left)?).ok()?;
+        let height = u16::try_from(bottom.checked_sub(top)?).ok()?;
+        if !matches!(pixel_size, 1 | 2 | 4 | 8)
+            || width == 0
+            || height == 0
+            || width > 128
+            || height > 128
+            || row_bytes * 8 < u32::from(width) * u32::from(pixel_size)
+        {
+            return None;
+        }
+        let mut clut = [[0u16; 3]; 256];
+        let flags = memory.read_u16_be(table.checked_add(4)?)?;
+        let last = u32::from(memory.read_u16_be(table.checked_add(6)?)?).min(255);
+        for slot in 0..=last {
+            let entry = table.checked_add(8 + slot * 8)?;
+            let value = usize::from(memory.read_u16_be(entry)?);
+            let index = if flags & 0x8000 != 0 {
+                slot as usize
+            } else {
+                value
+            };
+            if let Some(color) = clut.get_mut(index) {
+                *color = [
+                    memory.read_u16_be(entry.checked_add(2)?)?,
+                    memory.read_u16_be(entry.checked_add(4)?)?,
+                    memory.read_u16_be(entry.checked_add(6)?)?,
+                ];
+            }
+        }
+        let depth = u32::from(pixel_size);
+        let mut pixels_argb = Vec::with_capacity(usize::from(width) * usize::from(height));
+        for row in 0..u32::from(height) {
+            for col in 0..u32::from(width) {
+                let bit = col * depth;
+                let byte = memory.read_u8(pixels.checked_add(row * row_bytes + bit / 8)?)?;
+                let index = (byte >> (8 - depth - bit % 8)) & ((1u16 << depth) - 1) as u8;
+                pixels_argb.push(crate::display::clut_to_argb(&clut, index));
+            }
+        }
+        Some(crate::display::CursorImage::Color {
+            width,
+            height,
+            pixels_argb,
+            mask: mono_mask,
+            hot_v,
+            hot_h,
+            mono_data,
+            mono_mask,
+        })
+    })();
+    Some(color.unwrap_or(mono))
 }
 
 fn ppc_get_ccursor(

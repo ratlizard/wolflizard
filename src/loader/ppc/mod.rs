@@ -31089,6 +31089,27 @@ pub(super) fn ppc_read_ctable_clut(
     let last_entry = usize::from(memory.read_u16_be(ctable.checked_add(6)?)?);
     let entry_count = last_entry.saturating_add(1).min(256);
     let mut clut = *base_clut;
+    // Copy the entries in one read when they are mapped as one range. Drawing
+    // looks the screen's table up once per fill, and a rounded frame is many
+    // one-pixel fills: read a word at a time, the Standard File dialog's
+    // buttons took long enough to redraw that the game stopped responding.
+    let mut entries = [0u8; 256 * 8];
+    let entries = &mut entries[..entry_count * 8];
+    if memory
+        .read_bytes_into(ctable.checked_add(8)?, entries)
+        .is_some()
+    {
+        let word = |at: usize| u16::from_be_bytes([entries[at], entries[at + 1]]);
+        for slot in 0..entry_count {
+            let at = slot * 8;
+            let value = usize::from(word(at));
+            let index = if flags & 0x8000 != 0 { slot } else { value };
+            if index < clut.len() {
+                clut[index] = [word(at + 2), word(at + 4), word(at + 6)];
+            }
+        }
+        return Some(clut);
+    }
     for slot in 0..entry_count {
         let entry = ctable.checked_add(8 + slot as u32 * 8)?;
         let value = usize::from(memory.read_u16_be(entry)?);

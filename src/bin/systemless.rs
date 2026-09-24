@@ -420,6 +420,25 @@ fn automatic_window_size(
     monitor: Option<winit::dpi::PhysicalSize<u32>>,
     scale_factor: f64,
 ) -> winit::dpi::PhysicalSize<u32> {
+    automatic_window_size_on_panel(width, height, monitor, scale_factor, 1.0).0
+}
+
+/// As `automatic_window_size`, for a screen whose backing pixels are shown on
+/// `panel_ratio` panel pixels each. Also returns the drawable pixels per
+/// guest pixel when it chose a whole number of panel pixels per guest pixel,
+/// which the window keeps when its picture changes size.
+fn automatic_window_size_on_panel(
+    width: u32,
+    height: u32,
+    monitor: Option<winit::dpi::PhysicalSize<u32>>,
+    scale_factor: f64,
+    panel_ratio: f64,
+) -> (winit::dpi::PhysicalSize<u32>, Option<f64>) {
+    let panel_ratio = if panel_ratio.is_finite() && panel_ratio > 0.0 && panel_ratio <= 1.0 {
+        panel_ratio
+    } else {
+        1.0
+    };
     let dpi = if scale_factor.is_finite() && scale_factor > 0.0 {
         scale_factor
     } else {
@@ -438,23 +457,107 @@ fn automatic_window_size(
         bounds.height = bounds.height.min((f64::from(monitor.height) * 0.8) as u32);
     }
     let fitted = fit_window_size(width, height, bounds);
-    // Bitmap text and pixel art are sharp only at a whole number of drawable
+    // Bitmap text and pixel art are sharp only at a whole number of screen
     // pixels per guest pixel. On a 1280-by-800-point Retina screen the 80%
     // margin left 800-by-600 guests at about 1.9 pixels each, and Chicago
-    // and every other bitmap strike came out uneven. Take the whole scale up
-    // to one guest pixel per point when the window, title bar included, fits
-    // the space the menu bar and Dock leave, which `monitor` is on macOS.
+    // and every other bitmap strike came out uneven. Take the largest whole
+    // number of panel pixels per guest pixel, up to the one guest pixel per
+    // point the window would otherwise have, when the window, title bar
+    // included, fits the space the menu bar and Dock leave, which `monitor`
+    // is on macOS. In a scaled display mode (a 2560-by-1600 panel shown as
+    // 1440 by 900 points draws 2880 by 1800 backing pixels and shrinks them
+    // to fit) whole panel pixels are a fraction of backing pixels: two panel
+    // pixels per guest pixel is 2.25 backing pixels there.
     #[cfg(target_os = "macos")]
     if let Some(monitor) = monitor.filter(|m| m.width > 0 && m.height > 0) {
-        let title_bar = (32.0 * dpi).round() as u32;
-        let whole = (monitor.width / width.max(1))
-            .min(monitor.height.saturating_sub(title_bar) / height.max(1))
-            .min(dpi.round().max(1.0) as u32);
-        if whole >= 1 && width.saturating_mul(whole) >= fitted.width {
-            return winit::dpi::PhysicalSize::new(width * whole, height * whole);
+        let title_bar = 32.0 * dpi;
+        let panel = |backing: f64| (backing * panel_ratio).floor();
+        let whole = panel(f64::from(monitor.width) / f64::from(width.max(1)))
+            .min(panel((f64::from(monitor.height) - title_bar).max(0.0) / f64::from(height.max(1))))
+            .min((dpi * panel_ratio).round().max(1.0));
+        if whole >= 1.0 {
+            let scale = whole / panel_ratio;
+            let size = winit::dpi::PhysicalSize::new(
+                (f64::from(width) * scale).round() as u32,
+                (f64::from(height) * scale).round() as u32,
+            );
+            if size.width >= fitted.width {
+                return (size, Some(scale));
+            }
         }
     }
-    fitted
+    (fitted, None)
+}
+
+/// The window size that shows a `width` by `height` picture at `scale`.
+fn scaled_window_size(width: u32, height: u32, scale: f64) -> winit::dpi::PhysicalSize<u32> {
+    winit::dpi::PhysicalSize::new(
+        (f64::from(width) * scale).round() as u32,
+        (f64::from(height) * scale).round() as u32,
+    )
+}
+
+/// Panel pixels per backing pixel on `display`: below one in a scaled
+/// display mode, which draws more backing pixels than the panel has and
+/// shrinks them to fit; one otherwise, or when the modes cannot be read.
+#[cfg(target_os = "macos")]
+fn panel_pixels_per_backing_pixel(display: u32) -> f64 {
+    use std::ffi::c_void;
+    #[link(name = "CoreGraphics", kind = "framework")]
+    extern "C" {
+        fn CGDisplayCopyDisplayMode(display: u32) -> *const c_void;
+        fn CGDisplayCopyAllDisplayModes(display: u32, options: *const c_void) -> *const c_void;
+        fn CGDisplayModeGetPixelWidth(mode: *const c_void) -> usize;
+        fn CGDisplayModeGetIOFlags(mode: *const c_void) -> u32;
+        fn CGDisplayModeRelease(mode: *const c_void);
+    }
+    #[link(name = "CoreFoundation", kind = "framework")]
+    extern "C" {
+        fn CFArrayGetCount(array: *const c_void) -> isize;
+        fn CFArrayGetValueAtIndex(array: *const c_void, index: isize) -> *const c_void;
+        fn CFRelease(object: *const c_void);
+    }
+    // kDisplayModeNativeFlag marks the panel's own resolution among the
+    // display's modes (IOKit IOGraphicsTypes.h).
+    const NATIVE: u32 = 0x0200_0000;
+    // SAFETY: CoreGraphics queries on a display id; each copied object is
+    // released once, and array elements are borrowed from the array.
+    unsafe {
+        let current = CGDisplayCopyDisplayMode(display);
+        if current.is_null() {
+            return 1.0;
+        }
+        let drawn = CGDisplayModeGetPixelWidth(current);
+        CGDisplayModeRelease(current);
+        let modes = CGDisplayCopyAllDisplayModes(display, std::ptr::null());
+        if modes.is_null() {
+            return 1.0;
+        }
+        let mut native = 0;
+        for index in 0..CFArrayGetCount(modes) {
+            let mode = CFArrayGetValueAtIndex(modes, index);
+            if CGDisplayModeGetIOFlags(mode) & NATIVE != 0 {
+                native = native.max(CGDisplayModeGetPixelWidth(mode));
+            }
+        }
+        CFRelease(modes);
+        if native > 0 && drawn > native {
+            native as f64 / drawn as f64
+        } else {
+            1.0
+        }
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn monitor_panel_ratio(monitor: Option<&winit::monitor::MonitorHandle>) -> f64 {
+    use winit::platform::macos::MonitorHandleExtMacOS;
+    monitor.map_or(1.0, |monitor| panel_pixels_per_backing_pixel(monitor.native_id()))
+}
+
+#[cfg(not(target_os = "macos"))]
+fn monitor_panel_ratio(_monitor: Option<&winit::monitor::MonitorHandle>) -> f64 {
+    1.0
 }
 
 /// Use the actual window's display, including the macOS menu bar and Dock
@@ -526,31 +629,38 @@ fn window_guest_resize_scale(window: &Window, display_scale: Option<u32>) -> Opt
     )
 }
 
-/// The whole scale an automatically sized window shows `content` at, if it
-/// shows it at one. Such a window keeps that scale when the picture changes
-/// size: Cythera's PowerPC build takes the menu bar's rows after the window
-/// has opened for the rows below them, and without this the taller picture
-/// was shrunk into the window, 800 by 600 at 1.93 instead of 2 on a Retina
-/// screen, letterboxed, and every bitmap glyph came out uneven.
-fn whole_scale_of(size: winit::dpi::PhysicalSize<u32>, content: Option<ContentRect>) -> Option<u32> {
-    let content = content.filter(|c| c.width > 0 && c.height > 0)?;
-    let scale = size.width / content.width;
-    (scale >= 1
-        && size.width == content.width * scale
-        && size.height == content.height * scale)
-        .then_some(scale)
-}
-
-fn automatic_window_whole_scale(
-    window: &Window,
-    display_scale: Option<u32>,
+/// Whether a window of `size` shows `content` at `scale`, to the pixel.
+fn window_shows_at_scale(
     size: winit::dpi::PhysicalSize<u32>,
     content: Option<ContentRect>,
-) -> Option<u32> {
+    scale: f64,
+) -> bool {
+    content.filter(|c| c.width > 0 && c.height > 0).is_some_and(|content| {
+        let expected = scaled_window_size(content.width, content.height, scale);
+        expected.width.abs_diff(size.width) <= 1 && expected.height.abs_diff(size.height) <= 1
+    })
+}
+
+/// The size an automatically sized window takes when its picture becomes
+/// `content`: it keeps the scale it opened at. Cythera's PowerPC build takes
+/// the menu bar's rows after the window has opened for the rows below them,
+/// and without this the taller picture was shrunk into the window,
+/// letterboxed, and every bitmap glyph came out uneven. A window resized by
+/// hand away from that scale is left alone.
+fn automatic_resize_target(
+    window: &Window,
+    display_scale: Option<u32>,
+    automatic_scale: Option<f64>,
+    size: winit::dpi::PhysicalSize<u32>,
+    previous: Option<ContentRect>,
+    content: (u32, u32),
+) -> Option<winit::dpi::PhysicalSize<u32>> {
     if display_scale.is_some() || window.fullscreen().is_some() || window.is_maximized() {
         return None;
     }
-    whole_scale_of(size, content)
+    let scale = automatic_scale?;
+    window_shows_at_scale(size, previous, scale)
+        .then(|| scaled_window_size(content.0, content.1, scale))
 }
 
 /// One scripted input. The caller explicitly chooses the clock: retired
@@ -1060,6 +1170,9 @@ struct App {
     /// Set once a PowerPC application has taken its menu bar away by setting
     /// MBarHeight to zero; see `native_menu_bar_height`.
     guest_owns_menu_bar_rows: std::cell::Cell<bool>,
+    /// Drawable pixels per guest pixel of an automatically sized window that
+    /// opened at a whole number of panel pixels per guest pixel.
+    automatic_guest_scale: Option<f64>,
     /// Keys pressed in the window and not yet released, as (key, char).
     held_keys: Vec<(u8, u8)>,
     /// Force a Metal submission even if all visible guest inputs are
@@ -1245,6 +1358,7 @@ impl App {
             last_presented_guest_tick: None,
             force_next_render: true,
             guest_owns_menu_bar_rows: std::cell::Cell::new(false),
+            automatic_guest_scale: None,
             held_keys: Vec::new(),
             #[cfg(target_os = "macos")]
             force_gpu_present: true,
@@ -2148,21 +2262,20 @@ impl App {
                     native_menu_bar_height(Some(runner), self.native_integrations, &self.guest_owns_menu_bar_rows),
                 );
                 if let Some(window) = self.window.as_ref() {
-                    if let Some(scale) = window_guest_resize_scale(window, self.display_scale)
+                    if let Some(target) = window_guest_resize_scale(window, self.display_scale)
+                        .map(|scale| guest_scaled_physical_size(rect.width, rect.height, scale))
                         .or_else(|| {
-                            automatic_window_whole_scale(
+                            automatic_resize_target(
                                 window,
                                 self.display_scale,
+                                self.automatic_guest_scale,
                                 size,
                                 self.window_sized_content_rect,
+                                (rect.width, rect.height),
                             )
                         })
                     {
-                        let _ = window.request_inner_size(guest_scaled_physical_size(
-                            rect.width,
-                            rect.height,
-                            scale,
-                        ));
+                        let _ = window.request_inner_size(target);
                     }
                 }
                 self.window_sized_content_rect = Some(rect);
@@ -2200,24 +2313,22 @@ impl App {
                 self.transient_window_restore_geometry = None;
                 // An automatically sized window at a whole scale of its
                 // picture keeps that scale when the picture's size changes
-                // (see `whole_scale_of`); this branch is the one such a
+                // (see `automatic_resize_target`); this branch is the one such a
                 // window takes, so the check has to be made here, before the
                 // picture it was sized for is forgotten.
                 if self.window_sized_content_rect.is_some_and(|previous| {
                     (previous.width, previous.height) != (desired_content.width, desired_content.height)
                 }) {
                     if let Some(window) = self.window.as_ref() {
-                        if let Some(scale) = automatic_window_whole_scale(
+                        if let Some(target) = automatic_resize_target(
                             window,
                             self.display_scale,
+                            self.automatic_guest_scale,
                             size,
                             self.window_sized_content_rect,
+                            (desired_content.width, desired_content.height),
                         ) {
-                            let _ = window.request_inner_size(guest_scaled_physical_size(
-                                desired_content.width,
-                                desired_content.height,
-                                scale,
-                            ));
+                            let _ = window.request_inner_size(target);
                         }
                     }
                 }
@@ -2258,21 +2369,20 @@ impl App {
                 // Guest writes to MBarHeight can change the visible rows even
                 // when the learned gameplay crop and screen mode are unchanged.
                 if let Some(window) = self.window.as_ref() {
-                    if let Some(scale) = window_guest_resize_scale(window, self.display_scale)
+                    if let Some(target) = window_guest_resize_scale(window, self.display_scale)
+                        .map(|scale| guest_scaled_physical_size(desired_content.width, desired_content.height, scale))
                         .or_else(|| {
-                            automatic_window_whole_scale(
+                            automatic_resize_target(
                                 window,
                                 self.display_scale,
+                                self.automatic_guest_scale,
                                 size,
                                 self.window_sized_content_rect,
+                                (desired_content.width, desired_content.height),
                             )
                         })
                     {
-                        let _ = window.request_inner_size(guest_scaled_physical_size(
-                            desired_content.width,
-                            desired_content.height,
-                            scale,
-                        ));
+                        let _ = window.request_inner_size(target);
                     }
                 }
                 self.window_sized_content_rect = Some(desired_content);
@@ -3300,14 +3410,16 @@ impl ApplicationHandler for App {
             let monitor = event_loop.primary_monitor();
             let initial_window_size = self.display_scale.map_or_else(
                 || {
-                    automatic_window_size(
+                    automatic_window_size_on_panel(
                         initial_size.0,
                         initial_size.1,
                         monitor.as_ref().map(|monitor| monitor.size()),
                         monitor
                             .as_ref()
                             .map_or(1.0, |monitor| monitor.scale_factor()),
+                        monitor_panel_ratio(monitor.as_ref()),
                     )
+                    .0
                 },
                 |scale| guest_scaled_physical_size(initial_size.0, initial_size.1, scale),
             );
@@ -3327,12 +3439,23 @@ impl ApplicationHandler for App {
             // primary one. Resolve its actual DPI before showing the window.
             if self.display_scale.is_none() {
                 let bounds = window_monitor_bounds(&window);
-                let target = automatic_window_size(
+                let panel_ratio = monitor_panel_ratio(window.current_monitor().as_ref());
+                let (target, scale) = automatic_window_size_on_panel(
                     initial_size.0,
                     initial_size.1,
                     bounds.map(|(_, size)| size),
                     window.scale_factor(),
+                    panel_ratio,
                 );
+                eprintln!(
+                    "[SYSTEMLESS] Window: {}x{} for {}x{} guest pixels, panel pixels per backing pixel {panel_ratio:.4}, scale {}",
+                    target.width,
+                    target.height,
+                    initial_size.0,
+                    initial_size.1,
+                    scale.map_or("fitted".to_string(), |scale| format!("{scale:.4}")),
+                );
+                self.automatic_guest_scale = scale;
                 let _ = window.request_inner_size(target);
                 if let Some((origin, extent)) = bounds {
                     window.set_outer_position(winit::dpi::PhysicalPosition::new(
@@ -4523,23 +4646,23 @@ fn keycode_to_mac_printable_char(key: &PhysicalKey) -> u8 {
 
 #[cfg(test)]
 mod whole_scale_tests {
-    use super::{whole_scale_of, ContentRect};
+    use super::{window_shows_at_scale, ContentRect};
     use winit::dpi::PhysicalSize;
 
     #[test]
-    fn a_window_at_a_whole_scale_of_its_picture_reports_that_scale() {
+    fn a_window_shows_its_picture_at_the_scale_it_opened_at() {
         let rows_below_menu_bar = Some(ContentRect {
             left: 0,
             top: 20,
             width: 800,
             height: 580,
         });
-        assert_eq!(whole_scale_of(PhysicalSize::new(1600, 1160), rows_below_menu_bar), Some(2));
-        assert_eq!(whole_scale_of(PhysicalSize::new(800, 580), rows_below_menu_bar), Some(1));
-        // Resized by hand to no whole scale: leave the window alone.
-        assert_eq!(whole_scale_of(PhysicalSize::new(1545, 1120), rows_below_menu_bar), None);
-        assert_eq!(whole_scale_of(PhysicalSize::new(1600, 1200), rows_below_menu_bar), None);
-        assert_eq!(whole_scale_of(PhysicalSize::new(1600, 1160), None), None);
+        assert!(window_shows_at_scale(PhysicalSize::new(1600, 1160), rows_below_menu_bar, 2.0));
+        assert!(window_shows_at_scale(PhysicalSize::new(1800, 1305), rows_below_menu_bar, 2.25));
+        // Resized by hand: leave the window alone.
+        assert!(!window_shows_at_scale(PhysicalSize::new(1545, 1120), rows_below_menu_bar, 2.0));
+        assert!(!window_shows_at_scale(PhysicalSize::new(1600, 1200), rows_below_menu_bar, 2.0));
+        assert!(!window_shows_at_scale(PhysicalSize::new(1600, 1160), None, 2.0));
     }
 }
 
@@ -4846,6 +4969,14 @@ mod tests {
         assert_eq!(
             automatic_window_size(800, 600, Some(visible), 2.0),
             PhysicalSize::new(1600, 1200)
+        );
+        // A 2560-by-1600 panel in its 1440-by-900-point mode draws 2880 by
+        // 1800 backing pixels and shrinks them by 8/9. Two panel pixels per
+        // guest pixel is 2.25 backing pixels.
+        let scaled_mode = PhysicalSize::new(2880, 1740);
+        assert_eq!(
+            super::automatic_window_size_on_panel(800, 600, Some(scaled_mode), 2.0, 2560.0 / 2880.0),
+            (PhysicalSize::new(1800, 1350), Some(2.25))
         );
         // Too little room for 2x even without the margin: stay fitted.
         let short = PhysicalSize::new(2560, 1200);

@@ -1054,6 +1054,28 @@ struct App {
 }
 
 impl App {
+    /// Release modifier keys the guest still holds but the keyboard does not.
+    /// Cmd-Shift-4 hands the rest of the screenshot to another process
+    /// without taking focus from this window, so neither the key releases
+    /// nor a focus change arrive, and Command and Shift stayed down: a click
+    /// in a list became a shift-click that selected a range, and typing a
+    /// name became Command-key shortcuts. Ask the host at each press instead.
+    fn release_stale_modifiers(&mut self) {
+        let Some(flags) = host_modifier_flags() else {
+            return;
+        };
+        let stale = stale_modifier_keys(&self.held_keys, flags);
+        if stale.is_empty() {
+            return;
+        }
+        if let Some(runner) = self.runner.as_mut() {
+            for &(mac_key, char_code) in &stale {
+                runner.push_key_up(mac_key, char_code);
+            }
+        }
+        self.held_keys.retain(|held| !stale.contains(held));
+    }
+
     #[cfg(test)]
     fn new(
         game_path: PathBuf,
@@ -3336,6 +3358,7 @@ impl ApplicationHandler for App {
                 ..
             } => {
                 self.force_next_render = true;
+                self.release_stale_modifiers();
                 let (v, h) = self.host_mouse_to_mac(self.mouse_physical.0, self.mouse_physical.1);
                 if let Some(runner) = self.runner.as_mut() {
                     match state {
@@ -3380,6 +3403,9 @@ impl ApplicationHandler for App {
                         }
                     }
                     return;
+                }
+                if event.state == ElementState::Pressed {
+                    self.release_stale_modifiers();
                 }
                 if let Some(runner) = self.runner.as_mut() {
                     match event.state {
@@ -4124,6 +4150,43 @@ fn physical_numpad_to_mac(key: &PhysicalKey) -> Option<(u8, u8)> {
     }
 }
 
+/// The held keys among `held` that are modifiers whose flag is clear in
+/// `host_flags`, a CGEventFlags word (shift 0x20000, control 0x40000,
+/// option 0x80000, command 0x100000).
+fn stale_modifier_keys(held: &[(u8, u8)], host_flags: u64) -> Vec<(u8, u8)> {
+    held.iter()
+        .copied()
+        .filter(|&(mac_key, _)| {
+            let mask = match mac_key {
+                0x36 | 0x37 => 0x0010_0000,
+                0x38 | 0x3C => 0x0002_0000,
+                0x3A | 0x3D => 0x0008_0000,
+                0x3B | 0x3E => 0x0004_0000,
+                _ => return false,
+            };
+            host_flags & mask == 0
+        })
+        .collect()
+}
+
+/// The modifier keys down on the keyboard now, as CGEventFlags.
+#[cfg(target_os = "macos")]
+fn host_modifier_flags() -> Option<u64> {
+    #[link(name = "CoreGraphics", kind = "framework")]
+    extern "C" {
+        fn CGEventSourceFlagsState(state_id: i32) -> u64;
+    }
+    // kCGEventSourceStateHIDSystemState (1): the hardware's state, which no
+    // other process's event handling can leave behind.
+    // SAFETY: a pure query taking a source-state constant.
+    Some(unsafe { CGEventSourceFlagsState(1) })
+}
+
+#[cfg(not(target_os = "macos"))]
+fn host_modifier_flags() -> Option<u64> {
+    None
+}
+
 fn host_keyboard_event_to_mac(
     logical_key: &Key,
     physical_key: &PhysicalKey,
@@ -4370,6 +4433,27 @@ fn keycode_to_mac_printable_char(key: &PhysicalKey) -> u8 {
             _ => 0,
         },
         _ => 0,
+    }
+}
+
+#[cfg(test)]
+mod stale_modifier_tests {
+    use super::stale_modifier_keys;
+
+    #[test]
+    fn modifiers_the_keyboard_has_released_are_stale() {
+        let held = [(0x37, 0), (0x38, 0), (0x00, b'a')];
+        // Nothing down on the keyboard: Command and Shift are stale, the
+        // letter is not a modifier and is left alone.
+        assert_eq!(stale_modifier_keys(&held, 0), vec![(0x37, 0), (0x38, 0)]);
+        // Command still down: only Shift is stale.
+        assert_eq!(stale_modifier_keys(&held, 0x0010_0000), vec![(0x38, 0)]);
+        // Both down: nothing to release.
+        assert!(stale_modifier_keys(&held, 0x0012_0000).is_empty());
+        assert_eq!(
+            stale_modifier_keys(&[(0x3A, 0), (0x3B, 0)], 0x0008_0000),
+            vec![(0x3B, 0)]
+        );
     }
 }
 

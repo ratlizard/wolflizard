@@ -3997,6 +3997,39 @@ fn save_screenshot(runner: &FixtureRunner, num: usize) {
         .unwrap_or_else(std::env::temp_dir);
     let path = dir.join(format!("systemless_headless_{:04}.png", num));
     img.save(&path).expect("Failed to save screenshot");
+    // The window shows the outline presentation, not screen memory, while
+    // outline text is visible, and the two can disagree: a stale region in
+    // the presentation is invisible in the frame above. With
+    // SYSTEMLESS_HEADLESS_PRESENTED_SCALE=<1..4>, also write what the
+    // window would show, before its final resize to the drawable.
+    if let Some(scale) = std::env::var("SYSTEMLESS_HEADLESS_PRESENTED_SCALE")
+        .ok()
+        .and_then(|value| value.parse::<u32>().ok())
+    {
+        let mut guest = Vec::new();
+        display::render_screen_argb_with_gamma(
+            runner.bus(),
+            runner.dispatcher().screen_mode,
+            &runner.dispatcher().device_clut,
+            &device_gamma,
+            &mut guest,
+        );
+        let mut presented = Vec::new();
+        if let Some((pw, ph)) =
+            runner
+                .bus()
+                .presented_argb_scaled(&guest, &guest, scale, &mut presented)
+        {
+            let img = image::RgbImage::from_fn(pw, ph, |x, y| {
+                let [_, r, g, b] = presented[(y * pw + x) as usize].to_be_bytes();
+                image::Rgb([r, g, b])
+            });
+            let path = dir.join(format!("systemless_presented_{:04}.png", num));
+            img.save(&path).expect("Failed to save presented frame");
+        } else {
+            eprintln!("[HEADLESS] Screenshot #{num}: no outline presentation to write");
+        }
+    }
     eprintln!(
         "[HEADLESS] Screenshot #{}: {} (ticks={})",
         num,

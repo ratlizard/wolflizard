@@ -2198,6 +2198,29 @@ impl App {
             if !allow_guest_resize {
                 self.pending_window_transition = None;
                 self.transient_window_restore_geometry = None;
+                // An automatically sized window at a whole scale of its
+                // picture keeps that scale when the picture's size changes
+                // (see `whole_scale_of`); this branch is the one such a
+                // window takes, so the check has to be made here, before the
+                // picture it was sized for is forgotten.
+                if self.window_sized_content_rect.is_some_and(|previous| {
+                    (previous.width, previous.height) != (desired_content.width, desired_content.height)
+                }) {
+                    if let Some(window) = self.window.as_ref() {
+                        if let Some(scale) = automatic_window_whole_scale(
+                            window,
+                            self.display_scale,
+                            size,
+                            self.window_sized_content_rect,
+                        ) {
+                            let _ = window.request_inner_size(guest_scaled_physical_size(
+                                desired_content.width,
+                                desired_content.height,
+                                scale,
+                            ));
+                        }
+                    }
+                }
                 self.window_sized_content_rect = Some(desired_content);
             }
             if let Some(pending) = self.pending_window_transition {

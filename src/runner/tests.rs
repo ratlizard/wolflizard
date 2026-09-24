@@ -9571,6 +9571,58 @@
     }
 
     #[test]
+    fn headless_ticks_service_a_ppc_double_buffer() {
+        const CHANNEL: u32 = 0x0300_1000;
+        const HEADER: u32 = 0x0300_2000;
+        const BUFFER: u32 = 0x0300_3000;
+        const CALLBACK: u32 = PPC_CODE_BASE + 0x1000;
+
+        // Cythera's `TAudio::PlaySound` waits for its own mixer, which runs
+        // only in the doubleBack procedure; a headless run that advanced
+        // ticks without mixing left that wait spinning for ever.
+        let sound = PpcSoundState::default();
+        sound.manager.replace_double_buffer_playbacks(vec![PpcSoundDoubleBufferPlaybackRecord {
+            channel: CHANNEL,
+            header: HEADER,
+            buffers: [BUFFER, 0],
+            callback: CALLBACK,
+            callback_architecture: CallbackTaskArchitecture::PowerPc,
+            sample_rate_fixed: crate::sound::OUTPUT_RATE << 16,
+            num_channels: 1,
+            sample_size: 8,
+            compression_id: 0,
+            packet_size: 0,
+            current_buffer_index: 0,
+            callback_pending_mask: 0,
+            active: true,
+            host_initialized: false,
+            host_buffer_loaded: false,
+        }]);
+        let mut app = halted_ppc_app_with_sound(sound);
+        let ppc_app = app.ppc.as_mut().expect("PPC app");
+        ppc_app.memory.add_region(BUFFER, vec![0; 32]);
+        ppc_app.memory.add_region(
+            CALLBACK,
+            [0x3860_002au32, 0x4e80_0020] // li r3,42; blr
+                .into_iter()
+                .flat_map(u32::to_be_bytes)
+                .collect(),
+        );
+
+        let mut runner = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());
+        runner.init_app(&app);
+        assert!(!runner.dispatcher().sound_manager.has_playback_gated_callback());
+        runner.advance_headless_callback_audio(1);
+
+        let ppc_app = runner
+            .native
+            .application()
+            .expect("PPC app should stay loaded");
+        assert_eq!(ppc_app.sound.completion_invocations.len(), 1);
+        assert_eq!(ppc_app.sound.completion_invocations[0].end_r3, 42);
+    }
+
+    #[test]
     #[cfg(feature = "debug")]
     fn debugger_pause_defers_gui_ppc_sound_completion_until_resume() {
         use crate::debug::{handle_debug_request, DebugRequest};

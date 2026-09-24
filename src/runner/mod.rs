@@ -5030,7 +5030,24 @@ impl FixtureRunner {
     /// opt-in through `mix_audio`, so fixtures that inspect PCM do not consume
     /// unrelated channels implicitly.
     fn advance_headless_callback_audio(&mut self, elapsed_ticks: u32) {
-        if elapsed_ticks == 0 || !self.dispatcher.sound_manager.has_playback_gated_callback() {
+        // A PowerPC double buffer is serviced only from the mixer: its
+        // doubleBack procedure refills the buffer the host has finished
+        // with (Inside Macintosh: Sound (1994), pp. 2-68--2-71). Cythera
+        // mixes its own effects in that procedure and waits, in
+        // `TAudio::PlaySound`, for its table entry to clear, so a
+        // headless run that never mixes never finishes a waited sound.
+        let ppc_double_buffer_active = self.native.application().is_some_and(|ppc_app| {
+            ppc_app
+                .sound
+                .manager
+                .double_buffer_playbacks
+                .iter()
+                .any(|playback| playback.active)
+        });
+        if elapsed_ticks == 0
+            || !(self.dispatcher.sound_manager.has_playback_gated_callback()
+                || ppc_double_buffer_active)
+        {
             return;
         }
 

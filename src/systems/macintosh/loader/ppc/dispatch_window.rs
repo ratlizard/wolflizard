@@ -3699,6 +3699,15 @@ pub(super) fn ppc_find_window_at_point(
             }
             return (4, window);
         }
+        // Inside the structure region but not where a standard frame has a
+        // part: a window drawn by an application WDEF may have parts
+        // anywhere in it, and FindWindow asks that WDEF (wHit, see the
+        // FindWindow import). Cythera's drawer windows carry a close tag
+        // left of their content.
+        if structure.is_some() && super::dispatch_defproc::ppc_app_wdef_window_proc_id(window).is_some()
+        {
+            return (3, window);
+        }
     }
     (0, 0)
 }
@@ -7402,6 +7411,22 @@ pub(super) fn ppc_dispatch_track_go_away(
         return PpcImportAction::Return(0);
     };
     let call = ppc_go_away_call(cpu);
+    // A window drawn by an application WDEF has its close part wherever the
+    // WDEF puts it (Cythera's drawers carry a tag left of their content):
+    // hold until mouse-up, then ask the WDEF about the release point.
+    if startup.go_away_tracking.is_none()
+        && super::dispatch_defproc::ppc_app_wdef_window_proc_id(call.window).is_some()
+    {
+        if input.mouse_button {
+            return PpcImportAction::Yield(u64::MAX);
+        }
+        if let Some(index) = event_queue.iter().position(|event| event.what == 2) {
+            event_queue.remove(index);
+        }
+        let point = (u32::from(input.mouse_v as u16) << 16) | u32::from(input.mouse_h as u16);
+        super::dispatch_defproc::ppc_note_app_wdef_go_away(call.window, point);
+        return PpcImportAction::Return(0);
+    }
     if let Some(state) = startup.go_away_tracking.as_ref() {
         if state.call != call {
             return PpcImportAction::Return(0);

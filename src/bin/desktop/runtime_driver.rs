@@ -317,6 +317,18 @@ impl GuiDriver {
             let _timing = FramePhaseTimer::new("window compositing");
             runner.composite_frame();
         }
+        // A running window can be asked for the frame it holds: while
+        // SYSTEMLESS_GUI_DUMP_TRIGGER names a file, its appearance writes
+        // screen memory and, with SYSTEMLESS_HEADLESS_PRESENTED_SCALE, the
+        // outline presentation, as a headless screenshot does, and removes
+        // the file. For a fault seen only in a window.
+        if let Some(trigger) = std::env::var_os("SYSTEMLESS_GUI_DUMP_TRIGGER") {
+            let trigger = std::path::PathBuf::from(trigger);
+            if std::fs::remove_file(&trigger).is_ok() {
+                static DUMPS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(1);
+                super::save_screenshot(runner, DUMPS.fetch_add(1, std::sync::atomic::Ordering::Relaxed));
+            }
+        }
         let _timing = FramePhaseTimer::new("owned frame export");
         let mode = runner.dispatcher().screen_mode;
         let learning_crop = learning_crop || self.snapshot_screen_mode != Some(mode);

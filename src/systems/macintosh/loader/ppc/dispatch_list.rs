@@ -811,10 +811,11 @@ pub(super) fn dispatch_list_import(context: PpcListDispatchContext<'_>) -> Optio
             Some(PpcImportAction::ReturnPreserve)
         }
         PpcImportDispatcherTarget::LUpdate => {
-            // More Macintosh Toolbox (1993), p. 4-88: LUpdate redraws the
-            // cells that intersect the update region. For a list drawn by
-            // its own LDEF that decides which cells the application is asked
-            // to draw; an empty region, as in a hidden window, asks for none.
+            // More Macintosh Toolbox (1993), p. 4-86: LUpdate redraws the
+            // cells, and the scroll bars, that intersect the update region.
+            // For a list drawn by its own LDEF that decides which cells the
+            // application is asked to draw; an empty region, as in a hidden
+            // window, asks for none.
             let update_bounds = memory
                 .read_u32_be(cpu.gpr[3])
                 .filter(|_| cpu.gpr[3] != 0)
@@ -825,6 +826,18 @@ pub(super) fn dispatch_list_import(context: PpcListDispatchContext<'_>) -> Optio
             list_manager.with_record_ref(cpu.gpr[4], |record| {
                 if record.draw_enabled && app_ldef {
                     ppc_list_draw_within(memory, gworlds, record, Some(update_bounds));
+                    // Cythera's To Do and Journal drawers are updated with
+                    // LUpdate alone, and showed no scroll bar.
+                    ppc_list_draw_scroll_bars_within(
+                        memory,
+                        handles,
+                        controls,
+                        gworlds,
+                        vfs_resources,
+                        current_resource_refnum,
+                        record,
+                        update_bounds,
+                    );
                 } else if record.draw_enabled {
                     ppc_list_redraw(
                         memory,
@@ -1642,6 +1655,46 @@ fn ppc_list_redraw(
             current_resource_refnum,
             control_handle,
         );
+    }
+}
+
+/// Draw the list's scroll bars that meet `bounds`, in the list port's
+/// local coordinates.
+#[allow(clippy::too_many_arguments)]
+fn ppc_list_draw_scroll_bars_within(
+    memory: &mut PpcSectionMem,
+    handles: &[PpcHandleRecord],
+    controls: &[PpcControlRecord],
+    gworlds: &[PpcGWorldRecord],
+    vfs_resources: &[PpcVfsResourceRecord],
+    current_resource_refnum: i16,
+    record: &PpcListRecord,
+    bounds: (i16, i16, i16, i16),
+) {
+    let Some(list_ptr) = memory.read_u32_be(record.handle).filter(|ptr| *ptr != 0) else {
+        return;
+    };
+    for offset in [PPC_LIST_VSCROLL_OFFSET, PPC_LIST_HSCROLL_OFFSET] {
+        let control_handle = memory.read_u32_be(list_ptr + offset).unwrap_or(0);
+        let Some(control) = ppc_control_ptr(memory, control_handle) else {
+            continue;
+        };
+        let Some((top, left, bottom, right)) =
+            ppc_read_rect(memory, control + PPC_CONTROL_RECT_OFFSET)
+        else {
+            continue;
+        };
+        if top < bounds.2 && bottom > bounds.0 && left < bounds.3 && right > bounds.1 {
+            let _ = ppc_draw_control(
+                memory,
+                handles,
+                controls,
+                gworlds,
+                vfs_resources,
+                current_resource_refnum,
+                control_handle,
+            );
+        }
     }
 }
 

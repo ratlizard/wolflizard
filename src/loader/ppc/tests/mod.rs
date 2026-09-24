@@ -1363,3 +1363,252 @@ fn dialog_delete_clears_the_selection_in_the_dialogs_edit_text() {
         Some(Vec::new())
     );
 }
+
+#[test]
+fn lclick_in_a_scroll_bar_scrolls_the_list() {
+    // More Macintosh Toolbox (1993), p. 4-84. Cythera's character-creation
+    // lists scroll only this way: its own list code handles just the thumb.
+    let pef = synthetic_pef_with_import(b"LNew");
+    let mut loaded = load_pef_application(&pef).unwrap();
+    let scratch = PPC_DATA_BASE + 0x1000;
+    let view_ptr = scratch;
+    let bounds_ptr = scratch + 8;
+    loaded.memory.add_region(scratch, vec![0; 32]);
+    ppc_write_rect(&mut loaded.memory, view_ptr, 10, 20, 90, 120).unwrap();
+    ppc_write_rect(&mut loaded.memory, bounds_ptr, 0, 0, 10, 1).unwrap();
+    loaded.cpu.gpr[3] = view_ptr;
+    loaded.cpu.gpr[4] = bounds_ptr;
+    loaded.cpu.gpr[5] = (20u32 << 16) | 100;
+    loaded.cpu.gpr[6] = 0;
+    loaded.cpu.gpr[7] = PPC_MAIN_GWORLD;
+    loaded.cpu.gpr[8] = 1;
+    loaded.cpu.gpr[9] = 0;
+    loaded.cpu.gpr[10] = 0;
+    loaded
+        .memory
+        .write_u32_be(
+            ppc_parameter_area_slot_addr(loaded.cpu.gpr[1], PPC_NATIVE_PARAMETER_GPR_COUNT)
+                .unwrap(),
+            1,
+        )
+        .unwrap();
+    let probe = loaded.run_with_hle_imports(128);
+    assert_eq!(probe.unsupported_import_index, None);
+    let list = loaded.cpu.gpr[3];
+    let list_ptr = loaded.memory.read_u32_be(list).unwrap();
+    let visible_top = |loaded: &mut PpcLoadedApp| {
+        loaded
+            .memory
+            .read_u16_be(list_ptr + PPC_LIST_VISIBLE_OFFSET)
+            .unwrap() as i16
+    };
+    assert_eq!(visible_top(&mut loaded), 0);
+
+    // The vertical bar runs from v 9 to 91 at h 120..136: the down arrow is
+    // its last 16 pixels.
+    let click = |loaded: &mut PpcLoadedApp, v: u32, h: u32| {
+        loaded.cpu.gpr[3] = (v << 16) | h;
+        loaded.cpu.gpr[4] = 0;
+        loaded.cpu.gpr[5] = list;
+        run_test_import(loaded, PpcImportDispatcherTarget::LClick);
+    };
+    click(&mut loaded, 85, 128);
+    assert_eq!(visible_top(&mut loaded), 1);
+    let bar = loaded
+        .memory
+        .read_u32_be(list_ptr + PPC_LIST_VSCROLL_OFFSET)
+        .unwrap();
+    let bar_ptr = ppc_control_ptr(&mut loaded.memory, bar).unwrap();
+    assert_eq!(
+        loaded.memory.read_u16_be(bar_ptr + PPC_CONTROL_VALUE_OFFSET),
+        Some(1),
+        "the bar's value follows the list"
+    );
+    // Below the thumb: a page, four rows shown less one.
+    click(&mut loaded, 60, 128);
+    assert_eq!(visible_top(&mut loaded), 4);
+    click(&mut loaded, 12, 128);
+    assert_eq!(visible_top(&mut loaded), 3);
+    // A click in the list itself still selects and does not scroll.
+    click(&mut loaded, 15, 30);
+    assert_eq!(visible_top(&mut loaded), 3);
+    assert!(loaded
+        .list_manager
+        .get_record(list)
+        .unwrap()
+        .selected
+        .contains(&(3, 0)));
+}
+
+#[test]
+fn find_control_asks_an_application_cdef_which_part_is_hit() {
+    // Macintosh Toolbox Essentials (1992), pp. 5-110 and 5-112: FindControl
+    // sends testCntl, and the CDEF answers with the part under the point or
+    // 0. Cythera's scroll bars are drawn and hit-tested by its own CDEF.
+    let pef = synthetic_pef_with_import(b"FindControl");
+    let mut loaded = load_pef_application(&pef).unwrap();
+    let scratch = PPC_DATA_BASE + 0x1000;
+    loaded.memory.add_region(scratch, vec![0; 0x100]);
+    let window = create_test_cwindow(&mut loaded, scratch, (40, 40, 200, 300), 0, true, u32::MAX);
+
+    // 'CDEF' 128 as Cythera ships it: a 68K JMP to a PowerPC procedure,
+    // here `li r3,21; blr`.
+    let code = PPC_CODE_BASE + 0x1000;
+    loaded.memory.add_region(
+        code,
+        [0x3860_0015u32, 0x4e80_0020]
+            .into_iter()
+            .flat_map(u32::to_be_bytes)
+            .collect(),
+    );
+    let tvector = scratch + 0x80;
+    loaded.memory.write_u32_be(tvector, code).unwrap();
+    loaded.memory.write_u32_be(tvector + 4, loaded.cpu.gpr[2]).unwrap();
+    let stub = scratch + 0x90;
+    loaded.memory.write_u16_be(stub, 0x4ef9).unwrap();
+    loaded.memory.write_u32_be(stub + 2, tvector).unwrap();
+    let cdef_handle = scratch + 0xa0;
+    loaded.memory.write_u32_be(cdef_handle, stub).unwrap();
+    let current_resource_refnum = *loaded.process_file_system.current_resource_file;
+    loaded
+        .process_file_system
+        .push_vfs_resource(PpcVfsResourceRecord {
+            ref_num: current_resource_refnum,
+            path: String::new(),
+            res_type: u32::from_be_bytes(*b"CDEF"),
+            res_id: 128,
+            name: Vec::new(),
+            data: vec![0x4e, 0xf9, 0, 0, 0, 0],
+            raw_data: None,
+            raw_attrs: None,
+            attrs: 0,
+            handle: cdef_handle,
+        });
+    let run = |loaded: &mut PpcLoadedApp, target: PpcImportDispatcherTarget| {
+        loaded.cpu.pc = loaded.entry_pc;
+        loaded.cpu.lr = PPC_HALT_PC;
+        loaded.imports[0].dispatcher_target = target;
+        let probe = loaded.run_with_hle_imports(512);
+        assert_eq!(probe.unsupported_import_index, None);
+    };
+
+    ppc_write_rect(&mut loaded.memory, scratch + 0x50, 10, 10, 60, 26).unwrap();
+    loaded.cpu.gpr[3] = window;
+    loaded.cpu.gpr[4] = scratch + 0x50;
+    loaded.cpu.gpr[5] = 0;
+    loaded.cpu.gpr[6] = 1;
+    loaded.cpu.gpr[7] = 0;
+    loaded.cpu.gpr[8] = 0;
+    loaded.cpu.gpr[9] = 10;
+    loaded.cpu.gpr[10] = 128 << 4;
+    run(
+        &mut loaded,
+        PpcImportDispatcherTarget::LegacyControl(PpcLegacyControlOperation::NewControl),
+    );
+    let control = loaded.cpu.gpr[3];
+    assert_ne!(control, 0);
+
+    let out = scratch + 0x40;
+    loaded.cpu.gpr[3] = (50 << 16) | 15;
+    loaded.cpu.gpr[4] = window;
+    loaded.cpu.gpr[5] = out;
+    run(
+        &mut loaded,
+        PpcImportDispatcherTarget::LegacyControl(PpcLegacyControlOperation::FindControl),
+    );
+    assert_eq!(loaded.cpu.gpr[3], 21, "the CDEF's inDownButton");
+    assert_eq!(loaded.memory.read_u32_be(out), Some(control));
+
+    // A CDEF that finds no part leaves theControl NIL.
+    loaded.memory.write_u32_be(code, 0x3860_0000).unwrap();
+    loaded.cpu.gpr[3] = (50 << 16) | 15;
+    loaded.cpu.gpr[4] = window;
+    loaded.cpu.gpr[5] = out;
+    run(
+        &mut loaded,
+        PpcImportDispatcherTarget::LegacyControl(PpcLegacyControlOperation::FindControl),
+    );
+    assert_eq!(loaded.cpu.gpr[3], 0);
+    assert_eq!(loaded.memory.read_u32_be(out), Some(0));
+}
+
+#[test]
+fn draw_dialog_draws_controls_that_are_not_items() {
+    // Macintosh Toolbox Essentials (1992), p. 6-142: DrawDialog calls
+    // DrawControls, which draws every control in the window's list.
+    let pef = synthetic_pef_with_import(b"GetNewDialog");
+    let mut loaded = load_pef_application(&pef).unwrap();
+    let mut dlog = vec![0; 22];
+    dlog[0..2].copy_from_slice(&60i16.to_be_bytes());
+    dlog[2..4].copy_from_slice(&60i16.to_be_bytes());
+    dlog[4..6].copy_from_slice(&220i16.to_be_bytes());
+    dlog[6..8].copy_from_slice(&320i16.to_be_bytes());
+    dlog[10] = 1;
+    dlog[18..20].copy_from_slice(&128i16.to_be_bytes());
+    let mut ditl = vec![0; 22];
+    ditl[6..8].copy_from_slice(&12i16.to_be_bytes());
+    ditl[8..10].copy_from_slice(&20i16.to_be_bytes());
+    ditl[10..12].copy_from_slice(&32i16.to_be_bytes());
+    ditl[12..14].copy_from_slice(&120i16.to_be_bytes());
+    ditl[14] = PPC_DIALOG_ITEM_STATIC_TEXT;
+    ditl[15] = 5;
+    ditl[16..21].copy_from_slice(b"Pilot");
+    for (res_type, data) in [(*b"DLOG", dlog), (*b"DITL", ditl)] {
+        let current_resource_refnum = *loaded.process_file_system.current_resource_file;
+        loaded
+            .process_file_system
+            .push_vfs_resource(PpcVfsResourceRecord {
+                ref_num: current_resource_refnum,
+                path: String::new(),
+                res_type: u32::from_be_bytes(res_type),
+                res_id: 128,
+                name: Vec::new(),
+                data,
+                raw_data: None,
+                raw_attrs: None,
+                attrs: 0,
+                handle: 0,
+            });
+    }
+    loaded.cpu.gpr[3] = 128;
+    let probe = loaded.run_with_hle_imports(128);
+    assert_eq!(probe.unsupported_import_index, None);
+    let dialog = loaded.cpu.gpr[3];
+
+    // A scroll bar of the application's own, not in the item list.
+    let scratch = PPC_DATA_BASE + 0x1000;
+    loaded.memory.add_region(scratch, vec![0; 16]);
+    ppc_write_rect(&mut loaded.memory, scratch, 40, 200, 140, 216).unwrap();
+    loaded.cpu.gpr[3] = dialog;
+    loaded.cpu.gpr[4] = scratch;
+    loaded.cpu.gpr[5] = 0;
+    loaded.cpu.gpr[6] = 1;
+    loaded.cpu.gpr[7] = 0;
+    loaded.cpu.gpr[8] = 0;
+    loaded.cpu.gpr[9] = 10;
+    loaded.cpu.gpr[10] = 16;
+    run_test_import(
+        &mut loaded,
+        PpcImportDispatcherTarget::LegacyControl(PpcLegacyControlOperation::NewControl),
+    );
+    assert_ne!(loaded.cpu.gpr[3], 0);
+
+    let bounds = ppc_dialog_global_bounds(&mut loaded.memory, &loaded.gworlds, dialog).unwrap();
+    let front = ppc_front_buffer_for_gworld(&loaded.gworlds, PPC_MAIN_GWORLD).unwrap();
+    // Down the middle of the bar, clear of its arrows.
+    // Front-buffer points are (h, v).
+    let points: Vec<(i32, i32)> = (70..110)
+        .map(|v| (i32::from(bounds.1) + 208, i32::from(bounds.0) + v))
+        .collect();
+    for &point in &points {
+        assert!(ppc_quickdraw_write_raw_pixel(&mut loaded.memory, front, point, 0x7b));
+    }
+    loaded.cpu.gpr[3] = dialog;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::DrawDialog);
+    assert!(
+        points
+            .iter()
+            .any(|&point| ppc_quickdraw_read_pixel(&mut loaded.memory, front, point) != Some(0x7b)),
+        "DrawDialog left the application's scroll bar undrawn"
+    );
+}

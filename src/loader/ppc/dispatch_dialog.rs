@@ -2905,6 +2905,37 @@ pub(super) fn ppc_draw_dialog(
             true,
         );
     }
+    // Macintosh Toolbox Essentials (1992), p. 6-142: DrawDialog also calls
+    // DrawControls, which draws every visible control in the window's list,
+    // item or not. An application can put controls of its own there: Cythera's
+    // TListBox::ChangeScrollBars swaps each list's scroll bars for ones drawn
+    // by its own CDEF, and without this pass the character-creation dialog
+    // had no scroll bar on the archetype list and no arrows on the portrait.
+    let item_handles = items.iter().map(|item| item.handle).collect::<Vec<_>>();
+    let head = memory
+        .read_u32_be(dialog.wrapping_add(PPC_CWINDOW_CONTROL_LIST_OFFSET))
+        .unwrap_or(0);
+    let control_handles = crate::control_manager::control_draw_order(head, |handle| {
+        ppc_control_ptr(memory, handle)
+            .and_then(|control| memory.read_u32_be(control.wrapping_add(PPC_CONTROL_NEXT_OFFSET)))
+    });
+    for handle in control_handles {
+        let drawn_above = item_handles.contains(&handle)
+            || controls.iter().any(|record| {
+                record.handle == handle && (1008..=1023).contains(&(record.proc_id & 0x0fff))
+            });
+        if !drawn_above {
+            let _ = ppc_draw_control(
+                memory,
+                handles,
+                controls,
+                gworlds,
+                vfs_resources,
+                current_resource_refnum,
+                handle,
+            );
+        }
+    }
     let _ = memory.write_u8(dialog + PPC_CWINDOW_VISIBLE_OFFSET, 1);
     true
 }

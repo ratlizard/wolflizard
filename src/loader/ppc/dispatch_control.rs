@@ -755,6 +755,12 @@ pub(super) fn ppc_dispatch_legacy_control(
             if cpu.gpr[5] != 0 {
                 memory.write_u32_be(cpu.gpr[5], handle)?;
             }
+            // An application CDEF names its own parts: Cythera's scroll
+            // bars answer with their arrows and page regions, which its list
+            // code tracks itself.
+            if handle != 0 && super::dispatch_defproc::ppc_control_has_app_cdef(handle) {
+                super::dispatch_defproc::ppc_note_app_cdef_test(handle, cpu.gpr[3], cpu.gpr[5]);
+            }
             Some(PpcImportAction::Return(ppc_i16_result(part)))
         }
         PpcLegacyControlOperation::TestControl => {
@@ -766,6 +772,9 @@ pub(super) fn ppc_dispatch_legacy_control(
                     "[INPUT] PPC TestControl control=${:08X} point=({}, {}) -> {}",
                     cpu.gpr[3], v, h, part
                 );
+            }
+            if part != 0 && super::dispatch_defproc::ppc_control_has_app_cdef(cpu.gpr[3]) {
+                super::dispatch_defproc::ppc_note_app_cdef_test(cpu.gpr[3], cpu.gpr[4], 0);
             }
             Some(PpcImportAction::Return(ppc_i16_result(part)))
         }

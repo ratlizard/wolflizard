@@ -566,6 +566,35 @@ pub(super) fn dispatch_list_import(context: PpcListDispatchContext<'_>) -> Optio
                         .read_u8(list_ptr + PPC_LIST_ACTIVE_OFFSET)
                         .unwrap_or(1)
                         != 0;
+                    // More Macintosh Toolbox (1993), p. 4-84: a click in one
+                    // of the list's scroll bars scrolls the list. An arrow
+                    // moves it a cell and the grey area a page, once per
+                    // click here; the thumb is left alone (Cythera tracks its
+                    // own thumb before calling LClick).
+                    if let Some((d_rows, d_cols)) =
+                        ppc_list_scroll_bar_click(memory, list_ptr, record, v, h)
+                    {
+                        if d_rows != 0 || d_cols != 0 {
+                            ppc_list_set_visible_origin(
+                                record,
+                                record.visible.0.saturating_add(d_rows),
+                                record.visible.1.saturating_add(d_cols),
+                            );
+                            *last_mem_error = ppc_list_sync_guest_visible(memory, record);
+                            if record.draw_enabled {
+                                ppc_list_redraw(
+                                    memory,
+                                    handles,
+                                    controls,
+                                    gworlds,
+                                    vfs_resources,
+                                    current_resource_refnum,
+                                    record,
+                                );
+                            }
+                        }
+                        return;
+                    }
                     if let Some(view) = ppc_read_rect(memory, list_ptr + PPC_LIST_VIEW_OFFSET)
                         .filter(|view| {
                             active && v >= view.0 && v < view.2 && h >= view.1 && h < view.3
@@ -951,6 +980,71 @@ fn ppc_list_cell_for_index(record: &PpcListRecord, index: usize) -> Option<(i16,
             .1
             .saturating_add((index % columns) as i16),
     ))
+}
+
+/// Where a click lands in one of a list's scroll bars, as the (rows,
+/// columns) to scroll by; None when the point is in neither bar. The parts
+/// are the standard bar's: 16-pixel arrows at the ends and a 16-pixel thumb
+/// placed by the control's value, the grey area either side of it.
+fn ppc_list_scroll_bar_click(
+    memory: &mut PpcSectionMem,
+    list_ptr: u32,
+    record: &PpcListRecord,
+    v: i16,
+    h: i16,
+) -> Option<(i16, i16)> {
+    for (offset, vertical) in [
+        (PPC_LIST_VSCROLL_OFFSET, true),
+        (PPC_LIST_HSCROLL_OFFSET, false),
+    ] {
+        let handle = memory.read_u32_be(list_ptr + offset).unwrap_or(0);
+        let Some(control) = ppc_control_ptr(memory, handle) else {
+            continue;
+        };
+        if memory.read_u8(control + PPC_CONTROL_VISIBLE_OFFSET).unwrap_or(0) == 0
+            || memory.read_u8(control + PPC_CONTROL_HILITE_OFFSET).unwrap_or(0) >= 254
+        {
+            continue;
+        }
+        let Some((top, left, bottom, right)) =
+            ppc_read_rect(memory, control + PPC_CONTROL_RECT_OFFSET)
+        else {
+            continue;
+        };
+        if v < top || v >= bottom || h < left || h >= right {
+            continue;
+        }
+        let (start, end, at) = if vertical { (top, bottom, v) } else { (left, right, h) };
+        let arrow = ((end - start) / 2).clamp(0, 16);
+        let page = if vertical {
+            record.visible.2 - record.visible.0 - 1
+        } else {
+            record.visible.3 - record.visible.1 - 1
+        }
+        .max(1);
+        let step = if at < start + arrow {
+            -1
+        } else if at >= end - arrow {
+            1
+        } else {
+            let value = memory.read_u16_be(control + PPC_CONTROL_VALUE_OFFSET).unwrap_or(0) as i16;
+            let min = memory.read_u16_be(control + PPC_CONTROL_MIN_OFFSET).unwrap_or(0) as i16;
+            let max = memory.read_u16_be(control + PPC_CONTROL_MAX_OFFSET).unwrap_or(0) as i16;
+            let track = i32::from(end - start - 2 * arrow - 16).max(0);
+            let span = (i32::from(max) - i32::from(min)).max(1);
+            let thumb = i32::from(start + arrow)
+                + (i32::from(value) - i32::from(min)).clamp(0, span) * track / span;
+            if i32::from(at) < thumb {
+                -page
+            } else if i32::from(at) >= thumb + 16 {
+                page
+            } else {
+                0
+            }
+        };
+        return Some(if vertical { (step, 0) } else { (0, step) });
+    }
+    None
 }
 
 fn ppc_list_scrollbar_bounds(record: &PpcListRecord, vertical: bool) -> (i16, i16, i16, i16) {

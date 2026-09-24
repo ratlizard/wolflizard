@@ -526,6 +526,33 @@ fn window_guest_resize_scale(window: &Window, display_scale: Option<u32>) -> Opt
     )
 }
 
+/// The whole scale an automatically sized window shows `content` at, if it
+/// shows it at one. Such a window keeps that scale when the picture changes
+/// size: Cythera's PowerPC build takes the menu bar's rows after the window
+/// has opened for the rows below them, and without this the taller picture
+/// was shrunk into the window, 800 by 600 at 1.93 instead of 2 on a Retina
+/// screen, letterboxed, and every bitmap glyph came out uneven.
+fn whole_scale_of(size: winit::dpi::PhysicalSize<u32>, content: Option<ContentRect>) -> Option<u32> {
+    let content = content.filter(|c| c.width > 0 && c.height > 0)?;
+    let scale = size.width / content.width;
+    (scale >= 1
+        && size.width == content.width * scale
+        && size.height == content.height * scale)
+        .then_some(scale)
+}
+
+fn automatic_window_whole_scale(
+    window: &Window,
+    display_scale: Option<u32>,
+    size: winit::dpi::PhysicalSize<u32>,
+    content: Option<ContentRect>,
+) -> Option<u32> {
+    if display_scale.is_some() || window.fullscreen().is_some() || window.is_maximized() {
+        return None;
+    }
+    whole_scale_of(size, content)
+}
+
 /// One scripted input. The caller explicitly chooses the clock: retired
 /// instructions for legacy diagnostic scripts, or elapsed simulated frontend
 /// ticks for time-based replays. Neither clock is host wall time.
@@ -2121,7 +2148,16 @@ impl App {
                     native_menu_bar_height(Some(runner), self.native_integrations, &self.guest_owns_menu_bar_rows),
                 );
                 if let Some(window) = self.window.as_ref() {
-                    if let Some(scale) = window_guest_resize_scale(window, self.display_scale) {
+                    if let Some(scale) = window_guest_resize_scale(window, self.display_scale)
+                        .or_else(|| {
+                            automatic_window_whole_scale(
+                                window,
+                                self.display_scale,
+                                size,
+                                self.window_sized_content_rect,
+                            )
+                        })
+                    {
                         let _ = window.request_inner_size(guest_scaled_physical_size(
                             rect.width,
                             rect.height,
@@ -2199,7 +2235,16 @@ impl App {
                 // Guest writes to MBarHeight can change the visible rows even
                 // when the learned gameplay crop and screen mode are unchanged.
                 if let Some(window) = self.window.as_ref() {
-                    if let Some(scale) = window_guest_resize_scale(window, self.display_scale) {
+                    if let Some(scale) = window_guest_resize_scale(window, self.display_scale)
+                        .or_else(|| {
+                            automatic_window_whole_scale(
+                                window,
+                                self.display_scale,
+                                size,
+                                self.window_sized_content_rect,
+                            )
+                        })
+                    {
                         let _ = window.request_inner_size(guest_scaled_physical_size(
                             desired_content.width,
                             desired_content.height,
@@ -4450,6 +4495,28 @@ fn keycode_to_mac_printable_char(key: &PhysicalKey) -> u8 {
             _ => 0,
         },
         _ => 0,
+    }
+}
+
+#[cfg(test)]
+mod whole_scale_tests {
+    use super::{whole_scale_of, ContentRect};
+    use winit::dpi::PhysicalSize;
+
+    #[test]
+    fn a_window_at_a_whole_scale_of_its_picture_reports_that_scale() {
+        let rows_below_menu_bar = Some(ContentRect {
+            left: 0,
+            top: 20,
+            width: 800,
+            height: 580,
+        });
+        assert_eq!(whole_scale_of(PhysicalSize::new(1600, 1160), rows_below_menu_bar), Some(2));
+        assert_eq!(whole_scale_of(PhysicalSize::new(800, 580), rows_below_menu_bar), Some(1));
+        // Resized by hand to no whole scale: leave the window alone.
+        assert_eq!(whole_scale_of(PhysicalSize::new(1545, 1120), rows_below_menu_bar), None);
+        assert_eq!(whole_scale_of(PhysicalSize::new(1600, 1200), rows_below_menu_bar), None);
+        assert_eq!(whole_scale_of(PhysicalSize::new(1600, 1160), None), None);
     }
 }
 

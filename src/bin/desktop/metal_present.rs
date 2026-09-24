@@ -1614,6 +1614,117 @@ mod tests {
     /// to drawable pixels. No AppKit window or unlocked desktop is required.
     fn render_rgba(source: &image::RgbaImage, width: u32, height: u32) -> image::RgbaImage {
         use super::*;
+        render_fragment(
+            ns_string!("raster_fragment"),
+            width,
+            height,
+            |device, encoder| {
+                let input = shared_texture(
+                    device,
+                    source.width(),
+                    source.height(),
+                    MTLTextureUsage::ShaderRead,
+                );
+                unsafe {
+                    input.replaceRegion_mipmapLevel_withBytes_bytesPerRow(
+                        texture_region(source.width(), source.height()),
+                        0,
+                        NonNull::new(source.as_ptr().cast_mut().cast()).unwrap(),
+                        source.width() as usize * 4,
+                    );
+                    encoder.setFragmentTexture_atIndex(Some(&input), 0);
+                }
+            },
+        )
+    }
+
+    /// Exercise the shader that reads the guest's indexed pixels directly.
+    fn render_guest(
+        framebuffer: &[u8],
+        palette: &[u32; 256],
+        uniforms: GuestFrameUniforms,
+        width: u32,
+        height: u32,
+    ) -> image::RgbaImage {
+        use super::*;
+        let cursor = GuestCursorData::default();
+        render_fragment(
+            ns_string!("guest_raster_fragment"),
+            width,
+            height,
+            |device, encoder| {
+                let buffer = unsafe {
+                    device.newBufferWithBytes_length_options(
+                        NonNull::new(framebuffer.as_ptr().cast_mut().cast()).unwrap(),
+                        framebuffer.len(),
+                        MTLResourceOptions::MTLResourceStorageModeShared,
+                    )
+                }
+                .unwrap();
+                unsafe {
+                    encoder.setFragmentBuffer_offset_atIndex(Some(&buffer), 0, 0);
+                    encoder.setFragmentBytes_length_atIndex(
+                        non_null_bytes(palette),
+                        size_of::<[u32; 256]>(),
+                        1,
+                    );
+                    encoder.setFragmentBytes_length_atIndex(
+                        non_null_bytes(&uniforms),
+                        size_of::<GuestFrameUniforms>(),
+                        2,
+                    );
+                    encoder.setFragmentBytes_length_atIndex(
+                        non_null_bytes(&cursor),
+                        size_of::<GuestCursorData>(),
+                        3,
+                    );
+                }
+            },
+        )
+    }
+
+    fn texture_region(w: u32, h: u32) -> objc2_metal::MTLRegion {
+        objc2_metal::MTLRegion {
+            origin: objc2_metal::MTLOrigin { x: 0, y: 0, z: 0 },
+            size: objc2_metal::MTLSize {
+                width: w as usize,
+                height: h as usize,
+                depth: 1,
+            },
+        }
+    }
+
+    fn shared_texture(
+        device: &objc2::runtime::ProtocolObject<dyn objc2_metal::MTLDevice>,
+        w: u32,
+        h: u32,
+        usage: objc2_metal::MTLTextureUsage,
+    ) -> objc2::rc::Retained<objc2::runtime::ProtocolObject<dyn objc2_metal::MTLTexture>> {
+        use super::*;
+        let desc = unsafe {
+            MTLTextureDescriptor::texture2DDescriptorWithPixelFormat_width_height_mipmapped(
+                MTLPixelFormat::RGBA8Unorm,
+                w as usize,
+                h as usize,
+                false,
+            )
+        };
+        desc.setStorageMode(MTLStorageMode::Shared);
+        desc.setUsage(usage);
+        device.newTextureWithDescriptor(&desc).unwrap()
+    }
+
+    /// Draw one full-drawable quad with `fragment`; `bind` supplies its inputs.
+    fn render_fragment(
+        fragment: &objc2_foundation::NSString,
+        width: u32,
+        height: u32,
+        bind: impl FnOnce(
+            &objc2::runtime::ProtocolObject<dyn objc2_metal::MTLDevice>,
+            &objc2::runtime::ProtocolObject<dyn objc2_metal::MTLRenderCommandEncoder>,
+        ),
+    ) -> image::RgbaImage {
+        use super::*;
         autoreleasepool(|_| {
             let device = unsafe { Retained::retain(MTLCreateSystemDefaultDevice()) }
                 .expect("Metal device required");
@@ -1629,11 +1740,7 @@ mod tests {
                     .newFunctionWithName(ns_string!("raster_vertex"))
                     .as_deref(),
             );
-            descriptor.setFragmentFunction(
-                library
-                    .newFunctionWithName(ns_string!("raster_fragment"))
-                    .as_deref(),
-            );
+            descriptor.setFragmentFunction(library.newFunctionWithName(fragment).as_deref());
             unsafe {
                 descriptor
                     .colorAttachments()
@@ -1643,37 +1750,7 @@ mod tests {
             let pipeline = device
                 .newRenderPipelineStateWithDescriptor_error(&descriptor)
                 .unwrap();
-            let texture = |w, h, usage| {
-                let desc = unsafe {
-                    MTLTextureDescriptor::texture2DDescriptorWithPixelFormat_width_height_mipmapped(
-                        MTLPixelFormat::RGBA8Unorm,
-                        w as usize,
-                        h as usize,
-                        false,
-                    )
-                };
-                desc.setStorageMode(MTLStorageMode::Shared);
-                desc.setUsage(usage);
-                device.newTextureWithDescriptor(&desc).unwrap()
-            };
-            let input = texture(source.width(), source.height(), MTLTextureUsage::ShaderRead);
-            let output = texture(width, height, MTLTextureUsage::RenderTarget);
-            let region = |w, h| MTLRegion {
-                origin: objc2_metal::MTLOrigin { x: 0, y: 0, z: 0 },
-                size: objc2_metal::MTLSize {
-                    width: w as usize,
-                    height: h as usize,
-                    depth: 1,
-                },
-            };
-            unsafe {
-                input.replaceRegion_mipmapLevel_withBytes_bytesPerRow(
-                    region(source.width(), source.height()),
-                    0,
-                    NonNull::new(source.as_ptr().cast_mut().cast()).unwrap(),
-                    source.width() as usize * 4,
-                );
-            }
+            let output = shared_texture(&device, width, height, MTLTextureUsage::RenderTarget);
             let pass = unsafe { MTLRenderPassDescriptor::new() };
             let color = unsafe { pass.colorAttachments().objectAtIndexedSubscript(0) };
             color.setTexture(Some(&output));
@@ -1691,8 +1768,8 @@ mod tests {
                 znear: 0.0,
                 zfar: 1.0,
             });
+            bind(&device, &encoder);
             unsafe {
-                encoder.setFragmentTexture_atIndex(Some(&input), 0);
                 encoder.drawPrimitives_vertexStart_vertexCount(
                     MTLPrimitiveType::TriangleStrip,
                     0,
@@ -1709,12 +1786,73 @@ mod tests {
                 output.getBytes_bytesPerRow_fromRegion_mipmapLevel(
                     NonNull::new(result.as_mut_ptr().cast()).unwrap(),
                     width as usize * 4,
-                    region(width, height),
+                    texture_region(width, height),
                     0,
                 );
             }
             result
         })
+    }
+
+    /// The widths of the runs of pure black or pure white in one row, and
+    /// how many pixels lie between runs.
+    fn pure_runs(row: impl Iterator<Item = u8>) -> (Vec<usize>, Vec<usize>) {
+        let (mut runs, mut gaps) = (Vec::new(), Vec::new());
+        let (mut run, mut gap, mut last) = (0, 0, None);
+        for value in row {
+            let pure = (value <= 1 || value >= 254).then_some(value >= 128);
+            match pure {
+                Some(shade) if last == Some(shade) && gap == 0 => run += 1,
+                Some(shade) => {
+                    if run > 0 {
+                        runs.push(run);
+                        gaps.push(gap);
+                    }
+                    (run, gap, last) = (1, 0, Some(shade));
+                }
+                None => gap += 1,
+            }
+        }
+        runs.push(run);
+        (runs, gaps)
+    }
+
+    #[test]
+    fn fractional_enlargement_keeps_every_source_pixel_the_same_width() {
+        // Alternating one-pixel columns at 2.5x. Nearest sampling draws them
+        // 2, 3, 2, 3 drawable pixels wide, which is what makes small text
+        // look ragged. Each should be two solid pixels, with one blended
+        // pixel where a column's edge falls inside a drawable pixel: every
+        // other edge at 2.5x, the rest landing on a pixel boundary.
+        let source = image::RgbaImage::from_fn(8, 2, |x, _| {
+            let shade = if x % 2 == 0 { 0 } else { 255 };
+            image::Rgba([shade, shade, shade, 255])
+        });
+        let result = render_rgba(&source, 20, 5);
+        let (runs, gaps) = pure_runs((0..20).map(|x| result.get_pixel(x, 2)[0]));
+        assert_eq!(runs, vec![2; 8], "texture presenter");
+        assert_eq!(gaps, [1, 0, 1, 0, 1, 0, 1], "texture presenter");
+
+        let mut palette = [0xFF00_0000u32; 256];
+        palette[1] = 0xFFFF_FFFF;
+        let framebuffer: Vec<u8> = (0..16).map(|i| (i % 2) as u8).collect();
+        let uniforms = GuestFrameUniforms {
+            row_bytes: 8,
+            width: 8,
+            height: 2,
+            pixel_size: 8,
+            ..GuestFrameUniforms::default()
+        };
+        let result = render_guest(&framebuffer, &palette, uniforms, 20, 5);
+        let (runs, gaps) = pure_runs((0..20).map(|x| result.get_pixel(x, 2)[0]));
+        assert_eq!(runs, vec![2; 8], "guest presenter");
+        assert_eq!(gaps, [1, 0, 1, 0, 1, 0, 1], "guest presenter");
+        // Whole-number enlargement is still exact.
+        let result = render_guest(&framebuffer, &palette, uniforms, 16, 4);
+        for (x, y, pixel) in result.enumerate_pixels() {
+            let expected = if (x / 2) % 2 == 0 { 0 } else { 255 };
+            assert_eq!(pixel.0, [expected, expected, expected, 255], "({x}, {y})");
+        }
     }
 
     #[test]

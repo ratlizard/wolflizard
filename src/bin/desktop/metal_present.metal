@@ -27,18 +27,34 @@ vertex RasterVertex raster_vertex(uint vertex_id [[vertex_id]]) {
     return out;
 }
 
+// Where to sample, in texels, so that an enlargement keeps every source pixel
+// a solid block and blends only the one drawable pixel that a block's edge
+// crosses ("sharp bilinear"). The window scales continuously, so the factor is
+// rarely whole: nearest sampling then draws source columns alternately n and
+// n+1 drawable pixels wide, which makes one-pixel text strokes uneven, and
+// plain bilinear filtering blurs every edge instead. `footprint` is source
+// texels per drawable pixel. At a whole-number factor every drawable pixel
+// centre falls inside a block, and the result is nearest sampling exactly.
+static float2 sharp_texel(float2 texel, float2 footprint) {
+    float2 scale = 1.0 / max(footprint, float2(1.0e-6));
+    float2 offset = fract(texel) - 0.5;
+    float2 solid = max(0.5 - 0.5 / scale, float2(0.0));
+    return floor(texel) + 0.5 + (offset - clamp(offset, -solid, solid)) * scale;
+}
+
 fragment float4 raster_fragment(
     RasterVertex in [[stage_in]],
     texture2d<float> framebuffer [[texture(0)]])
 {
-    constexpr sampler nearest_sampler(
+    constexpr sampler linear_sampler(
         coord::normalized,
         address::clamp_to_edge,
-        filter::nearest);
+        filter::linear);
     float2 dimensions = float2(framebuffer.get_width(), framebuffer.get_height());
     float2 footprint = abs(float2(dfdx(in.tex_coord.x), dfdy(in.tex_coord.y))) * dimensions;
     if (all(footprint <= 1.0)) {
-        return framebuffer.sample(nearest_sampler, in.tex_coord);
+        float2 texel = sharp_texel(in.tex_coord * dimensions, footprint);
+        return framebuffer.sample(linear_sampler, texel / dimensions);
     }
 
     // The outline surface is larger than the drawable. Integrate each source
@@ -90,17 +106,14 @@ static float4 unpack_argb(uint argb) {
         1.0);
 }
 
-fragment float4 guest_raster_fragment(
-    RasterVertex in [[stage_in]],
-    device const uchar* framebuffer [[buffer(0)]],
-    constant uint* palette [[buffer(1)]],
-    constant GuestFrameUniforms& frame [[buffer(2)]],
-    constant GuestCursorData& cursor [[buffer(3)]])
+static uint guest_argb(
+    uint x,
+    uint y,
+    device const uchar* framebuffer,
+    constant uint* palette,
+    constant GuestFrameUniforms& frame,
+    constant GuestCursorData& cursor)
 {
-    uint x = frame.content_left
-        + min(uint(in.tex_coord.x * float(frame.width)), frame.width - 1);
-    uint y = frame.content_top
-        + min(uint(in.tex_coord.y * float(frame.height)), frame.height - 1);
     uint argb;
 
     if (frame.pixel_size == 8) {
@@ -146,5 +159,34 @@ fragment float4 guest_raster_fragment(
         }
     }
 
-    return unpack_argb(argb);
+    return argb;
+}
+
+fragment float4 guest_raster_fragment(
+    RasterVertex in [[stage_in]],
+    device const uchar* framebuffer [[buffer(0)]],
+    constant uint* palette [[buffer(1)]],
+    constant GuestFrameUniforms& frame [[buffer(2)]],
+    constant GuestCursorData& cursor [[buffer(3)]])
+{
+    // The same sharp enlargement as raster_fragment, filtering by hand
+    // because the guest's pixels arrive as indexed bytes, not a texture.
+    float2 dimensions = float2(frame.width, frame.height);
+    float2 footprint = abs(float2(dfdx(in.tex_coord.x), dfdy(in.tex_coord.y))) * dimensions;
+    float2 texel = sharp_texel(in.tex_coord * dimensions, footprint) - 0.5;
+    float2 cell = floor(texel);
+    float2 weight = texel - cell;
+    int2 last = int2(frame.width, frame.height) - 1;
+    uint2 near = uint2(clamp(int2(cell), int2(0), last));
+    uint2 far = uint2(clamp(int2(cell) + 1, int2(0), last));
+    uint2 origin = uint2(frame.content_left, frame.content_top);
+    float4 top = mix(
+        unpack_argb(guest_argb(origin.x + near.x, origin.y + near.y, framebuffer, palette, frame, cursor)),
+        unpack_argb(guest_argb(origin.x + far.x, origin.y + near.y, framebuffer, palette, frame, cursor)),
+        weight.x);
+    float4 bottom = mix(
+        unpack_argb(guest_argb(origin.x + near.x, origin.y + far.y, framebuffer, palette, frame, cursor)),
+        unpack_argb(guest_argb(origin.x + far.x, origin.y + far.y, framebuffer, palette, frame, cursor)),
+        weight.x);
+    return mix(top, bottom, weight.y);
 }

@@ -1930,7 +1930,25 @@ pub(crate) fn ppc_pb_control(
     result
 }
 
-pub(crate) fn ppc_pb_status(cpu: &PpcCpu, memory: &mut PpcSectionMem) -> i16 {
+/// The display's current transfer as a one-channel GammaTbl, which applies
+/// to all three components (Designing Cards and Drivers, 3rd ed. (1992),
+/// pp. 245--248). A guest installing a table with differing channels gets
+/// the red one back.
+fn ppc_write_device_gamma_table(memory: &mut PpcSectionMem, display_gamma: &SharedProcessDisplayGamma) {
+    let table = display_gamma.table();
+    let mut bytes = vec![0u8; PPC_MAIN_GAMMA_TABLE_SIZE as usize];
+    bytes[6..8].copy_from_slice(&1u16.to_be_bytes()); // gChanCnt
+    bytes[8..10].copy_from_slice(&256u16.to_be_bytes()); // gDataCnt
+    bytes[10..12].copy_from_slice(&8u16.to_be_bytes()); // gDataWidth
+    bytes[12..].copy_from_slice(&table[0]);
+    let _ = memory.write_bytes(PPC_MAIN_GAMMA_TABLE, &bytes);
+}
+
+pub(crate) fn ppc_pb_status(
+    cpu: &PpcCpu,
+    memory: &mut PpcSectionMem,
+    display_gamma: &SharedProcessDisplayGamma,
+) -> i16 {
     const STATUS_ERR: i16 = -18;
 
     let parameter_block = cpu.gpr[3];
@@ -1952,8 +1970,13 @@ pub(crate) fn ppc_pb_status(cpu: &PpcCpu, memory: &mut PpcSectionMem) -> i16 {
             // Universal Interfaces 3.4 Video.h defines cscGetGamma (8) as a
             // status request whose csParam contains a VDGammaRecord pointer;
             // the driver stores its device-owned GammaTbl pointer there.
+            // The table is the one in force, not a linear ramp: Cythera
+            // reads it at launch, fades with cscSetGamma, and restores what
+            // it read, and a linear answer left every colour darker than on
+            // a real Mac (as the 68K path's cscGetGamma already answers).
             8 => {
                 let vd_gamma = memory.read_u32_be(cs_param)?;
+                ppc_write_device_gamma_table(memory, display_gamma);
                 memory
                     .write_u32_be(vd_gamma, PPC_MAIN_GAMMA_TABLE)
                     .map(|()| PPC_NO_ERR)

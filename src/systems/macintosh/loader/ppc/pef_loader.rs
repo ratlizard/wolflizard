@@ -656,16 +656,10 @@ pub(crate) fn load_pef_application_with_config_and_optional_system_reservation(
     memory.add_region(PPC_MAIN_CLIP_RGN_HANDLE, vec![0u8; 4]);
     memory.add_region(PPC_MAIN_CLIP_RGN, vec![0u8; 10]);
     // Universal Interfaces 3.4 Video.h defines GammaTbl as a six-word
-    // header followed by formula bytes and channel data. The main display's
-    // device-owned table is the standard one-channel, 8-bit linear ramp.
-    let mut gamma_table = vec![0u8; PPC_MAIN_GAMMA_TABLE_SIZE as usize];
-    gamma_table[6..8].copy_from_slice(&1u16.to_be_bytes()); // gChanCnt
-    gamma_table[8..10].copy_from_slice(&256u16.to_be_bytes()); // gDataCnt
-    gamma_table[10..12].copy_from_slice(&8u16.to_be_bytes()); // gDataWidth
-    for (value, output) in gamma_table[12..].iter_mut().enumerate() {
-        *output = value as u8;
-    }
-    memory.add_readonly_region(PPC_MAIN_GAMMA_TABLE, gamma_table);
+    // header followed by formula bytes and channel data. cscGetGamma fills
+    // this device-owned table from the display's current transfer each time
+    // it is asked (ppc_write_device_gamma_table).
+    memory.add_region(PPC_MAIN_GAMMA_TABLE, vec![0u8; PPC_MAIN_GAMMA_TABLE_SIZE as usize]);
     memory.add_region(PPC_PORT_LIST_HANDLE, vec![0u8; 4]);
     memory.add_region(PPC_PORT_LIST, vec![0u8; 2]);
     memory.add_region(PPC_UNIT_TABLE, vec![0u8; 64 * 4]);

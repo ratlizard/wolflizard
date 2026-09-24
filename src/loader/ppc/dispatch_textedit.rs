@@ -394,9 +394,19 @@ pub(super) fn dispatch_textedit_import(
             );
             Some(PpcImportAction::ReturnPreserve)
         }
-        PpcImportDispatcherTarget::TEDelete => {
+        PpcImportDispatcherTarget::TEDelete { dialog } => {
             // Text (1993), p. 2-58: deleting is selection replacement with an
             // empty byte sequence and does not alter either scrap.
+            // DialogDelete does the same to the dialog's current editText
+            // item, whose TERec is the DialogRecord's textH (Macintosh
+            // Toolbox Essentials (1992), p. 6-134).
+            let te_handle = if dialog {
+                memory
+                    .read_u32_be(cpu.gpr[3].wrapping_add(PPC_DIALOG_TEXT_HANDLE_OFFSET))
+                    .unwrap_or(0)
+            } else {
+                cpu.gpr[3]
+            };
             let mut allocator = PpcProcessAllocatorView {
                 memory_manager: process_memory_manager,
             };
@@ -407,7 +417,7 @@ pub(super) fn dispatch_textedit_import(
                 heap_limit,
                 last_mem_error,
                 handles,
-                cpu.gpr[3],
+                te_handle,
                 &[],
             );
             *last_mem_error = result;
@@ -415,7 +425,7 @@ pub(super) fn dispatch_textedit_import(
                 memory,
                 handles,
                 gworlds,
-                cpu.gpr[3],
+                te_handle,
                 current_gworld,
                 *quickdraw_fore_color,
                 quickdraw_fore_indices,

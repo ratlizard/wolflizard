@@ -503,6 +503,11 @@ pub(super) fn dispatch_quickdraw_import(
             ppc_map_rect(memory, cpu.gpr[3], cpu.gpr[4], cpu.gpr[5]);
             Some(PpcImportAction::ReturnPreserve)
         }
+        PpcImportDispatcherTarget::MapPt | PpcImportDispatcherTarget::ScalePt => {
+            let scale = matches!(binding.dispatcher_target, PpcImportDispatcherTarget::ScalePt);
+            ppc_map_or_scale_pt(memory, cpu.gpr[3], cpu.gpr[4], cpu.gpr[5], scale);
+            Some(PpcImportAction::ReturnPreserve)
+        }
         PpcImportDispatcherTarget::InsetRect => {
             let rect_ptr = cpu.gpr[3];
             let dh = cpu.gpr[4] as u16 as i16;

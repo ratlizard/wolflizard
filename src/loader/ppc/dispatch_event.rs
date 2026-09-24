@@ -562,6 +562,25 @@ pub(super) fn dispatch_event_import(
             }
             Some(PpcImportAction::Return(u32::from(has_event)))
         }
+        PpcImportDispatcherTarget::CheckUpdate => {
+            // Macintosh Toolbox Essentials (1992), p. 4-116: CheckUpdate
+            // stores an update event for the frontmost visible window whose
+            // update region is not empty and returns TRUE, or returns FALSE.
+            // This path keeps a window's pending update as a queued updateEvt
+            // (posted where its update region is made non-empty), so the
+            // first such event, in queue order, is that answer. Cythera calls
+            // it while dragging a window with Live Dragging on, to redraw
+            // what the drag uncovered.
+            let event_ptr = cpu.gpr[3];
+            let (what, message, when, where_v, where_h, modifiers, has_event) =
+                ppc_dequeue_event(event_queue, 1 << 6, input, false, tick_count);
+            if has_event && event_ptr != 0 {
+                let _ = ppc_write_event_record(
+                    memory, event_ptr, what, message, when, where_v, where_h, modifiers,
+                );
+            }
+            Some(PpcImportAction::Return(u32::from(has_event)))
+        }
         PpcImportDispatcherTarget::PostEvent => {
             let what = cpu.gpr[3] as u16;
             let system_event_mask = memory

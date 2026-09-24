@@ -1222,3 +1222,144 @@ fn pbh_open_rf_opens_a_new_files_empty_resource_fork() {
     assert_eq!(loaded.memory.read_u16_be(pb + 16), Some(0), "ioResult");
     assert_ne!(loaded.memory.read_u16_be(pb + 24), Some(0), "ioRefNum");
 }
+
+#[test]
+fn hle_import_runner_maps_and_scales_points() {
+    // Inside Macintosh Volume I (1985), pp. I-195--I-196.
+    let pef = synthetic_pef_with_import(b"MapPt");
+    let mut loaded = load_pef_application(&pef).unwrap();
+    let pt_ptr = PPC_HEAP_BASE;
+    let src_ptr = pt_ptr + 8;
+    let dst_ptr = src_ptr + 8;
+    loaded.memory.add_region(pt_ptr, vec![0; 24]);
+    loaded.memory.write_u16_be(pt_ptr, 20).unwrap();
+    loaded.memory.write_u16_be(pt_ptr + 2, 25).unwrap();
+    ppc_write_rect(&mut loaded.memory, src_ptr, 10, 20, 110, 120).unwrap();
+    ppc_write_rect(&mut loaded.memory, dst_ptr, -30, 200, 170, 600).unwrap();
+    loaded.cpu.gpr[3] = pt_ptr;
+    loaded.cpu.gpr[4] = src_ptr;
+    loaded.cpu.gpr[5] = dst_ptr;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::MapPt);
+    assert_eq!(loaded.memory.read_u16_be(pt_ptr), Some((-10i16) as u16));
+    assert_eq!(loaded.memory.read_u16_be(pt_ptr + 2), Some(220));
+
+    // ScalePt: the point is a height (v) and a width (h), scaled by the
+    // rectangles' ratio, 2 tall and 4 wide here.
+    loaded.memory.write_u16_be(pt_ptr, 50).unwrap();
+    loaded.memory.write_u16_be(pt_ptr + 2, 10).unwrap();
+    loaded.cpu.gpr[3] = pt_ptr;
+    loaded.cpu.gpr[4] = src_ptr;
+    loaded.cpu.gpr[5] = dst_ptr;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::ScalePt);
+    assert_eq!(loaded.memory.read_u16_be(pt_ptr), Some(100));
+    assert_eq!(loaded.memory.read_u16_be(pt_ptr + 2), Some(40));
+
+    // And never below (1, 1).
+    loaded.memory.write_u32_be(pt_ptr, 0).unwrap();
+    loaded.cpu.gpr[3] = pt_ptr;
+    loaded.cpu.gpr[4] = src_ptr;
+    loaded.cpu.gpr[5] = dst_ptr;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::ScalePt);
+    assert_eq!(loaded.memory.read_u16_be(pt_ptr), Some(1));
+    assert_eq!(loaded.memory.read_u16_be(pt_ptr + 2), Some(1));
+}
+
+#[test]
+fn check_update_takes_the_next_update_event_and_leaves_the_rest() {
+    // Macintosh Toolbox Essentials (1992), p. 4-116. Cythera calls it while
+    // a window is dragged with Live Dragging on.
+    let pef = synthetic_pef_with_import(b"CheckUpdate");
+    let mut loaded = load_pef_application(&pef).unwrap();
+    let event_ptr = PPC_DATA_BASE + 0x1000;
+    loaded.memory.add_region(event_ptr, vec![0; 16]);
+    loaded.set_event_queue([
+        PpcQueuedEvent {
+            what: 3,
+            message: 0x0261,
+            when: 5,
+            where_v: 0,
+            where_h: 0,
+            modifiers: 0,
+        },
+        PpcQueuedEvent {
+            what: 6,
+            message: 0x0012_3456,
+            when: 6,
+            where_v: 0,
+            where_h: 0,
+            modifiers: 0,
+        },
+    ]);
+    loaded.cpu.gpr[3] = event_ptr;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::CheckUpdate);
+    assert_eq!(loaded.cpu.gpr[3], 1);
+    assert_eq!(loaded.memory.read_u16_be(event_ptr), Some(6));
+    assert_eq!(loaded.memory.read_u32_be(event_ptr + 2), Some(0x0012_3456));
+    assert_eq!(loaded.event_queue().len(), 1);
+    assert_eq!(loaded.event_queue().get(0).unwrap().what, 3);
+
+    loaded.cpu.gpr[3] = event_ptr;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::CheckUpdate);
+    assert_eq!(loaded.cpu.gpr[3], 0);
+    assert_eq!(loaded.event_queue().len(), 1);
+}
+
+#[test]
+fn dialog_delete_clears_the_selection_in_the_dialogs_edit_text() {
+    let pef = synthetic_pef_with_import(b"GetNewDialog");
+    let mut loaded = load_pef_application(&pef).unwrap();
+    let mut dlog = vec![0; 22];
+    dlog[4..6].copy_from_slice(&100i16.to_be_bytes());
+    dlog[6..8].copy_from_slice(&260i16.to_be_bytes());
+    dlog[10] = 1;
+    dlog[18..20].copy_from_slice(&128i16.to_be_bytes());
+    let mut ditl = vec![0; 22];
+    ditl[6..8].copy_from_slice(&12i16.to_be_bytes());
+    ditl[8..10].copy_from_slice(&20i16.to_be_bytes());
+    ditl[10..12].copy_from_slice(&32i16.to_be_bytes());
+    ditl[12..14].copy_from_slice(&220i16.to_be_bytes());
+    ditl[14] = PPC_DIALOG_ITEM_EDIT_TEXT;
+    ditl[15] = 5;
+    ditl[16..21].copy_from_slice(b"Pilot");
+    for (res_type, data) in [(*b"DLOG", dlog), (*b"DITL", ditl)] {
+        let current_resource_refnum = *loaded.process_file_system.current_resource_file;
+        loaded
+            .process_file_system
+            .push_vfs_resource(PpcVfsResourceRecord {
+                ref_num: current_resource_refnum,
+                path: String::new(),
+                res_type: u32::from_be_bytes(res_type),
+                res_id: 128,
+                name: Vec::new(),
+                data,
+                raw_data: None,
+                raw_attrs: None,
+                attrs: 0,
+                handle: 0,
+            });
+    }
+    loaded.cpu.gpr[3] = 128;
+    let probe = loaded.run_with_hle_imports(128);
+    assert_eq!(probe.unsupported_import_index, None);
+    let dialog = loaded.cpu.gpr[3];
+    let te_handle = loaded
+        .memory
+        .read_u32_be(dialog + PPC_DIALOG_TEXT_HANDLE_OFFSET)
+        .unwrap();
+    assert_eq!(
+        ppc_te_text_bytes(&mut loaded.memory, &test_handle_records!(loaded), te_handle),
+        Some(b"Pilot".to_vec())
+    );
+
+    // GetNewDialog selects the whole of the first edit field; DialogDelete
+    // (Macintosh Toolbox Essentials (1992), p. 6-134) takes it out.
+    loaded.cpu.gpr[3] = dialog;
+    run_test_import(
+        &mut loaded,
+        PpcImportDispatcherTarget::TEDelete { dialog: true },
+    );
+    assert_eq!(
+        ppc_te_text_bytes(&mut loaded.memory, &test_handle_records!(loaded), te_handle),
+        Some(Vec::new())
+    );
+}

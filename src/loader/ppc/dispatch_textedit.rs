@@ -624,18 +624,34 @@ pub(super) fn dispatch_textedit_import(
             // TextBox clears its box before drawing, including empty text.
             // Imaging With QuickDraw (1994), Printing Hints, explicitly
             // describes TextBox calling EraseRect; Text (1993), pp. 2-88--2-89.
+            // As EraseRect does, it erases with the port's bkPixPat when one
+            // is set (Imaging With QuickDraw (1994), 4-73): Cythera's
+            // character-creation text sits on its parchment pattern.
             if let Some(rect) = ppc_read_rect(memory, cpu.gpr[5]) {
-                let _ = ppc_paint_rect_bounds(
-                    memory,
-                    gworlds,
-                    current_gworld,
-                    rect,
-                    *quickdraw_back_color,
-                    toolbox_startup
-                        .quickdraw_back_indices
-                        .get(&current_gworld)
-                        .copied(),
-                );
+                let back_pix_pat = memory
+                    .read_u32_be(current_gworld.wrapping_add(PPC_CGRAF_PORT_BK_PIXPAT_OFFSET))
+                    .unwrap_or(0);
+                let erased = back_pix_pat != 0
+                    && ppc_fill_rect_with_pix_pat(
+                        memory,
+                        gworlds,
+                        current_gworld,
+                        rect,
+                        back_pix_pat,
+                    );
+                if !erased {
+                    let _ = ppc_paint_rect_bounds(
+                        memory,
+                        gworlds,
+                        current_gworld,
+                        rect,
+                        *quickdraw_back_color,
+                        toolbox_startup
+                            .quickdraw_back_indices
+                            .get(&current_gworld)
+                            .copied(),
+                    );
+                }
             }
             ppc_te_draw_text_box(
                 memory,

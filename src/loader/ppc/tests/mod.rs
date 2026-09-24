@@ -1612,3 +1612,51 @@ fn draw_dialog_draws_controls_that_are_not_items() {
         "DrawDialog left the application's scroll bar undrawn"
     );
 }
+
+#[test]
+fn te_text_box_erases_with_the_ports_background_pixel_pattern() {
+    // TETextBox erases its box as EraseRect does, with the port's bkPixPat
+    // when there is one (Imaging With QuickDraw (1994), 4-73). Cythera's
+    // character-creation text is drawn on its parchment this way.
+    let pef = synthetic_pef_with_import(b"TETextBox");
+    let mut loaded = load_pef_application(&pef).unwrap();
+    let scratch = PPC_HEAP_BASE + 0x14000;
+    let rect_ptr = scratch + 0x80;
+    let pixpat_handle = scratch + 0x1c0;
+    let pixpat_ptr = scratch + 0x1c4;
+    loaded.memory.add_region(scratch, vec![0; 0x300]);
+    ppc_write_pixmap(&mut loaded.memory, PPC_MAIN_PIXMAP, scratch, 8, 0, 0, 6, 6, 8).unwrap();
+    for offset in 0..64u32 {
+        loaded.memory.write_u8(scratch + offset, 100).unwrap();
+    }
+    // A full-colour (type 1) 8x8, 8-bit pattern, its PixMap and data given
+    // as offsets into the record.
+    loaded.memory.write_u32_be(pixpat_handle, pixpat_ptr).unwrap();
+    loaded.memory.write_u16_be(pixpat_ptr, 1).unwrap();
+    loaded.memory.write_u32_be(pixpat_ptr + 2, 0x20).unwrap();
+    loaded.memory.write_u32_be(pixpat_ptr + 6, 0x60).unwrap();
+    let pat_map = pixpat_ptr + 0x20;
+    loaded.memory.write_u16_be(pat_map + 4, 8).unwrap();
+    ppc_write_rect(&mut loaded.memory, pat_map + 6, 0, 0, 8, 8).unwrap();
+    loaded.memory.write_u16_be(pat_map + 32, 8).unwrap();
+    for offset in 0..64u32 {
+        loaded
+            .memory
+            .write_u8(pixpat_ptr + 0x60 + offset, if offset == 0 { 0x55 } else { 0x33 })
+            .unwrap();
+    }
+    loaded
+        .memory
+        .write_u32_be(PPC_MAIN_GWORLD + PPC_CGRAF_PORT_BK_PIXPAT_OFFSET, pixpat_handle)
+        .unwrap();
+    ppc_write_rect(&mut loaded.memory, rect_ptr, 0, 0, 4, 4).unwrap();
+    loaded.cpu.gpr[3] = scratch + 0x100;
+    loaded.cpu.gpr[4] = 0;
+    loaded.cpu.gpr[5] = rect_ptr;
+    loaded.cpu.gpr[6] = 0;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::TETextBox);
+    assert_eq!(loaded.memory.read_u8(scratch), Some(0x55));
+    assert_eq!(loaded.memory.read_u8(scratch + 1), Some(0x33));
+    // Outside the box nothing is touched.
+    assert_eq!(loaded.memory.read_u8(scratch + 4), Some(100));
+}

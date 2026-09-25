@@ -2092,6 +2092,11 @@ pub struct FixtureRunner {
     halted: bool,
     /// Trap opcode that caused the halt, if known.
     halted_trap: Option<u16>,
+    /// Why the run stopped, in words, where there is more to say than the
+    /// trap and the program counter. An embedding with no stderr -- the
+    /// browser module -- has no other way to learn that an import nothing
+    /// implements was reached.
+    halted_reason: Option<String>,
     /// Program counter at the point of halt.
     halted_pc: Option<u32>,
     /// Stack pointer at the point of halt.
@@ -2407,6 +2412,7 @@ impl FixtureRunner {
             batch_trace: std::collections::VecDeque::new(),
             halted: false,
             halted_trap: None,
+            halted_reason: None,
             halted_pc: None,
             halted_sp: None,
             halted_d0: None,
@@ -2620,6 +2626,10 @@ impl FixtureRunner {
 
     pub fn halted_trap(&self) -> Option<u16> {
         self.halted_trap
+    }
+
+    pub fn halted_reason(&self) -> Option<&str> {
+        self.halted_reason.as_deref()
     }
 
     pub fn halted_pc(&self) -> Option<u32> {
@@ -8795,15 +8805,16 @@ impl FixtureRunner {
             // A PowerPC fault otherwise ends emulation silently unless load
             // tracing is on, which reads like a clean exit. A return from the
             // entry point (halt pc with no link) and stops inside 68K code
-            // reached through Mixed Mode are not reported here.
+            // reached through Mixed Mode are not reported here. The reason is
+            // kept for a host with no stderr to ask for.
             let lr = ppc_app.cpu.lr;
             let ppc_fault = mixed_mode.is_none()
                 && !exited_via_ppc_exit_to_shell
                 && (unsupported_import_index.is_some()
                     || !matches!(probe.result, PpcRunResult::Halted { pc: 0, .. })
                     || lr != 0);
-            if ppc_fault && !trace_load_enabled() {
-                match unsupported_import_index {
+            if ppc_fault {
+                let reason = match unsupported_import_index {
                     Some(index) => {
                         let name = ppc_app
                             .imports
@@ -8815,15 +8826,19 @@ impl FixtureRunner {
                                     format!("{}:{}", binding.library_name, binding.symbol_name)
                                 },
                             );
-                        eprintln!(
-                            "[PPC] stopped at unsupported import {name} pc=${pc:08X} sp=${sp:08X} lr=${lr:08X}"
-                        );
+                        format!(
+                            "at unsupported import {name} pc=${pc:08X} sp=${sp:08X} lr=${lr:08X}"
+                        )
                     }
-                    None => eprintln!(
-                        "[PPC] stopped after {:?} pc=${pc:08X} sp=${sp:08X} lr=${lr:08X}",
+                    None => format!(
+                        "after {:?} pc=${pc:08X} sp=${sp:08X} lr=${lr:08X}",
                         probe.result
                     ),
+                };
+                if !trace_load_enabled() {
+                    eprintln!("[PPC] stopped {reason}");
                 }
+                self.halted_reason = Some(reason);
             }
             if trace_load_enabled() {
                 let word = ppc_app.memory.read_u32_be(pc);

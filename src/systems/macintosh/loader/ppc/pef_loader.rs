@@ -655,6 +655,11 @@ fn load_pef_application_with_optional_disk_fragment(
     let _ = memory.write_u32_be(crate::memory::globals::addr::CUR_STACK_BASE, stack_base);
     let _ = memory.write_u16_be(PPC_MBAR_HEIGHT_ADDR, 20);
     let _ = memory.write_u16_be(PPC_THE_MENU_ADDR, 0);
+    // HiliteMode starts with its high bit set, highlighting off; an
+    // application clears the bit before the one call it should highlight
+    // (Imaging With QuickDraw, 1994, p. 4-42). Left at zero, every
+    // InvertRect would highlight instead of inverting.
+    let _ = memory.write_u8(0x0938, 0xFF);
     // PaintOne normally starts with PaintWhite enabled. Carbon's generated
     // low-memory accessors preserve this flag around window creation.
     let _ = memory.write_u16_be(0x09dc, 1);

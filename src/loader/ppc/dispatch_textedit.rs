@@ -383,6 +383,13 @@ pub(super) fn dispatch_textedit_import(
                 &bytes,
             );
             *last_mem_error = result;
+            ppc_te_erase_view(
+                memory,
+                gworlds,
+                te_handle,
+                current_gworld,
+                *quickdraw_back_color,
+            );
             ppc_te_draw(
                 memory,
                 handles,
@@ -421,6 +428,13 @@ pub(super) fn dispatch_textedit_import(
                 &[],
             );
             *last_mem_error = result;
+            ppc_te_erase_view(
+                memory,
+                gworlds,
+                te_handle,
+                current_gworld,
+                *quickdraw_back_color,
+            );
             ppc_te_draw(
                 memory,
                 handles,
@@ -450,6 +464,13 @@ pub(super) fn dispatch_textedit_import(
                 cpu.gpr[3] as u8,
             );
             *last_mem_error = result;
+            ppc_te_erase_view(
+                memory,
+                gworlds,
+                cpu.gpr[4],
+                current_gworld,
+                *quickdraw_back_color,
+            );
             ppc_te_draw(
                 memory,
                 handles,
@@ -538,14 +559,13 @@ pub(super) fn dispatch_textedit_import(
                     memory.read_u16_be(te_ptr + PPC_TE_SEL_END_OFFSET),
                 )
             {
-                let port = memory
-                    .read_u32_be(te_ptr + PPC_TE_IN_PORT_OFFSET)
-                    .unwrap_or(current_gworld);
-                if let Some(view) = ppc_read_rect(memory, te_ptr + PPC_TE_VIEW_RECT_OFFSET) {
-                    let background = ppc_port_rgb_colors(memory, port)
-                        .map_or(*quickdraw_back_color, |colors| colors.1);
-                    ppc_paint_rect_bounds(memory, gworlds, port, view, background, None);
-                }
+                ppc_te_erase_view(
+                    memory,
+                    gworlds,
+                    te_handle,
+                    current_gworld,
+                    *quickdraw_back_color,
+                );
                 ppc_te_draw(
                     memory,
                     handles,
@@ -764,6 +784,13 @@ pub(super) fn dispatch_textedit_import(
                 cut,
             );
             *last_mem_error = result;
+            ppc_te_erase_view(
+                memory,
+                gworlds,
+                te_handle,
+                current_gworld,
+                *quickdraw_back_color,
+            );
             ppc_te_draw(
                 memory,
                 handles,
@@ -798,6 +825,13 @@ pub(super) fn dispatch_textedit_import(
                 &bytes,
             );
             *last_mem_error = result;
+            ppc_te_erase_view(
+                memory,
+                gworlds,
+                te_handle,
+                current_gworld,
+                *quickdraw_back_color,
+            );
             ppc_te_draw(
                 memory,
                 handles,
@@ -887,5 +921,29 @@ pub(super) fn dispatch_textedit_import(
             }
         }
         _ => None,
+    }
+}
+
+/// Erase a record's viewRect to its port's background before an edit redraws
+/// it. `ppc_te_draw` draws over what is there, so without this the caret an
+/// edit moved away from, and any character it deleted, stay on screen. Text
+/// (1993), pp. 2-81--2-82: TEKey, TEInsert, TEDelete, TECut and TEPaste
+/// redisplay the text.
+fn ppc_te_erase_view(
+    memory: &mut PpcSectionMem,
+    gworlds: &[PpcGWorldRecord],
+    te_handle: u32,
+    fallback_port: u32,
+    back_color: PpcRgbColor,
+) {
+    let Some(te_ptr) = ppc_te_record_ptr(memory, te_handle) else {
+        return;
+    };
+    let port = memory
+        .read_u32_be(te_ptr + PPC_TE_IN_PORT_OFFSET)
+        .unwrap_or(fallback_port);
+    if let Some(view) = ppc_read_rect(memory, te_ptr + PPC_TE_VIEW_RECT_OFFSET) {
+        let background = ppc_port_rgb_colors(memory, port).map_or(back_color, |colors| colors.1);
+        ppc_paint_rect_bounds(memory, gworlds, port, view, background, None);
     }
 }

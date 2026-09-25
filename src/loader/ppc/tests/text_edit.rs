@@ -584,6 +584,74 @@ fn native_textedit_key_and_click_update_the_public_edit_record() {
 }
 
 #[test]
+fn native_textedit_key_leaves_one_caret_inside_the_view() {
+    // Text (1993), pp. 2-81--2-82: TEKey moves the insertion point, so the
+    // caret it drew before is gone; and a record draws only within its
+    // viewRect. The view here is shorter than the line, as Cythera's
+    // conversation field is.
+    let pef = synthetic_pef_with_import(b"TEKey");
+    let mut loaded = load_pef_application(&pef).unwrap();
+    let rects = PPC_DATA_BASE + 0x1000;
+    loaded.memory.add_region(rects, vec![0; 16]);
+    ppc_write_rect(&mut loaded.memory, rects, 10, 20, 80, 220).unwrap();
+    ppc_write_rect(&mut loaded.memory, rects + 8, 14, 20, 26, 220).unwrap();
+    let mut last_mem_error = PPC_NO_ERR;
+    let te_handle = ppc_te_initialize_record(
+        None,
+        &mut loaded.memory,
+        test_heap_cursor!(loaded),
+        test_heap_limit!(loaded),
+        &mut last_mem_error,
+        test_handles!(loaded),
+        rects,
+        rects + 8,
+        PPC_MAIN_GWORLD,
+        1,
+        PPC_QD_TEXT_MODE_SRC_OR,
+        12,
+        PPC_RGB_BLACK,
+        false,
+    );
+    let te_ptr = loaded.memory.read_u32_be(te_handle).unwrap();
+    loaded
+        .memory
+        .write_u16_be(te_ptr + PPC_TE_ACTIVE_OFFSET, 1)
+        .unwrap();
+    assert!(ppc_paint_rect_bounds(
+        &mut loaded.memory,
+        &loaded.gworlds,
+        PPC_MAIN_GWORLD,
+        (0, 0, 60, 300),
+        PPC_RGB_WHITE,
+        None,
+    ));
+
+    for _ in 0..2 {
+        loaded.cpu.pc = loaded.entry_pc;
+        loaded.cpu.lr = PPC_HALT_PC;
+        loaded.cpu.gpr[3] = u32::from(b'l');
+        loaded.cpu.gpr[4] = te_handle;
+        let probe = loaded.run_with_hle_imports(64);
+        assert_eq!(probe.unsupported_import_index, None);
+    }
+
+    let surface =
+        ppc_live_quickdraw_surface(&mut loaded.memory, &loaded.gworlds, PPC_MAIN_GWORLD)
+            .unwrap();
+    let white =
+        ppc_quickdraw_surface_color_pixel(&mut loaded.memory, surface, PPC_RGB_WHITE).unwrap();
+    let front = surface.front_buffer;
+    let inked = |memory: &mut PpcSectionMem, y: i32| {
+        (0..300)
+            .filter(|x| ppc_quickdraw_read_pixel(memory, front, (*x, y)) != Some(white))
+            .collect::<Vec<i32>>()
+    };
+    // Row 24 is below the baseline, where `l` has no ink.
+    assert_eq!(inked(&mut loaded.memory, 24).len(), 1, "one caret in the view");
+    assert!(inked(&mut loaded.memory, 11).is_empty(), "nothing above the view");
+}
+
+#[test]
 fn native_textedit_line_starts_follow_shared_word_boundaries() {
     // Inside Macintosh: Text (1993), pp. 5-24--5-27: prefer a word
     // boundary over splitting the next word at the overflowing glyph.

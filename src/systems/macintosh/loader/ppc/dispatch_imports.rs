@@ -955,6 +955,7 @@ pub(crate) fn dispatch_supported_import(
             tick_count: *tick_count,
             vfs_resources,
             current_resource_refnum: *current_resource_refnum,
+            idle_poll: &mut toolbox_startup.isp_event_idle_poll,
         },
     ) {
         return Some(action);

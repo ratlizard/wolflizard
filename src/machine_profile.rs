@@ -204,8 +204,30 @@ pub(crate) const REFERENCE_POWERPC_EXECUTION_CAPABILITIES: GuestExecutionCapabil
 pub fn reference_machine_profile() -> MachineProfile {
     // Resolved once: callers include per-pixel geometry helpers, and parsing
     // the environment on every query showed up as a frame-time regression.
-    static RESOLVED: std::sync::OnceLock<MachineProfile> = std::sync::OnceLock::new();
     *RESOLVED.get_or_init(resolve_reference_machine_profile)
+}
+
+static RESOLVED: std::sync::OnceLock<MachineProfile> = std::sync::OnceLock::new();
+
+/// Set the screen the reference profile describes, for a host with no
+/// environment to read it from -- `std::env` on `wasm32-unknown-unknown` is
+/// empty, so a browser embedding cannot use `SYSTEMLESS_SCREEN_WIDTH`.
+///
+/// The PowerPC loader takes the guest's screen geometry from this profile
+/// rather than from the runner's configuration, so an embedding that sets a
+/// screen size on the runner alone leaves the two disagreeing, and the guest
+/// draws with one width into a framebuffer of another.
+///
+/// Takes effect only before the profile is first read, and answers whether it
+/// did. A zero dimension is refused, as the environment override refuses one.
+pub fn set_reference_screen_size(width: u16, height: u16) -> bool {
+    if width == 0 || height == 0 {
+        return false;
+    }
+    let mut profile = resolve_reference_machine_profile();
+    profile.screen_width = width;
+    profile.screen_height = height;
+    RESOLVED.set(profile).is_ok()
 }
 
 fn resolve_reference_machine_profile() -> MachineProfile {

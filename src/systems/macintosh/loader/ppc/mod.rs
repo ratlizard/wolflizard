@@ -74,7 +74,6 @@ use crate::process_context::{
     SharedProcessQuickDrawHiliteColors, SharedProcessQuickDrawOpColors,
     SharedProcessQuickDrawPixelStates, SharedProcessResourcePolicy, SharedProcessTickState,
     SharedProcessTimerTasks, SharedProcessVblTasks, SharedProcessWindowList,
-    DEFAULT_QUICKDRAW_HILITE_COLOR,
 };
 use crate::process_manager::{
     resolve_process_application_metadata, ProcessSerialNumber, SingleProcessEnumeration,

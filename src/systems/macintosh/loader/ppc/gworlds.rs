@@ -2276,9 +2276,8 @@ pub(crate) fn ppc_standard_screen_clut(depth: u32, is_color: bool) -> Option<([[
     } else if depth == 2 {
         // Inside Macintosh: Volume VI (1991), pp. 17-17--17-18: a color
         // 2-bit screen uses the enhanced standard table, whose spare entry
-        // carries the current highlight color. PPC currently exposes the
-        // System 7 default highlight green used by the shared 68k Toolbox.
-        (clut, _) = TrapDispatcher::standard_mac_enhanced_clut(2, DEFAULT_QUICKDRAW_HILITE_COLOR)?;
+        // carries the current highlight color.
+        (clut, _) = TrapDispatcher::standard_mac_enhanced_clut(2, PPC_DEFAULT_HILITE_COLOR)?;
     }
     Some((clut, entry_count))
 }
@@ -3070,6 +3069,15 @@ pub(crate) fn ppc_port_hilite_color_from_graf_vars(
     ppc_read_rgb_color(memory, hilite_color)
 }
 
+/// The PowerPC slice's highlight colour when a port has none of its own.
+/// Mac OS 8.5, the reference this slice is compared with, draws Cythera's
+/// selected list rows in its palette entry 113, (0xB800, 0xDC00, 0xFC00), as
+/// measured in Infinite Mac; the system's own HiliteRGB comes from parameter
+/// RAM and was not read, so this is that palette entry, which any highlight
+/// colour nearer to it than to its neighbours reproduces. The 68K slice
+/// keeps the shared default, which matches its System 7.5.3 reference.
+pub(crate) const PPC_DEFAULT_HILITE_COLOR: (u16, u16, u16) = (0xB800, 0xDC00, 0xFC00);
+
 pub(crate) fn ppc_current_hilite_color(
     memory: &mut PpcSectionMem,
     port: u32,
@@ -3082,7 +3090,7 @@ pub(crate) fn ppc_current_hilite_color(
                 .map(|(red, green, blue)| PpcRgbColor { red, green, blue })
         })
         .unwrap_or_else(|| {
-            let (red, green, blue) = DEFAULT_QUICKDRAW_HILITE_COLOR;
+            let (red, green, blue) = PPC_DEFAULT_HILITE_COLOR;
             PpcRgbColor { red, green, blue }
         })
 }

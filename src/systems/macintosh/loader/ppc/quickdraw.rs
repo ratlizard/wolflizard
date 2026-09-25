@@ -1673,6 +1673,84 @@ pub(crate) fn ppc_invert_rect_bounds(
     wrote
 }
 
+/// InvertRect with HiliteMode's pHiliteBit clear: pixels in the background
+/// colour take the highlight colour and pixels in the highlight colour take
+/// the background colour; every other pixel is left alone. On a one-bit map
+/// it inverts, as InvertRect does. Imaging With QuickDraw (1994), pp. 4-41--
+/// 4-42. Cythera's list rows are selected this way, and inverting drew them
+/// black where Mac OS 8.5 shows the highlight colour behind black text.
+pub(crate) fn ppc_hilite_rect_bounds(
+    memory: &mut PpcSectionMem,
+    gworlds: &[PpcGWorldRecord],
+    current_gworld: u32,
+    rect: (i16, i16, i16, i16),
+    back_color: PpcRgbColor,
+    hilite_color: PpcRgbColor,
+) -> bool {
+    let Some(surface) = ppc_live_quickdraw_surface(memory, gworlds, current_gworld) else {
+        return false;
+    };
+    let front_buffer = surface.front_buffer;
+    let (back, hilite) = match front_buffer.depth {
+        1 => return ppc_invert_rect_bounds(memory, gworlds, current_gworld, rect),
+        2 | 4 | 8 => {
+            let (Some(back), Some(hilite)) = (
+                ppc_quickdraw_indexed_pixel_value(memory, front_buffer, back_color),
+                ppc_quickdraw_indexed_pixel_value(memory, front_buffer, hilite_color),
+            ) else {
+                return false;
+            };
+            (back, hilite)
+        }
+        16 => (
+            ppc_rgb_color_to_rgb555(back_color),
+            ppc_rgb_color_to_rgb555(hilite_color),
+        ),
+        _ => return false,
+    };
+    if back == hilite {
+        return false;
+    }
+    let (top, left, bottom, right) = surface.local_rect(rect);
+    let left = left.max(0).min(front_buffer.width as i32);
+    let top = top.max(0).min(front_buffer.height as i32);
+    let right = right.max(0).min(front_buffer.width as i32);
+    let bottom = bottom.max(0).min(front_buffer.height as i32);
+    let swap = |value: u16| {
+        if value == back {
+            hilite
+        } else if value == hilite {
+            back
+        } else {
+            value
+        }
+    };
+    let mut wrote = false;
+    for y in top..bottom {
+        for x in left..right {
+            let Some(pixel) = ppc_quickdraw_read_pixel(memory, front_buffer, (x, y)) else {
+                continue;
+            };
+            // Outline text keeps its coverage; only its background colour
+            // follows the swap, as the pixels beneath it do.
+            let mut detail = crate::memory::SavedPixels::<()>::default();
+            let indexed_detail = front_buffer.depth == 8;
+            if indexed_detail {
+                ppc_capture_saved_detail(memory, front_buffer, (x, y), &mut detail, 0);
+            }
+            let swapped = swap(pixel);
+            if swapped != pixel {
+                wrote |= ppc_quickdraw_write_raw_pixel(memory, front_buffer, (x, y), swapped);
+            }
+            if indexed_detail {
+                detail.transform_detail(|_, value| swap(u16::from(value)) as u8);
+                ppc_restore_saved_detail(memory, front_buffer, (x, y), &detail, 0);
+            }
+        }
+    }
+    wrote
+}
+
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn ppc_frame_rect(
     cpu: &PpcCpu,

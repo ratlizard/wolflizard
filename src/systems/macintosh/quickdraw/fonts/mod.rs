@@ -60,7 +60,8 @@ pub struct FontFace {
     pub data: &'static [u8],
 }
 
-/// Glyph for a Mac Roman extended character (code 0x80..=0xFF).
+/// Glyph for a Mac Roman character outside printable ASCII: an extended
+/// character (0x80..=0xFF), or a control code or DEL.
 pub struct MacRomanGlyph {
     pub mac_code: u8,
     pub glyph: Glyph,
@@ -619,6 +620,25 @@ mod tests {
         let (bang, data) = crate::quickdraw::text::get_glyph(30003, 17, '!').unwrap();
         assert_eq!(bang.width, 1);
         assert_eq!(data[bang.data_offset], 255);
+    }
+
+    #[test]
+    fn a_guest_bitmap_strike_draws_its_missing_glyph_for_a_control_character() {
+        // The fixture's one character is a space; its missing-character glyph
+        // is the bitmap's second column. A unique family and size, since
+        // registration is process-global.
+        assert!(register_resource_font_strike_for_family(
+            30004,
+            13,
+            &minimal_nfnt()
+        ));
+        let (glyph, data) =
+            crate::quickdraw::text::get_glyph(30004, 13, '\u{1b}').expect("missing glyph");
+        assert_eq!((glyph.width, glyph.advance), (1, 1));
+        let len = usize::from(glyph.width) * usize::from(glyph.height);
+        assert!(data[glyph.data_offset..glyph.data_offset + len]
+            .iter()
+            .any(|pixel| *pixel != 0));
     }
 
     fn distinctive_override_blob(font_id: i16, size: i16) -> override_format::Blob {

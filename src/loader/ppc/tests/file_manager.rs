@@ -2083,6 +2083,51 @@ use super::*;
     }
 
     #[test]
+    fn standard_put_file_draws_the_selected_name_inside_its_selection() {
+        // The default name is selected. Its first letter's stem used to fall
+        // left of the black selection, on the white margin, and vanish:
+        // "Bellerophon" read "3ellerophon".
+        let pef = synthetic_pef_with_import(b"StandardPutFile");
+        let mut loaded = load_pef_application(&pef).unwrap();
+        let reply = PPC_DATA_BASE + 0x1400;
+        let default_name = PPC_DATA_BASE + 0x1500;
+        loaded.memory.add_region(reply, vec![0xaa; 88]);
+        loaded.memory.add_region(default_name, vec![0; 64]);
+        write_ppc_pstring(&mut loaded.memory, default_name, b"Bellerophon");
+        loaded.cpu.gpr[3] = 0;
+        loaded.cpu.gpr[4] = default_name;
+        loaded.cpu.gpr[5] = reply;
+        loaded.run_with_hle_imports(64);
+        let tracking = loaded
+            .toolbox_startup
+            .standard_file_put_tracking
+            .clone()
+            .expect("the dialog is up");
+        let front = tracking.front_buffer;
+        let name_top = i32::from(tracking.bounds.0 + PPC_STANDARD_FILE_PUT_NAME_RECT.0);
+        let name_left = i32::from(tracking.bounds.1 + PPC_STANDARD_FILE_PUT_NAME_RECT.1);
+        let name_bottom = i32::from(tracking.bounds.0 + PPC_STANDARD_FILE_PUT_NAME_RECT.2);
+        let white = ppc_quickdraw_indexed_pixel_value(&mut loaded.memory, front, PPC_RGB_WHITE).unwrap();
+        // Every white pixel in the field's rows between the frame and the
+        // text belongs to the margin; the first text column after the
+        // margin has ink, so the letter's stem is on the selection.
+        let rows = name_top + 3..name_bottom - 3;
+        // The first column with ink after the margin: the glyph origin is
+        // four pixels in and Chicago's B has a one-pixel left bearing.
+        let first_ink = (name_left + 3..name_left + 12).find(|&x| {
+            rows.clone().any(|y| {
+                ppc_quickdraw_read_pixel(&mut loaded.memory, front, (x, y)) == Some(white)
+            })
+        });
+        let stem_has_ink = first_ink.is_some_and(|x| x <= name_left + 5);
+        let selection_starts_at_the_margin = rows.clone().all(|y| {
+            ppc_quickdraw_read_pixel(&mut loaded.memory, front, (name_left + 3, y)) != Some(white)
+        });
+        assert!(selection_starts_at_the_margin, "the selection starts three pixels in");
+        assert!(stem_has_ink, "the first letter's stem is drawn on the selection");
+    }
+
+    #[test]
     fn hle_import_runner_standard_put_file_gui_edits_name_and_accepts() {
         let pef = synthetic_pef_with_import(b"StandardPutFile");
         let mut loaded = load_pef_application(&pef).unwrap();

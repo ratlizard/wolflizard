@@ -853,15 +853,20 @@ fn ppc_standard_file_draw_put_dialog_in_open_port(
     let _ = ppc_frame_front_rect(memory, front, name, PPC_RGB_BLACK, 1);
     let selected = tracking.sel_start < tracking.sel_end;
     let themed = ppc_ui_theme(gworlds) != UiThemeId::ClassicSystem7;
+    // The frame is drawn three pixels outside the edit-text item; the
+    // selection starts at the item's left edge and the glyphs one pixel
+    // inside it, as the 68K dialog draws them (`draw_edit_text_with_cursor`).
+    // The text used to start at the frame itself, left of the selection, so
+    // the first letter's left column drew white on white.
     if selected && !themed {
         let _ = ppc_fill_front_rect(
             memory,
             front,
             (
-                name.0,
-                name.1.saturating_add(2),
-                name.2,
-                name.3.saturating_sub(2),
+                name.0.saturating_add(3),
+                name.1.saturating_add(3),
+                name.2.saturating_sub(3),
+                name.3.saturating_sub(3),
             ),
             PPC_RGB_BLACK,
         );
@@ -869,7 +874,12 @@ fn ppc_standard_file_draw_put_dialog_in_open_port(
     ppc_draw_dialog_text(
         memory,
         gworlds,
-        (name.0.saturating_add(2), name.1, name.2, name.3),
+        (
+            name.0.saturating_add(2),
+            name.1.saturating_add(4),
+            name.2,
+            name.3.saturating_sub(3),
+        ),
         &tracking.name,
         if selected && !themed {
             PPC_RGB_WHITE

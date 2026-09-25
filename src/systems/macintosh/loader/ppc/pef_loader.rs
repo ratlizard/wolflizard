@@ -688,6 +688,11 @@ fn load_pef_application_with_optional_disk_fragment(
     // warp idiom `CrsrNew = CrsrCouple` requests a cursor update. Apple
     // Technical Note DV520, "How the Macintosh mouse/cursor mechanism works".
     let _ = memory.write_u8(crate::memory::globals::addr::CRSR_COUPLE, 1);
+    // HiliteMode starts with its high bit set, highlighting off; an
+    // application clears the bit before the one call it should highlight
+    // (Imaging With QuickDraw, 1994, p. 4-42). Left at zero, every
+    // InvertRect would highlight instead of inverting.
+    let _ = memory.write_u8(0x0938, 0xFF);
     // PaintOne normally starts with PaintWhite enabled. Carbon's generated
     // low-memory accessors preserve this flag around window creation.
     let _ = memory.write_u16_be(crate::memory::globals::addr::PAINT_WHITE, 1);

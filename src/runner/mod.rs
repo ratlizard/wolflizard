@@ -2007,6 +2007,11 @@ pub struct FixtureRunner {
     halted: bool,
     /// Trap opcode that caused the halt, if known.
     halted_trap: Option<u16>,
+    /// Why the run stopped, in words, where there is more to say than the
+    /// trap and the program counter. An embedding with no stderr -- the
+    /// browser module -- has no other way to learn that an import nothing
+    /// implements was reached.
+    halted_reason: Option<String>,
     /// Program counter at the point of halt.
     halted_pc: Option<u32>,
     /// Stack pointer at the point of halt.
@@ -2303,6 +2308,7 @@ impl FixtureRunner {
             batch_trace: std::collections::VecDeque::new(),
             halted: false,
             halted_trap: None,
+            halted_reason: None,
             halted_pc: None,
             halted_sp: None,
             halted_d0: None,
@@ -2483,6 +2489,10 @@ impl FixtureRunner {
 
     pub fn halted_trap(&self) -> Option<u16> {
         self.halted_trap
+    }
+
+    pub fn halted_reason(&self) -> Option<&str> {
+        self.halted_reason.as_deref()
     }
 
     pub fn halted_pc(&self) -> Option<u32> {
@@ -7843,15 +7853,17 @@ impl FixtureRunner {
             // An import nothing here implements stops the application where
             // it stands, and a window left on screen looks like a hang. Say
             // which import it was.
-            if !trace_load_enabled() {
-                if let Some(name) = unsupported_import_index.and_then(|index| {
-                    ppc_unimpl_histogram_key(&ppc_app.imports, probe.result, Some(index))
-                }) {
-                    eprintln!(
-                        "[PPC] stopped: {name} is not implemented (called from ${:08X})",
-                        ppc_app.cpu.lr
-                    );
+            if let Some(name) = unsupported_import_index.and_then(|index| {
+                ppc_unimpl_histogram_key(&ppc_app.imports, probe.result, Some(index))
+            }) {
+                let reason = format!(
+                    "{name} is not implemented (called from ${:08X})",
+                    ppc_app.cpu.lr
+                );
+                if !trace_load_enabled() {
+                    eprintln!("[PPC] stopped: {reason}");
                 }
+                self.halted_reason = Some(reason);
             }
             if trace_load_enabled() {
                 let word = ppc_app.memory.read_u32_be(pc);

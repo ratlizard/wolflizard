@@ -3499,10 +3499,39 @@ pub(super) fn ppc_draw_control_inner(
         return true;
     }
     let proc_id = record.map_or(0, |record| record.proc_id);
-    if matches!(proc_id & 0x0fff, 256 | 304 | 305 | 320 | 321) {
-        // A user pane draws nothing of its own. Picture and icon controls
-        // name a resource this host does not draw yet; nothing is better
-        // than a stand-in, as on the 68K path.
+    if matches!(proc_id & 0x0fff, 320 | 321) {
+        // An icon control's value is the ID of the 'cicn' or 'ICON' it
+        // shows (Universal Interfaces 3.4.2, Controls.h, "ICON CONTROL (CDEF
+        // 20)"), drawn into its rectangle. Cythera's Preferences put a
+        // speaker at each end of its volume sliders this way.
+        let icon_id = memory
+            .read_u16_be(control + PPC_CONTROL_VALUE_OFFSET)
+            .unwrap_or(0) as i16;
+        let resource = |res_type: &[u8; 4]| {
+            ppc_vfs_resource_index(
+                vfs_resources,
+                current_resource_refnum,
+                u32::from_be_bytes(*res_type),
+                icon_id,
+                false,
+            )
+            .and_then(|index| vfs_resources.get(index))
+            .map(|record| record.data.clone())
+        };
+        let rect = (top, left, bottom, right);
+        if let Some(data) = resource(b"cicn") {
+            let _ =
+                super::dispatch_cursor::ppc_plot_cicn_resource(memory, gworlds, owner, rect, &data);
+        } else if let Some(data) = resource(b"ICON") {
+            let _ =
+                super::dispatch_cursor::ppc_plot_icon_resource(memory, gworlds, owner, rect, &data);
+        }
+        return true;
+    }
+    if matches!(proc_id & 0x0fff, 256 | 304 | 305) {
+        // A user pane draws nothing of its own. Picture controls name a
+        // resource this host does not draw yet; nothing is better than a
+        // stand-in, as on the 68K path.
         return true;
     }
     if matches!(proc_id & 0x0fff, 160 | 161 | 288)

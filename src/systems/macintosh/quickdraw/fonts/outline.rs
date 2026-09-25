@@ -335,6 +335,20 @@ fn rasterize_with_strike(
             })
         })
         .collect::<Option<Vec<_>>>()?;
+    // QuickDraw consults a TrueType font's cmap for any byte, control codes
+    // included: an Escape typed into a TextEdit field draws the font's
+    // missing-character glyph on a real Mac, and a tab or return draws
+    // whatever the Macintosh cmap gives it. An unmapped code resolves to
+    // glyph 0 above. These stay out of the face's metrics below.
+    let control = (0x00u8..=0x1f)
+        .chain(std::iter::once(0x7f))
+        .map(|code| {
+            Some(MacRomanGlyph {
+                mac_code: code,
+                glyph: glyph(char::from(code))?,
+            })
+        })
+        .collect::<Option<Vec<_>>>()?;
     if let Some(bearings) = layout.bearings {
         for ((glyph, bearing), source) in ascii.iter_mut().zip(bearings).zip(&sources) {
             if !source.hinted && glyph.width > 0 {
@@ -404,6 +418,9 @@ fn rasterize_with_strike(
         glyphs: Box::leak(ascii.into_boxed_slice()),
         data,
     }));
+    // Appended after the extended characters, the order `sources` has them.
+    let mut extended = extended;
+    extended.extend(control);
     let extended = Box::leak(Box::new(MacRomanFace {
         font_id,
         size,
@@ -810,6 +827,7 @@ mod tests {
             .glyphs
             .iter()
             .zip(substitute.glyphs)
+            .filter(|(entry, _)| entry.mac_code >= 0x80)
             .filter(|(entry, _)| {
                 let ch = crate::mac_roman::decode_mac_roman(&[entry.mac_code])
                     .chars()
@@ -951,7 +969,8 @@ mod tests {
                 let (face, extended) = super::face(family, size).unwrap();
                 assert_eq!(face.size, size);
                 assert_eq!(face.glyphs.len(), 95);
-                assert_eq!(extended.glyphs.len(), 128);
+                // 0x80..=0xFF, then the 32 control codes and DEL.
+                assert_eq!(extended.glyphs.len(), 128 + 33);
                 assert!(face.data.iter().all(|&value| value == 0 || value == 255));
                 for (glyph, data) in face.glyphs.iter().map(|g| (g, face.data)).chain(
                     extended

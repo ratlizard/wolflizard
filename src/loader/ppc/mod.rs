@@ -10432,18 +10432,91 @@ struct PpcInitialCfmPlan {
     next_connection_id: u32,
 }
 
+/// Which bundled fragments can be prepared, with their dependencies.
+///
+/// A file beside the application can declare a shared library whose PEF this
+/// loader cannot read, and a fragment that imports from such a library would
+/// bind against something that is never published. Both cases are the same
+/// fault, so a fragment counts as usable only when its own loader section
+/// parses and every fragment it names does too; a cycle is usable when every
+/// member of it is. An unusable fragment is left out of the plan entirely,
+/// which is the state the application already handles -- the library is
+/// simply not on the disk, and its imports resolve against this runtime's own
+/// implementation of it.
+fn usable_cfm_fragments(
+    fragments: &[PpcCfmLibraryFragment],
+    forced_out: &HashSet<usize>,
+) -> Vec<bool> {
+    #[derive(Clone, Copy, PartialEq)]
+    enum Mark {
+        Unknown,
+        Visiting,
+        Usable,
+        Unusable,
+    }
+
+    fn visit(
+        index: usize,
+        fragments: &[PpcCfmLibraryFragment],
+        forced_out: &HashSet<usize>,
+        marks: &mut [Mark],
+    ) -> bool {
+        if forced_out.contains(&index) {
+            marks[index] = Mark::Unusable;
+            return false;
+        }
+        match marks[index] {
+            // A fragment reached again while its own dependencies are being
+            // walked is a cycle: it does not make the cycle unusable by
+            // itself, so the walk that opened it decides.
+            Mark::Visiting => return true,
+            Mark::Usable => return true,
+            Mark::Unusable => return false,
+            Mark::Unknown => {}
+        }
+        marks[index] = Mark::Visiting;
+        let bytes = &fragments[index].bytes;
+        let readable = parse_pef_imported_symbols(bytes).is_some();
+        let imports = resolve_pef_imports(bytes);
+        let usable = match (readable, imports) {
+            (true, Some(imports)) => imports
+                .iter()
+                .filter_map(|import| {
+                    fragments
+                        .iter()
+                        .position(|fragment| fragment.name.eq_ignore_ascii_case(&import.library_name))
+                })
+                .collect::<Vec<_>>()
+                .into_iter()
+                .all(|dependency| visit(dependency, fragments, forced_out, marks)),
+            _ => false,
+        };
+        marks[index] = if usable { Mark::Usable } else { Mark::Unusable };
+        usable
+    }
+
+    let mut marks = vec![Mark::Unknown; fragments.len()];
+    let mut usable = Vec::with_capacity(fragments.len());
+    for index in 0..fragments.len() {
+        usable.push(visit(index, fragments, forced_out, &mut marks));
+    }
+    usable
+}
+
 fn initial_cfm_library_order(
     fragments: &[PpcCfmLibraryFragment],
     application_imports: &[crate::loader::pef::PefResolvedImport],
+    usable: &[bool],
 ) -> Vec<usize> {
     fn visit(
         index: usize,
         fragments: &[PpcCfmLibraryFragment],
+        usable: &[bool],
         visiting: &mut HashSet<usize>,
         visited: &mut HashSet<usize>,
         order: &mut Vec<usize>,
     ) {
-        if visited.contains(&index) || !visiting.insert(index) {
+        if !usable[index] || visited.contains(&index) || !visiting.insert(index) {
             return;
         }
         let mut dependencies: Vec<_> = resolve_pef_imports(&fragments[index].bytes)
@@ -10458,7 +10531,7 @@ fn initial_cfm_library_order(
         dependencies.sort_unstable();
         dependencies.dedup();
         for dependency in dependencies {
-            visit(dependency, fragments, visiting, visited, order);
+            visit(dependency, fragments, usable, visiting, visited, order);
         }
         visiting.remove(&index);
         if visited.insert(index) {
@@ -10473,6 +10546,7 @@ fn initial_cfm_library_order(
                 fragment.name.eq_ignore_ascii_case(&import.library_name)
             })
         })
+        .filter(|index| usable[*index])
         .collect();
     roots.sort_unstable();
     roots.dedup();
@@ -10483,12 +10557,24 @@ fn initial_cfm_library_order(
         visit(
             root,
             fragments,
+            usable,
             &mut visiting,
             &mut visited,
             &mut order,
         );
     }
     order
+}
+
+/// A single fragment defeated the plan, and which one it was.
+struct PpcCfmFragmentFailure {
+    index: usize,
+    error: PpcLoadError,
+}
+
+enum PpcInitialCfmPlanFailure {
+    Fragment(PpcCfmFragmentFailure),
+    Fatal(PpcLoadError),
 }
 
 fn ppc_plan_initial_cfm_libraries(
@@ -10512,7 +10598,52 @@ fn ppc_plan_initial_cfm_libraries(
             .then_with(|| left.name.cmp(&right.name))
     });
     fragments.dedup_by(|left, right| left.name.eq_ignore_ascii_case(&right.name));
-    let order = initial_cfm_library_order(&fragments, &application_imports);
+
+    // A shared library sitting beside the application is not the application:
+    // the folder an installer lays down carries whatever else it installs, and
+    // a fragment in one of those files that this loader cannot prepare must
+    // not stop the application from launching. Leave that fragment out and try
+    // again, which puts the process in the state it is in when the file is
+    // simply not there -- the import resolves against this runtime's own
+    // implementation of the library. Anything that imports from a fragment
+    // left out goes with it, since it would bind against a library that is
+    // never published.
+    let mut left_out: HashSet<usize> = HashSet::new();
+    loop {
+        let usable = usable_cfm_fragments(&fragments, &left_out);
+        let attempt = ppc_plan_initial_cfm_libraries_once(
+            &fragments,
+            &usable,
+            &application_imports,
+            application_import_count,
+            initial_imports.clone(),
+            heap_limit,
+        );
+        match attempt {
+            Ok(plan) => return Ok(plan),
+            Err(PpcInitialCfmPlanFailure::Fatal(error)) => return Err(error),
+            Err(PpcInitialCfmPlanFailure::Fragment(failure)) => {
+                eprintln!(
+                    "[LOAD] Bundled CFM library {:?} left out of the plan: {:?}",
+                    fragments[failure.index].name, failure.error
+                );
+                if !left_out.insert(failure.index) {
+                    return Err(failure.error);
+                }
+            }
+        }
+    }
+}
+
+fn ppc_plan_initial_cfm_libraries_once(
+    fragments: &[PpcCfmLibraryFragment],
+    usable: &[bool],
+    application_imports: &[crate::loader::pef::PefResolvedImport],
+    application_import_count: usize,
+    initial_imports: Vec<PpcImportBinding>,
+    heap_limit: u32,
+) -> Result<PpcInitialCfmPlan, PpcInitialCfmPlanFailure> {
+    let order = initial_cfm_library_order(fragments, application_imports, usable);
     let initial_binding_count = initial_imports.len();
     let mut import_run_state = PpcImportRunState::from_parts(
         initial_imports,
@@ -10524,34 +10655,34 @@ fn ppc_plan_initial_cfm_libraries(
     let mut heap_cursor = PPC_HEAP_BASE;
     let mut next_connection_id = PPC_FIRST_CFM_CONNECTION_ID;
 
+    let fragment_failure = |index: usize, name: &str, error: i16| {
+        PpcInitialCfmPlanFailure::Fragment(PpcCfmFragmentFailure {
+            index,
+            error: PpcLoadError::BundledLibraryLoad {
+                library_name: name.to_string(),
+                error,
+            },
+        })
+    };
+
     for index in order {
         let fragment = &fragments[index];
-        let imported_symbols = parse_pef_imported_symbols(&fragment.bytes).ok_or_else(|| {
-            PpcLoadError::BundledLibraryLoad {
-                library_name: fragment.name.clone(),
-                error: PPC_FRAG_CORRUPT_ERR,
-            }
-        })?;
-        let resolved_imports = resolve_pef_imports(&fragment.bytes).ok_or_else(|| {
-            PpcLoadError::BundledLibraryLoad {
-                library_name: fragment.name.clone(),
-                error: PPC_FRAG_CORRUPT_ERR,
-            }
-        })?;
+        let imported_symbols = parse_pef_imported_symbols(&fragment.bytes)
+            .ok_or_else(|| fragment_failure(index, &fragment.name, PPC_FRAG_CORRUPT_ERR))?;
+        let resolved_imports = resolve_pef_imports(&fragment.bytes)
+            .ok_or_else(|| fragment_failure(index, &fragment.name, PPC_FRAG_CORRUPT_ERR))?;
         let policy = PpcConnectedCfmBindingPolicy {
             connections: &connections,
         };
         let import_plan = import_run_state
             .plan_resolved(resolved_imports, imported_symbols.len(), &policy)
-            .map_err(|error| PpcLoadError::BundledLibraryLoad {
-                library_name: fragment.name.clone(),
-                error: ppc_dynamic_import_error(error),
+            .map_err(|error| {
+                fragment_failure(index, &fragment.name, ppc_dynamic_import_error(error))
             })?;
         let pending = import_run_state
             .stage_append(import_plan)
-            .map_err(|error| PpcLoadError::BundledLibraryLoad {
-                library_name: fragment.name.clone(),
-                error: ppc_dynamic_import_error(error),
+            .map_err(|error| {
+                fragment_failure(index, &fragment.name, ppc_dynamic_import_error(error))
             })?;
         let plan = CfmFragmentPlan::prepare(
             &fragment.bytes,
@@ -10565,10 +10696,7 @@ fn ppc_plan_initial_cfm_libraries(
                 (next < heap_limit).then_some((base, next))
             },
         )
-        .map_err(|error| PpcLoadError::BundledLibraryLoad {
-            library_name: fragment.name.clone(),
-            error: error.os_error(),
-        })?;
+        .map_err(|error| fragment_failure(index, &fragment.name, error.os_error()))?;
         heap_cursor = plan.next_heap_cursor();
         pending.commit();
         let prepared = plan.prepared_fragment();
@@ -10582,7 +10710,7 @@ fn ppc_plan_initial_cfm_libraries(
         });
         next_connection_id = next_connection_id
             .checked_add(1)
-            .ok_or(PpcLoadError::AddressOverflow)?;
+            .ok_or(PpcInitialCfmPlanFailure::Fatal(PpcLoadError::AddressOverflow))?;
         libraries.push(PpcInitialCfmLibraryPlan {
             library_name: fragment.name.clone(),
             fragment_bytes: fragment.bytes.clone(),
@@ -10594,13 +10722,13 @@ fn ppc_plan_initial_cfm_libraries(
         connections: &connections,
     };
     let rebound = PpcImportBindingPlan::prepare(
-        application_imports,
+        application_imports.to_vec(),
         application_import_count,
         0,
         ppc_import_layout(),
         &policy,
     )
-    .map_err(ppc_initial_import_error)?;
+    .map_err(|error| PpcInitialCfmPlanFailure::Fatal(ppc_initial_import_error(error)))?;
     let import_addresses = rebound.relocation_addresses().to_vec();
     let rebound_imports = rebound.into_initial_bindings();
     let (mut imports, import_count) = import_run_state.into_parts();

@@ -72,6 +72,10 @@ pub struct PpcToolboxStartupState {
     pub(crate) last_button_result: Option<bool>,
     pub(crate) last_still_down_result: Option<bool>,
     pub(crate) last_wait_mouse_up_result: Option<bool>,
+    /// Each window's palette and its update policy, as SetPalette,
+    /// NSetPalette and GetNewCWindow's 'pltt' left them; see
+    /// `ppc_window_palette`.
+    pub(crate) window_palettes: HashMap<u32, (u32, u16)>,
     /// The call site and count of GetOSEvent calls in a row that found
     /// nothing; see `ppc_idle_poll_charge`.
     pub(crate) os_event_idle_poll: (u32, u32),
@@ -91,9 +95,6 @@ pub struct PpcToolboxStartupState {
     pub(crate) open_picture: Option<(u32, u32, (i16, i16, i16, i16), Vec<u8>)>,
     pub(crate) application_palette: u32,
     pub(crate) application_palette_updates: u16,
-    /// A DialogRecord uses offset 156 for its DITL handle, so palette
-    /// associations for dialogs must stay outside the guest window record.
-    pub(crate) dialog_palettes: HashMap<u32, (u32, u16)>,
     pub(crate) palette_allocations: Vec<PpcPaletteAllocation>,
     pub(crate) active_device_palettes: HashMap<u32, u32>,
     pub(crate) known_gdevices: Vec<u32>,
@@ -186,6 +187,7 @@ impl Default for PpcToolboxStartupState {
             last_button_result: None,
             last_still_down_result: None,
             last_wait_mouse_up_result: None,
+            window_palettes: HashMap::new(),
             os_event_idle_poll: (0, 0),
             isp_event_idle_poll: (0, 0),
             activation_event_seen: false,
@@ -200,7 +202,6 @@ impl Default for PpcToolboxStartupState {
             open_picture: None,
             application_palette: 0,
             application_palette_updates: 0,
-            dialog_palettes: HashMap::new(),
             palette_allocations: Vec::new(),
             active_device_palettes: HashMap::new(),
             known_gdevices: vec![PPC_MAIN_GDEVICE],

@@ -222,6 +222,22 @@ pub(crate) fn register_resource_font_strike_for_family(
         }
     }
 
+    // A control code or DEL draws what the strike has for it, and otherwise
+    // the missing-character glyph, as it does on a real Mac: an Escape typed
+    // into a TextEdit field shows as the font's empty box.
+    for code in (0x00usize..=0x1F).chain(std::iter::once(0x7F)) {
+        let index = code
+            .checked_sub(first_char)
+            .filter(|_| code <= last_char)
+            .unwrap_or(missing_index);
+        if let Some(glyph) = decode_index(index) {
+            macroman.push(MacRomanGlyph {
+                mac_code: code as u8,
+                glyph,
+            });
+        }
+    }
+
     let coverage: &'static [u8] = Box::leak(coverage.into_boxed_slice());
     let ascii: &'static [Glyph] = Box::leak(ascii.into_boxed_slice());
     let face = Box::leak(Box::new(FontFace {

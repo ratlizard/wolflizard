@@ -414,6 +414,7 @@ fn fit_window_size(
 /// On macOS, start at one guest pixel per logical point. Other platforms
 /// target a 960×720-point box. Leave room for desktop chrome on small monitors
 /// and apply backing DPI once before fitting the content.
+#[cfg(test)]
 fn automatic_window_size(
     width: u32,
     height: u32,

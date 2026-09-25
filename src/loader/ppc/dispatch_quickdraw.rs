@@ -191,9 +191,7 @@ pub(super) fn dispatch_quickdraw_import(
             // tolerant entries select their palette RGB, while explicit
             // entries select the corresponding device-table index.
             let entry = cpu.gpr[3] as u16 as i16;
-            let assigned_palette = memory
-                .read_u32_be(current_gworld.wrapping_add(PPC_CGRAF_PORT_PALETTE_HANDLE_OFFSET))
-                .unwrap_or(0);
+            let assigned_palette = ppc_window_palette(toolbox_startup, current_gworld);
             let palette_handle = if assigned_palette != 0 {
                 assigned_palette
             } else {
@@ -236,9 +234,7 @@ pub(super) fn dispatch_quickdraw_import(
         }
         PpcImportDispatcherTarget::PmBackColor => {
             let entry = cpu.gpr[3] as u16 as i16;
-            let assigned = memory
-                .read_u32_be(current_gworld.wrapping_add(PPC_CGRAF_PORT_PALETTE_HANDLE_OFFSET))
-                .unwrap_or(0);
+            let assigned = ppc_window_palette(toolbox_startup, current_gworld);
             let palette = if assigned != 0 {
                 assigned
             } else {

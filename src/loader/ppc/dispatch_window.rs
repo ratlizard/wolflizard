@@ -241,6 +241,7 @@ pub(super) fn dispatch_window_import(
                 current_resource_refnum,
                 last_resource_error,
                 toolbox_startup.host_menu_bar_hidden,
+                &mut toolbox_startup.window_palettes,
             );
             if window != 0 {
                 ppc_recalculate_window_vis_regions(
@@ -2228,6 +2229,7 @@ pub(super) fn ppc_get_new_cwindow(
     current_resource_refnum: i16,
     last_resource_error: &mut i16,
     host_menu_bar_hidden: bool,
+    window_palettes: &mut HashMap<u32, (u32, u16)>,
 ) -> u32 {
     let window_id = cpu.gpr[3] as u16 as i16;
     let storage_ptr = cpu.gpr[4];
@@ -2316,8 +2318,7 @@ pub(super) fn ppc_get_new_cwindow(
         palette
     };
     if palette != 0 {
-        let _ = memory.write_u32_be(window + PPC_CGRAF_PORT_PALETTE_HANDLE_OFFSET, palette);
-        let _ = memory.write_u16_be(window + PPC_CGRAF_PORT_PALETTE_UPDATES_OFFSET, 1);
+        window_palettes.insert(window, (palette, 1));
     }
     *last_resource_error = PPC_NO_ERR;
     *last_mem_error = PPC_NO_ERR;
@@ -3166,9 +3167,7 @@ pub(super) fn ppc_dispatch_legacy_window(
                         .and_then(|region| ppc_read_rgn_bbox(memory, region))
                 })
                 .flatten();
-            let disposed_palette = memory
-                .read_u32_be(window.wrapping_add(PPC_CGRAF_PORT_PALETTE_HANDLE_OFFSET))
-                .unwrap_or(0);
+            let disposed_palette = ppc_window_palette(toolbox_startup, window);
             let disposed_pixmap_handle = gworlds
                 .iter()
                 .find(|record| {
@@ -3225,17 +3224,8 @@ pub(super) fn ppc_dispatch_legacy_window(
                     .indexed_screen_ctables
                     .remove(&pixmap_handle);
                 quickdraw_fore_indices.remove(&window);
-                let still_associated = toolbox_startup.application_palette == disposed_palette
-                    || gworlds.iter().any(|record| {
-                        memory
-                            .read_u32_be(
-                                record
-                                    .port
-                                    .wrapping_add(PPC_CGRAF_PORT_PALETTE_HANDLE_OFFSET),
-                            )
-                            .unwrap_or(0)
-                            == disposed_palette
-                    });
+                toolbox_startup.window_palettes.remove(&window);
+                let still_associated = ppc_palette_in_use(toolbox_startup, disposed_palette);
                 if disposed_palette != 0 && !still_associated {
                     ppc_release_palette_allocations_and_restore(
                         memory,
@@ -3706,9 +3696,7 @@ pub(super) fn ppc_close_window(
         })
         .flatten();
     if window != 0 {
-        let closed_palette = memory
-            .read_u32_be(window.wrapping_add(PPC_CGRAF_PORT_PALETTE_HANDLE_OFFSET))
-            .unwrap_or(0);
+        let closed_palette = ppc_window_palette(toolbox_startup, window);
         let closed_pixmap_handle = gworlds
             .iter()
             .find(|gworld| {
@@ -3763,17 +3751,8 @@ pub(super) fn ppc_close_window(
                 .indexed_screen_ctables
                 .remove(&pixmap_handle);
             quickdraw_fore_indices.remove(&window);
-            let still_associated = toolbox_startup.application_palette == closed_palette
-                || gworlds.iter().any(|record| {
-                    memory
-                        .read_u32_be(
-                            record
-                                .port
-                                .wrapping_add(PPC_CGRAF_PORT_PALETTE_HANDLE_OFFSET),
-                        )
-                        .unwrap_or(0)
-                        == closed_palette
-                });
+            toolbox_startup.window_palettes.remove(&window);
+            let still_associated = ppc_palette_in_use(toolbox_startup, closed_palette);
             if closed_palette != 0 && !still_associated {
                 ppc_release_palette_allocations_and_restore(
                     memory,

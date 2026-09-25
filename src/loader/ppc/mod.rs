@@ -738,8 +738,6 @@ struct PpcTeStyleRun {
     style_index: usize,
     style: PpcTeResolvedStyle,
 }
-const PPC_CGRAF_PORT_PALETTE_HANDLE_OFFSET: u32 = 156;
-const PPC_CGRAF_PORT_PALETTE_UPDATES_OFFSET: u32 = 160;
 const PPC_GRAF_PORT_SIZE: u32 = 108;
 #[cfg(test)]
 const PPC_GDEVICE_SIZE: u32 = 62;
@@ -3113,6 +3111,10 @@ pub struct PpcToolboxStartupState {
     pub(crate) last_button_result: Option<bool>,
     pub(crate) last_still_down_result: Option<bool>,
     pub(crate) last_wait_mouse_up_result: Option<bool>,
+    /// Each window's palette and its update policy, as SetPalette,
+    /// NSetPalette and GetNewCWindow's 'pltt' left them; see
+    /// `ppc_window_palette`.
+    pub(crate) window_palettes: HashMap<u32, (u32, u16)>,
     /// The call site and count of GetOSEvent calls in a row that found
     /// nothing; see `ppc_idle_poll_charge`.
     pub(crate) os_event_idle_poll: (u32, u32),
@@ -3189,6 +3191,7 @@ impl Default for PpcToolboxStartupState {
             last_button_result: None,
             last_still_down_result: None,
             last_wait_mouse_up_result: None,
+            window_palettes: HashMap::new(),
             os_event_idle_poll: (0, 0),
             isp_event_idle_poll: (0, 0),
             activation_event_seen: false,
@@ -17436,12 +17439,9 @@ fn ppc_dispatch_quickdraw_compatibility(
                 cpu.gpr[3] as u16 as i16,
             );
             if palette != 0 && current_gworld != 0 {
-                let _ = memory.write_u32_be(
-                    current_gworld + PPC_CGRAF_PORT_PALETTE_HANDLE_OFFSET,
-                    palette,
-                );
-                let _ =
-                    memory.write_u16_be(current_gworld + PPC_CGRAF_PORT_PALETTE_UPDATES_OFFSET, 1);
+                toolbox_startup
+                    .window_palettes
+                    .insert(current_gworld, (palette, 1));
             }
             PpcImportAction::Return(palette)
         }
@@ -17662,9 +17662,7 @@ fn ppc_dispatch_quickdraw_compatibility(
         PpcQuickDrawCompatibilityOperation::AnimateEntry => {
             let window = cpu.gpr[3];
             let entry = usize::from(cpu.gpr[4] as u16);
-            let assigned_palette = memory
-                .read_u32_be(window.wrapping_add(PPC_CGRAF_PORT_PALETTE_HANDLE_OFFSET))
-                .unwrap_or(0);
+            let assigned_palette = ppc_window_palette(toolbox_startup, window);
             let palette = if assigned_palette != 0 {
                 assigned_palette
             } else {
@@ -17721,9 +17719,7 @@ fn ppc_dispatch_quickdraw_compatibility(
             let src_index = u32::from(cpu.gpr[5] as u16);
             let dst_entry = u32::from(cpu.gpr[6] as u16);
             let dst_length = u32::from(cpu.gpr[7] as u16);
-            let assigned_palette = memory
-                .read_u32_be(window + PPC_CGRAF_PORT_PALETTE_HANDLE_OFFSET)
-                .unwrap_or(0);
+            let assigned_palette = ppc_window_palette(toolbox_startup, window);
             let palette_handle = if assigned_palette != 0 {
                 assigned_palette
             } else {
@@ -24593,6 +24589,31 @@ fn ppc_copy_bits_clut_with_provenance(
     }
 }
 
+/// The palette assigned to `window`, or 0 when it has none.
+///
+/// The Palette Manager keeps a window's palette outside the window record
+/// (Inside Macintosh Volume VI, 1991, pp. 20-15--20-17). It was kept here at
+/// byte 156 of the record, just past a CWindowRecord, which in a
+/// DialogRecord is the item-list handle and at 160 its TextEdit handle: the
+/// palette of Cythera's character dialog was its item list, so pictures drawn
+/// through the window's palette took their colours from the item text, and
+/// SetPalette on a dialog would have overwritten its items.
+pub(super) fn ppc_window_palette(toolbox_startup: &PpcToolboxStartupState, window: u32) -> u32 {
+    toolbox_startup
+        .window_palettes
+        .get(&window)
+        .map_or(0, |(palette, _)| *palette)
+}
+
+/// Whether any window, or the application default, still uses `palette`.
+pub(super) fn ppc_palette_in_use(toolbox_startup: &PpcToolboxStartupState, palette: u32) -> bool {
+    toolbox_startup.application_palette == palette
+        || toolbox_startup
+            .window_palettes
+            .values()
+            .any(|(assigned, _)| *assigned == palette)
+}
+
 fn ppc_copy_bits_palette_index_map(
     memory: &mut PpcSectionMem,
     ctable_handle: u32,
@@ -24613,9 +24634,7 @@ fn ppc_copy_bits_palette_index_map(
     let entry_count = usize::from(memory.read_u16_be(ctable + 6)?)
         .saturating_add(1)
         .min(256);
-    let assigned_palette = memory
-        .read_u32_be(current_gworld.wrapping_add(PPC_CGRAF_PORT_PALETTE_HANDLE_OFFSET))
-        .unwrap_or(0);
+    let assigned_palette = ppc_window_palette(toolbox_startup, current_gworld);
     let palette_handle = if assigned_palette != 0 {
         assigned_palette
     } else {
@@ -24698,9 +24717,7 @@ fn ppc_copy_bits_linked_palette_clut(
     let entry_count = usize::from(memory.read_u16_be(ctable + 6)?)
         .saturating_add(1)
         .min(256);
-    let assigned_palette = memory
-        .read_u32_be(current_gworld.wrapping_add(PPC_CGRAF_PORT_PALETTE_HANDLE_OFFSET))
-        .unwrap_or(0);
+    let assigned_palette = ppc_window_palette(toolbox_startup, current_gworld);
     let palette_handle = if assigned_palette != 0 {
         assigned_palette
     } else {
@@ -29870,9 +29887,7 @@ pub(super) fn ppc_activate_window_palette(
             .and_then(|handle| ppc_read_ctable_clut(memory, handle, &defaults))
             .unwrap_or(defaults)
     };
-    let assigned_palette = memory
-        .read_u32_be(window.wrapping_add(PPC_CGRAF_PORT_PALETTE_HANDLE_OFFSET))
-        .unwrap_or(0);
+    let assigned_palette = ppc_window_palette(toolbox_startup, window);
     // Inside Macintosh Volume VI (1991), pp. 20-16, 20-19: a window with no
     // assigned palette uses the application's default palette.
     let palette_handle = if assigned_palette != 0 {
@@ -29951,9 +29966,7 @@ pub(super) fn ppc_activate_front_window_palette(
     let gdevice = front.map_or(PPC_MAIN_GDEVICE, |front| {
         ppc_gworld_device(gworlds, front).unwrap_or(fallback_gdevice)
     });
-    let assigned_palette = memory
-        .read_u32_be(window.wrapping_add(PPC_CGRAF_PORT_PALETTE_HANDLE_OFFSET))
-        .unwrap_or(0);
+    let assigned_palette = ppc_window_palette(toolbox_startup, window);
     if assigned_palette == 0
         && toolbox_startup.application_palette == 0
         && !toolbox_startup

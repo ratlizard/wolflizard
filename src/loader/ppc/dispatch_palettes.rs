@@ -68,9 +68,7 @@ pub(super) fn dispatch_palette_import(
             let previous_palette_handle = if window_ptr == u32::MAX {
                 toolbox_startup.application_palette
             } else {
-                memory
-                    .read_u32_be(window_ptr.wrapping_add(PPC_CGRAF_PORT_PALETTE_HANDLE_OFFSET))
-                    .unwrap_or(0)
+                ppc_window_palette(toolbox_startup, window_ptr)
             };
             if window_ptr == u32::MAX {
                 // Inside Macintosh Volume VI (1991), p. 20-16: WindowPtr(-1)
@@ -78,35 +76,17 @@ pub(super) fn dispatch_palette_import(
                 // same update policy accepted for an ordinary window.
                 toolbox_startup.application_palette = palette_handle;
                 toolbox_startup.application_palette_updates = updates;
-            } else if window_ptr != 0
-                && ppc_memory_can_write_bytes(
-                    memory,
-                    window_ptr.wrapping_add(PPC_CGRAF_PORT_PALETTE_UPDATES_OFFSET),
-                    2,
-                )
-            {
-                let _ = memory.write_u32_be(
-                    window_ptr.wrapping_add(PPC_CGRAF_PORT_PALETTE_HANDLE_OFFSET),
-                    palette_handle,
-                );
-                let _ = memory.write_u16_be(
-                    window_ptr.wrapping_add(PPC_CGRAF_PORT_PALETTE_UPDATES_OFFSET),
-                    updates,
-                );
+            } else if window_ptr != 0 {
+                if palette_handle == 0 {
+                    toolbox_startup.window_palettes.remove(&window_ptr);
+                } else {
+                    toolbox_startup
+                        .window_palettes
+                        .insert(window_ptr, (palette_handle, updates));
+                }
             }
             if previous_palette_handle != 0 && previous_palette_handle != palette_handle {
-                let still_associated = toolbox_startup.application_palette
-                    == previous_palette_handle
-                    || gworlds.iter().any(|record| {
-                        memory
-                            .read_u32_be(
-                                record
-                                    .port
-                                    .wrapping_add(PPC_CGRAF_PORT_PALETTE_HANDLE_OFFSET),
-                            )
-                            .unwrap_or(0)
-                            == previous_palette_handle
-                    });
+                let still_associated = ppc_palette_in_use(toolbox_startup, previous_palette_handle);
                 if !still_associated {
                     ppc_release_palette_allocations_and_restore(
                         memory,
@@ -125,12 +105,8 @@ pub(super) fn dispatch_palette_import(
             } else {
                 window_ptr
             };
-            let front_uses_default = front_window
-                .and_then(|front| {
-                    memory.read_u32_be(front.wrapping_add(PPC_CGRAF_PORT_PALETTE_HANDLE_OFFSET))
-                })
-                .unwrap_or(0)
-                == 0;
+            let front_uses_default =
+                front_window.map_or(0, |front| ppc_window_palette(toolbox_startup, front)) == 0;
             let applies_now = if window_ptr == u32::MAX {
                 front_window.is_none() || front_uses_default
             } else {
@@ -167,18 +143,8 @@ pub(super) fn dispatch_palette_import(
             let window_ptr = cpu.gpr[3];
             let palette = if window_ptr == u32::MAX {
                 toolbox_startup.application_palette
-            } else if window_ptr != 0
-                && ppc_memory_can_read_bytes(
-                    memory,
-                    window_ptr.wrapping_add(PPC_CGRAF_PORT_PALETTE_HANDLE_OFFSET),
-                    4,
-                )
-            {
-                memory
-                    .read_u32_be(window_ptr.wrapping_add(PPC_CGRAF_PORT_PALETTE_HANDLE_OFFSET))
-                    .unwrap_or(0)
             } else {
-                0
+                ppc_window_palette(toolbox_startup, window_ptr)
             };
             Some(PpcImportAction::Return(palette))
         }

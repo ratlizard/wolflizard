@@ -160,6 +160,35 @@ pub(super) fn dispatch_get_mouse_import(
     }
 }
 
+/// Charge a poll that keeps finding nothing from one call site extra cycles,
+/// as Button, GetKeys and GetMouse are. Cythera's credits wait for a key or
+/// click with GetOSEvent and ISpElementList_GetNextEvent in a loop, and input
+/// arrives only between frontend ticks here, so the loop spent each tick on
+/// thousands of calls through the full import dispatch and the credits
+/// scrolled at about one frame a second. `poll` is the last call site and
+/// how many idle calls it has made in a row.
+pub(super) fn ppc_idle_poll_charge(
+    poll: &mut (u32, u32),
+    lr: u32,
+    idle: bool,
+    action: PpcImportAction,
+) -> PpcImportAction {
+    if !idle || lr == 0 {
+        *poll = (0, 0);
+        return action;
+    }
+    if poll.0 == lr {
+        poll.1 = poll.1.saturating_add(1);
+    } else {
+        *poll = (lr, 1);
+    }
+    if poll.1 > PPC_GETKEYS_IDLE_POLL_FAST_FORWARD_THRESHOLD {
+        ppc_import_action_with_extra_cycles(action, PPC_GETKEYS_IDLE_POLL_EXTRA_CYCLES)
+    } else {
+        action
+    }
+}
+
 pub(super) fn dispatch_button_import(
     cpu: &PpcCpu,
     input: PpcInputSnapshot,
@@ -543,7 +572,15 @@ pub(super) fn dispatch_event_import(
                     has_event, what, message, when, where_v, where_h, modifiers,
                 ));
             }
-            let action = PpcImportAction::Return(u32::from(has_event));
+            let mut action = PpcImportAction::Return(u32::from(has_event));
+            if os_only {
+                action = ppc_idle_poll_charge(
+                    &mut toolbox_startup.os_event_idle_poll,
+                    cpu.lr,
+                    !has_event,
+                    action,
+                );
+            }
             if matches!(
                 binding.dispatcher_target,
                 PpcImportDispatcherTarget::GetNextEvent(PpcEventPollOperation::WaitNextEvent)

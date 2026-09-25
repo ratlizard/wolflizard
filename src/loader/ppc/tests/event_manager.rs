@@ -464,6 +464,32 @@ fn get_mouse_returns_current_port_local_coordinates() {
 }
 
 #[test]
+fn idle_event_polls_from_one_call_site_are_charged_extra_cycles() {
+    let mut poll = (0, 0);
+    let lr = 0x0100_6000;
+    for _ in 0..PPC_GETKEYS_IDLE_POLL_FAST_FORWARD_THRESHOLD {
+        assert_eq!(
+            super::dispatch_event::ppc_idle_poll_charge(&mut poll, lr, true, PpcImportAction::Return(0)),
+            PpcImportAction::Return(0)
+        );
+    }
+    assert_eq!(
+        super::dispatch_event::ppc_idle_poll_charge(&mut poll, lr, true, PpcImportAction::Return(0)),
+        PpcImportAction::ReturnWithExtraCycles(0, PPC_GETKEYS_IDLE_POLL_EXTRA_CYCLES)
+    );
+    // An event, or another call site, starts the count again.
+    assert_eq!(
+        super::dispatch_event::ppc_idle_poll_charge(&mut poll, lr, false, PpcImportAction::Return(1)),
+        PpcImportAction::Return(1)
+    );
+    assert_eq!(
+        super::dispatch_event::ppc_idle_poll_charge(&mut poll, lr, true, PpcImportAction::Return(0)),
+        PpcImportAction::Return(0)
+    );
+    assert_eq!(poll, (lr, 1));
+}
+
+#[test]
 fn get_mouse_poll_fast_forwards_only_while_the_pointer_stays_put() {
     // Cythera's drawers follow a drag by calling GetMouse until the pointer
     // moves. Repeated reads of an unchanged location from one call site are

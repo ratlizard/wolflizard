@@ -3113,6 +3113,11 @@ pub struct PpcToolboxStartupState {
     pub(crate) last_button_result: Option<bool>,
     pub(crate) last_still_down_result: Option<bool>,
     pub(crate) last_wait_mouse_up_result: Option<bool>,
+    /// The call site and count of GetOSEvent calls in a row that found
+    /// nothing; see `ppc_idle_poll_charge`.
+    pub(crate) os_event_idle_poll: (u32, u32),
+    /// The same for ISpElementList_GetNextEvent.
+    pub(crate) isp_event_idle_poll: (u32, u32),
     pub(crate) activation_event_seen: bool,
     pub(crate) update_event_seen: bool,
     pub delay_deadline: Option<u32>,
@@ -3184,6 +3189,8 @@ impl Default for PpcToolboxStartupState {
             last_button_result: None,
             last_still_down_result: None,
             last_wait_mouse_up_result: None,
+            os_event_idle_poll: (0, 0),
+            isp_event_idle_poll: (0, 0),
             activation_event_seen: false,
             update_event_seen: false,
             delay_deadline: None,
@@ -15188,6 +15195,7 @@ fn dispatch_supported_import(context: PpcDispatchContext<'_>) -> Option<PpcImpor
             input_sprocket_virtual_elements,
             input,
             tick_count: *tick_count,
+            idle_poll: &mut toolbox_startup.isp_event_idle_poll,
         },
     ) {
         return Some(action);

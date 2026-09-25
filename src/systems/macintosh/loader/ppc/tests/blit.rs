@@ -3513,13 +3513,7 @@ use super::*;
                 .write_u16_be(palette + 20 + entry as u32 * 16, color[2])
                 .unwrap();
         }
-        loaded
-            .memory
-            .write_u32_be(
-                PPC_MAIN_GWORLD + PPC_CGRAF_PORT_PALETTE_HANDLE_OFFSET,
-                palette_handle,
-            )
-            .unwrap();
+        loaded.toolbox_startup.window_palettes.insert(PPC_MAIN_GWORLD, (palette_handle, 0));
         assert_eq!(
             ppc_copy_bits_linked_palette_clut(
                 &mut loaded.memory,
@@ -3576,13 +3570,7 @@ use super::*;
         loaded.memory.write_u16_be(ctable + 6, 5).unwrap();
         loaded.memory.write_u32_be(palette_handle, palette).unwrap();
         loaded.memory.write_u16_be(palette, 5).unwrap();
-        loaded
-            .memory
-            .write_u32_be(
-                PPC_MAIN_GWORLD + PPC_CGRAF_PORT_PALETTE_HANDLE_OFFSET,
-                palette_handle,
-            )
-            .unwrap();
+        loaded.toolbox_startup.window_palettes.insert(PPC_MAIN_GWORLD, (palette_handle, 0));
         let mut dst_clut = [[0; 3]; 256];
         let colors = [
             [0x1000, 0x2000, 0x3000],
@@ -3666,10 +3654,7 @@ use super::*;
             .write_u16_be(ctable + 14, absent_fallback[2])
             .unwrap();
         dst_clut[56] = absent_fallback;
-        loaded
-            .memory
-            .write_u32_be(PPC_MAIN_GWORLD + PPC_CGRAF_PORT_PALETTE_HANDLE_OFFSET, 0)
-            .unwrap();
+        loaded.toolbox_startup.window_palettes.remove(&PPC_MAIN_GWORLD);
         let map = ppc_copy_bits_palette_index_map(
             &mut loaded.memory,
             ctable_handle,
@@ -3787,10 +3772,7 @@ use super::*;
             .toolbox_startup
             .active_device_palettes
             .insert(PPC_MAIN_GDEVICE, palette_handle);
-        loaded
-            .memory
-            .write_u32_be(PPC_MAIN_GWORLD + PPC_CGRAF_PORT_PALETTE_HANDLE_OFFSET, 0)
-            .unwrap();
+        loaded.toolbox_startup.window_palettes.remove(&PPC_MAIN_GWORLD);
         loaded.toolbox_startup.application_palette = 0;
         loaded.memory.write_u8(src_pixels, 0).unwrap();
         ppc_write_rect(&mut loaded.memory, rect, 0, 0, 1, 1).unwrap();

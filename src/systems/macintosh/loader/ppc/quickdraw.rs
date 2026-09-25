@@ -2641,6 +2641,31 @@ pub(crate) fn ppc_copy_bits_clut_with_provenance(
     }
 }
 
+/// The palette assigned to `window`, or 0 when it has none.
+///
+/// The Palette Manager keeps a window's palette outside the window record
+/// (Inside Macintosh Volume VI, 1991, pp. 20-15--20-17). It was kept here at
+/// byte 156 of the record, just past a CWindowRecord, which in a
+/// DialogRecord is the item-list handle and at 160 its TextEdit handle: the
+/// palette of Cythera's character dialog was its item list, so pictures drawn
+/// through the window's palette took their colours from the item text, and
+/// SetPalette on a dialog would have overwritten its items.
+pub(crate) fn ppc_window_palette(toolbox_startup: &PpcToolboxStartupState, window: u32) -> u32 {
+    toolbox_startup
+        .window_palettes
+        .get(&window)
+        .map_or(0, |(palette, _)| *palette)
+}
+
+/// Whether any window, or the application default, still uses `palette`.
+pub(crate) fn ppc_palette_in_use(toolbox_startup: &PpcToolboxStartupState, palette: u32) -> bool {
+    toolbox_startup.application_palette == palette
+        || toolbox_startup
+            .window_palettes
+            .values()
+            .any(|(assigned, _)| *assigned == palette)
+}
+
 pub(crate) fn ppc_copy_bits_palette_index_map(
     memory: &mut PpcSectionMem,
     ctable_handle: u32,
@@ -2661,9 +2686,7 @@ pub(crate) fn ppc_copy_bits_palette_index_map(
     let entry_count = usize::from(memory.read_u16_be(ctable + 6)?)
         .saturating_add(1)
         .min(256);
-    let assigned_palette = memory
-        .read_u32_be(current_gworld.wrapping_add(PPC_CGRAF_PORT_PALETTE_HANDLE_OFFSET))
-        .unwrap_or(0);
+    let assigned_palette = ppc_window_palette(toolbox_startup, current_gworld);
     let palette_handle = if assigned_palette != 0 {
         assigned_palette
     } else {
@@ -2746,9 +2769,7 @@ pub(crate) fn ppc_copy_bits_linked_palette_clut(
     let entry_count = usize::from(memory.read_u16_be(ctable + 6)?)
         .saturating_add(1)
         .min(256);
-    let assigned_palette = memory
-        .read_u32_be(current_gworld.wrapping_add(PPC_CGRAF_PORT_PALETTE_HANDLE_OFFSET))
-        .unwrap_or(0);
+    let assigned_palette = ppc_window_palette(toolbox_startup, current_gworld);
     let palette_handle = if assigned_palette != 0 {
         assigned_palette
     } else {

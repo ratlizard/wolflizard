@@ -1032,7 +1032,14 @@ pub(super) fn ppc_new_control_record_values(
     // for the title width, so their value is a menu item number rather than
     // an ordinary min/max control value. Macintosh Toolbox Essentials (1992),
     // pp. 5-25--5-27.
-    let initial_value = if (1008..=1023).contains(&(proc_id & 0x0fff)) {
+    // Icon and picture controls take the ID of the resource they show as
+    // their value, with a maximum of 1 (Universal Interfaces 3.4.2,
+    // Controls.h, "ICON CONTROL (CDEF 20)" and "PICTURE CONTROL (CDEF
+    // 19)"), so pinning it loses the ID: Cythera's Preferences create their
+    // speaker icons this way, with a maximum of 1.
+    let initial_value = if (1008..=1023).contains(&(proc_id & 0x0fff))
+        || matches!(proc_id & 0x0fff, 304 | 305 | 320..=323)
+    {
         value
     } else {
         value.clamp(min.min(max), min.max(max))
@@ -1594,10 +1601,39 @@ pub(super) fn ppc_draw_control_inner(
     let palette = ppc_ui_theme(gworlds).provider().palette();
     let record = controls.iter().find(|record| record.handle == handle);
     let proc_id = record.map_or(0, |record| record.proc_id) & 0x0fff;
-    if matches!(proc_id, 256 | 304 | 305 | 320 | 321) {
-        // A user pane draws nothing of its own. Picture and icon controls
-        // name a resource this host does not draw yet; nothing is better
-        // than a stand-in, as on the 68K path.
+    if matches!(proc_id, 320 | 321) {
+        // An icon control's value is the ID of the 'cicn' or 'ICON' it
+        // shows (Universal Interfaces 3.4.2, Controls.h, "ICON CONTROL (CDEF
+        // 20)"), drawn into its rectangle. Cythera's Preferences put a
+        // speaker at each end of its volume sliders this way.
+        let icon_id = memory
+            .read_u16_be(control + PPC_CONTROL_VALUE_OFFSET)
+            .unwrap_or(0) as i16;
+        let resource = |res_type: &[u8; 4]| {
+            ppc_vfs_resource_index(
+                vfs_resources,
+                current_resource_refnum,
+                u32::from_be_bytes(*res_type),
+                icon_id,
+                false,
+            )
+            .and_then(|index| vfs_resources.get(index))
+            .map(|record| record.data.clone())
+        };
+        let rect = (top, left, bottom, right);
+        if let Some(data) = resource(b"cicn") {
+            let _ =
+                super::dispatch_cursor::ppc_plot_cicn_resource(memory, gworlds, owner, rect, &data);
+        } else if let Some(data) = resource(b"ICON") {
+            let _ =
+                super::dispatch_cursor::ppc_plot_icon_resource(memory, gworlds, owner, rect, &data);
+        }
+        return true;
+    }
+    if matches!(proc_id, 256 | 304 | 305) {
+        // A user pane draws nothing of its own. Picture controls name a
+        // resource this host does not draw yet; nothing is better than a
+        // stand-in, as on the 68K path.
         return true;
     }
     if matches!(proc_id, 160 | 161 | 288)

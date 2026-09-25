@@ -1,6 +1,85 @@
 use super::*;
 
 #[test]
+fn new_control_keeps_an_icon_controls_resource_id() {
+    // An icon control's value is the ID of its icon, with a maximum of 1;
+    // Cythera's Preferences create their speaker icons so. Pinned to the
+    // range, the ID was lost and no icon could be found.
+    let mut loaded = load_pef_application(&synthetic_pef_with_import(b"NewControl")).unwrap();
+    let scratch = ppc_heap_alloc(
+        &mut loaded.memory,
+        test_heap_cursor!(loaded),
+        test_heap_limit!(loaded),
+        64,
+        true,
+    );
+    ppc_write_rect(&mut loaded.memory, scratch, 10, 20, 42, 52).unwrap();
+    write_ppc_pstring(&mut loaded.memory, scratch + 8, b"");
+    loaded.cpu.gpr[3] = PPC_MAIN_GWORLD;
+    loaded.cpu.gpr[4] = scratch;
+    loaded.cpu.gpr[5] = scratch + 8;
+    loaded.cpu.gpr[6] = 1;
+    loaded.cpu.gpr[7] = 131;
+    loaded.cpu.gpr[8] = 0;
+    loaded.cpu.gpr[9] = 1;
+    loaded.cpu.gpr[10] = 321;
+
+    loaded.run_with_hle_imports(128);
+
+    let control = loaded.memory.read_u32_be(loaded.cpu.gpr[3]).unwrap();
+    assert_eq!(
+        loaded.memory.read_u16_be(control + PPC_CONTROL_VALUE_OFFSET),
+        Some(131)
+    );
+}
+
+#[test]
+fn a_cicn_resource_draws_through_its_mask() {
+    // An 8-by-8 one-bit 'cicn' whose pixels are all colour 1 (black) and
+    // whose mask covers only the left half, drawn at its own size.
+    let mut data = vec![0u8; 82];
+    let put = |data: &mut Vec<u8>, offset: usize, value: u16| {
+        data[offset..offset + 2].copy_from_slice(&value.to_be_bytes());
+    };
+    put(&mut data, 4, 0x8000 | 2); // PixMap rowBytes
+    put(&mut data, 10, 8); // bounds bottom
+    put(&mut data, 12, 8); // bounds right
+    put(&mut data, 32, 1); // pixelSize
+    put(&mut data, 54, 2); // mask rowBytes
+    put(&mut data, 68, 2); // bitmap rowBytes
+    data.extend(std::iter::repeat_n([0xf0u8, 0x00], 8).flatten()); // mask: left half
+    data.extend([0u8; 16]); // 1-bit bitmap, unused here
+    data.extend([0, 0, 0, 0, 0, 0, 0, 1]); // colour table header, two entries
+    data.extend([0, 0, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff]); // 0 white
+    data.extend([0, 1, 0, 0, 0, 0, 0, 0]); // 1 black
+    data.extend([0xffu8; 16]); // pixels, all 1
+    let mut loaded = load_pef_application(&synthetic_pef_with_import(b"NewControl")).unwrap();
+    let front = ppc_front_buffer_for_gworld(&loaded.gworlds, PPC_MAIN_GWORLD).unwrap();
+    let white = ppc_quickdraw_indexed_pixel_value(&mut loaded.memory, front, PPC_RGB_WHITE).unwrap();
+    let black = ppc_quickdraw_indexed_pixel_value(&mut loaded.memory, front, PPC_RGB_BLACK).unwrap();
+    for y in 30..40 {
+        for x in 30..40 {
+            ppc_quickdraw_write_raw_pixel(&mut loaded.memory, front, (x, y), white);
+        }
+    }
+
+    assert!(super::dispatch_cursor::ppc_plot_cicn_resource(
+        &mut loaded.memory,
+        &loaded.gworlds,
+        PPC_MAIN_GWORLD,
+        (30, 30, 38, 38),
+        &data,
+    ));
+
+    let pixel = |loaded: &mut PpcLoadedApp, x, y| {
+        ppc_quickdraw_read_pixel(&mut loaded.memory, front, (x, y))
+    };
+    assert_eq!(pixel(&mut loaded, 30, 30), Some(black));
+    assert_eq!(pixel(&mut loaded, 33, 37), Some(black));
+    assert_eq!(pixel(&mut loaded, 34, 30), Some(white), "outside the mask");
+}
+
+#[test]
 fn hle_import_runner_creates_and_links_a_classic_control_record() {
     let mut loaded = load_pef_application(&synthetic_pef_with_import(b"NewControl")).unwrap();
     let scratch = ppc_heap_alloc(

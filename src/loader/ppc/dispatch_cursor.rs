@@ -489,6 +489,151 @@ fn ppc_scale_icon_coordinate(
     i16::try_from(i32::from(src_start) + dst_offset * src_size / dst_size).ok()
 }
 
+/// Draw a compiled 'cicn' resource, as its bytes are stored, into `rect` of
+/// `port`, scaled to the rectangle and through the icon's mask. The layout
+/// is the one `ppc_get_cicon` reads (Imaging With QuickDraw, 1994, pp.
+/// 4-105--4-106): an 82-byte header of the PixMap, mask BitMap and 1-bit
+/// BitMap, then the mask, the bitmap, the colour table and the pixels.
+/// Icon controls draw from the resource itself, with no CIcon allocated.
+pub(super) fn ppc_plot_cicn_resource(
+    memory: &mut PpcSectionMem,
+    gworlds: &[PpcGWorldRecord],
+    port: u32,
+    rect: (i16, i16, i16, i16),
+    data: &[u8],
+) -> bool {
+    let u16_at = |offset: usize| -> Option<u16> {
+        Some(u16::from_be_bytes(
+            data.get(offset..offset + 2)?.try_into().ok()?,
+        ))
+    };
+    let (Some(pixel_row_bytes), Some(top), Some(left), Some(bottom), Some(right)) = (
+        u16_at(4).map(|value| usize::from(value & 0x3fff)),
+        u16_at(6).map(|value| value as i16),
+        u16_at(8).map(|value| value as i16),
+        u16_at(10).map(|value| value as i16),
+        u16_at(12).map(|value| value as i16),
+    ) else {
+        return false;
+    };
+    let (Some(depth), Some(mask_row_bytes), Some(bitmap_row_bytes)) = (
+        u16_at(32),
+        u16_at(54).map(|value| usize::from(value & 0x3fff)),
+        u16_at(68).map(|value| usize::from(value & 0x3fff)),
+    ) else {
+        return false;
+    };
+    let height = usize::try_from(i32::from(bottom) - i32::from(top)).unwrap_or(0);
+    let width = usize::try_from(i32::from(right) - i32::from(left)).unwrap_or(0);
+    if width == 0 || height == 0 || !matches!(depth, 1 | 2 | 4 | 8) {
+        return false;
+    }
+    let mask = 82;
+    let table = mask + mask_row_bytes * height + bitmap_row_bytes * height;
+    let Some(entry_count) = u16_at(table + 6).map(|last| usize::from(last) + 1) else {
+        return false;
+    };
+    let device_indexes = u16_at(table + 4).is_some_and(|flags| flags & 0x8000 != 0);
+    let mut clut = [[0u16; 3]; 256];
+    for slot in 0..entry_count.min(256) {
+        let entry = table + 8 + slot * 8;
+        let (Some(value), Some(red), Some(green), Some(blue)) = (
+            u16_at(entry),
+            u16_at(entry + 2),
+            u16_at(entry + 4),
+            u16_at(entry + 6),
+        ) else {
+            return false;
+        };
+        let index = if device_indexes { slot } else { usize::from(value) };
+        if let Some(color) = clut.get_mut(index) {
+            *color = [red, green, blue];
+        }
+    }
+    let pixels = table + 8 + entry_count * 8;
+    let Some(surface) = ppc_live_quickdraw_surface(memory, gworlds, port) else {
+        return false;
+    };
+    let front = surface.front_buffer;
+    let (dst_top, dst_left, dst_bottom, dst_right) = surface.local_rect_i16(rect);
+    let (dst_width, dst_height) = (
+        (i32::from(dst_right) - i32::from(dst_left)).max(0),
+        (i32::from(dst_bottom) - i32::from(dst_top)).max(0),
+    );
+    let mut resolved: Vec<(usize, Option<u16>)> = Vec::new();
+    let mut drew = false;
+    for y in 0..dst_height {
+        let sy = (y as usize * height) / dst_height as usize;
+        for x in 0..dst_width {
+            let sx = (x as usize * width) / dst_width as usize;
+            let masked = data
+                .get(mask + sy * mask_row_bytes + sx / 8)
+                .is_some_and(|byte| byte & (0x80 >> (sx % 8)) != 0);
+            if !masked {
+                continue;
+            }
+            let bit = sx * usize::from(depth);
+            let Some(byte) = data.get(pixels + sy * pixel_row_bytes + bit / 8) else {
+                continue;
+            };
+            let index = usize::from(
+                (byte >> (8 - usize::from(depth) - bit % 8)) & ((1u16 << depth) - 1) as u8,
+            );
+            let point = (i32::from(dst_left) + x, i32::from(dst_top) + y);
+            let [red, green, blue] = clut[index];
+            let color = PpcRgbColor { red, green, blue };
+            let value = match resolved.iter().find(|(known, _)| *known == index) {
+                Some(&(_, value)) => value,
+                None => {
+                    let value = ppc_quickdraw_indexed_pixel_value(memory, front, color);
+                    resolved.push((index, value));
+                    value
+                }
+            };
+            drew |= match value {
+                Some(value) => ppc_quickdraw_write_raw_pixel(memory, front, point, value),
+                None => ppc_quickdraw_write_pixel(memory, front, point, color),
+            };
+        }
+    }
+    drew
+}
+
+/// Draw a 32-by-32 one-bit 'ICON' resource into `rect` of `port`, its set
+/// bits in black and the rest left as they are.
+pub(super) fn ppc_plot_icon_resource(
+    memory: &mut PpcSectionMem,
+    gworlds: &[PpcGWorldRecord],
+    port: u32,
+    rect: (i16, i16, i16, i16),
+    data: &[u8],
+) -> bool {
+    if data.len() < 128 {
+        return false;
+    }
+    let Some(surface) = ppc_live_quickdraw_surface(memory, gworlds, port) else {
+        return false;
+    };
+    let front = surface.front_buffer;
+    let (dst_top, dst_left, dst_bottom, dst_right) = surface.local_rect_i16(rect);
+    let (dst_width, dst_height) = (
+        (i32::from(dst_right) - i32::from(dst_left)).max(0),
+        (i32::from(dst_bottom) - i32::from(dst_top)).max(0),
+    );
+    let mut drew = false;
+    for y in 0..dst_height {
+        let sy = (y * 32 / dst_height) as usize;
+        for x in 0..dst_width {
+            let sx = (x * 32 / dst_width) as usize;
+            if data[sy * 4 + sx / 8] & (0x80 >> (sx % 8)) != 0 {
+                let point = (i32::from(dst_left) + x, i32::from(dst_top) + y);
+                drew |= ppc_quickdraw_write_pixel(memory, front, point, PPC_RGB_BLACK);
+            }
+        }
+    }
+    drew
+}
+
 fn ppc_plot_cicon(
     cpu: &PpcCpu,
     memory: &mut PpcSectionMem,

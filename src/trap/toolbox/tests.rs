@@ -16093,7 +16093,10 @@
     }
 
     #[test]
-    fn pack8_aeprocessappleevent_accepts_empty_delivered_open_application_without_callback() {
+    fn pack8_aeprocessappleevent_dispatches_delivered_open_application_to_its_handler() {
+        // Cythera opens its start screen from its 'oapp' handler, after
+        // WaitNextEvent hands it the launch event: the delivered event
+        // must still reach the handler.
         let (mut disp, mut cpu, mut bus) = setup();
         let sp = TEST_SP;
         let event_record_ptr = 0x0032_0000u32;
@@ -16132,11 +16135,47 @@
             .unwrap()
             .unwrap();
 
+        assert_eq!(cpu.read_reg(Register::PC), handler_ptr);
+        assert!(disp.fired_oapp_handler);
+        assert!(disp.ae_call_state.is_some());
+        // AEProcessAppleEvent accepted the event, so none is outstanding.
+        assert!(!disp.apple_event_launch_state.accept_open_application_event());
+    }
+
+    #[test]
+    fn pack8_aeprocessappleevent_accepts_delivered_open_application_without_a_handler() {
+        let (mut disp, mut cpu, mut bus) = setup();
+        let sp = TEST_SP;
+        let event_record_ptr = 0x0032_0000u32;
+        disp.apple_event_launch_state
+            .set_high_level_event_aware(true);
+
+        let (what, message, when, where_v, where_h, modifiers, delivered) =
+            disp.dequeue_toolbox_event(&mut cpu, &mut bus, 0xFFFF);
+        assert!(delivered);
+        assert_eq!(what, 23);
+        bus.write_word(event_record_ptr, what);
+        bus.write_long(event_record_ptr + 2, message);
+        bus.write_long(event_record_ptr + 6, when);
+        bus.write_word(event_record_ptr + 10, where_v as u16);
+        bus.write_word(event_record_ptr + 12, where_h as u16);
+        bus.write_word(event_record_ptr + 14, modifiers);
+
+        cpu.write_reg(Register::A7, sp);
+        cpu.write_reg(Register::PC, 0x00F0_1234);
+        cpu.write_reg(Register::D0, 0x021B);
+        bus.write_long(sp, event_record_ptr);
+        bus.write_word(sp + 4, 0xBEEF);
+        disp.dispatch_toolbox(true, 0x016, &mut cpu, &mut bus)
+            .unwrap()
+            .unwrap();
+
         assert_eq!(cpu.read_reg(Register::PC), 0x00F0_1234);
         assert_eq!(cpu.read_reg(Register::A7), sp + 4);
         assert_eq!(bus.read_word(sp + 4), 0);
         assert!(!disp.fired_oapp_handler);
         assert!(disp.ae_call_state.is_none());
+        assert!(!disp.apple_event_launch_state.accept_open_application_event());
     }
 
     #[test]

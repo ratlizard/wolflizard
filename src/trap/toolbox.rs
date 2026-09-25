@@ -9356,29 +9356,36 @@ impl super::TrapDispatcher {
                 // entry (param_bytes = 4):
                 //   SP+0   theEventRecord ptr (4 bytes)
                 //   SP+4   result OSErr slot (2 bytes)
-                // A delivered zero-data launch event has no AppleEvent
-                // descriptor to dispatch. Calls made without such an
-                // outstanding event retain the synthetic OAPP fallback
-                // used by applications that process startup events directly;
-                // repeated direct calls may dispatch again.
+                // The delivered launch event is accepted here, as
+                // AEProcessAppleEvent accepts every high-level event it is
+                // given, and then goes to the application's 'oapp' handler
+                // like any other Apple event: an application that opens its
+                // first window from that handler waits for it. Only when no
+                // handler is installed is the event accepted and dropped.
+                // Calls made without such an outstanding event retain the
+                // synthetic OAPP fallback used by applications that process
+                // startup events directly; repeated direct calls may
+                // dispatch again.
                 if routine == 27 && param_bytes == 4 {
                     let oapp_class = AE_TYPE_APPLE_EVENT;
                     let oapp_id = u32::from_be_bytes(*b"oapp");
                     let event_record = bus.read_long(sp);
                     let event_id = ((bus.read_word(event_record + 10) as u32) << 16)
                         | bus.read_word(event_record + 12) as u32;
-                    if bus.read_word(event_record) == Self::K_HIGH_LEVEL_EVENT
+                    let delivered_launch_event = bus.read_word(event_record)
+                        == Self::K_HIGH_LEVEL_EVENT
                         && bus.read_long(event_record + 2) == oapp_class
                         && event_id == oapp_id
                         && self
                             .apple_event_launch_state
-                            .is_open_application_event_delivered()
-                    {
+                            .is_open_application_event_delivered();
+                    if delivered_launch_event {
                         self.apple_event_launch_state
                             .accept_open_application_event();
-                        // A delivered launch event with no AppleEvent data is
-                        // accepted, but has no attributes from which to build
-                        // a descriptor or route a registered handler.
+                    }
+                    if delivered_launch_event
+                        && self.apple_event_handler_for(oapp_class, oapp_id).is_none()
+                    {
                         // Inside Macintosh: Interapplication Communication
                         // (1993), pp. 4-66--4-68; Macintosh Toolbox Essentials
                         // (1992), pp. 2-90--2-91.

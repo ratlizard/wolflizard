@@ -5015,6 +5015,12 @@ fn drawing_imports_charge_guest_time_below_one_tick_per_redraw() {
 fn hle_import_runner_handles_text_width() {
     let pef = synthetic_pef_with_import(b"TextWidth");
     let mut loaded = load_pef_application(&pef).unwrap();
+    for (offset, byte) in b"Cythera".iter().enumerate() {
+        loaded
+            .memory
+            .write_u8(PPC_DATA_BASE + offset as u32, *byte)
+            .unwrap();
+    }
     loaded.cpu.gpr[3] = PPC_DATA_BASE;
     loaded.cpu.gpr[4] = 0;
     loaded.cpu.gpr[5] = 7;
@@ -5023,5 +5029,13 @@ fn hle_import_runner_handles_text_width() {
 
     assert_eq!(probe.handled_import_count, 1);
     assert_eq!(probe.unsupported_import_index, None);
-    assert_eq!(loaded.cpu.gpr[3], 42);
+    let expected = b"Cythera"
+        .iter()
+        .map(|byte| {
+            let (glyph, _) = get_glyph(PPC_QD_TEXT_FONT_DEFAULT, 12, char::from(*byte)).unwrap();
+            u32::from(glyph.advance)
+        })
+        .sum::<u32>();
+    assert!(expected > 0);
+    assert_eq!(loaded.cpu.gpr[3], expected);
 }

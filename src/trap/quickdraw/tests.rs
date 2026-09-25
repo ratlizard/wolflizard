@@ -5316,7 +5316,7 @@
         let (mut d, mut cpu, mut bus) = setup_with_port();
         d.tx_font = crate::quickdraw::fonts::FONT_GENEVA;
         d.tx_size = 9;
-        d.tx_face = 1; // bold: classic A is 7+1; missing remains 6+1
+        d.tx_face = 1; // bold: classic A is 7+1; the missing glyph keeps its own advance+1
         let pascal = 0x300000u32;
         let raw = 0x300100u32;
         bus.write_byte(pascal, TEXT.len() as u8);
@@ -5346,8 +5346,14 @@
         d.dispatch_quickdraw(true, 0x084, &mut cpu, &mut bus).unwrap().unwrap();
         let draw_width = d.pn_loc.1 - 20;
 
-        assert_eq!(missing_char_width, 7);
-        assert_eq!([string_width, text_width, draw_width], [23; 3]);
+        let missing = i16::from(
+            crate::quickdraw::text::get_glyph(crate::quickdraw::fonts::FONT_GENEVA, 9, '\u{1}')
+                .expect("a control code draws the missing-character glyph")
+                .0
+                .advance,
+        );
+        assert_eq!(missing_char_width, missing + 1);
+        assert_eq!([string_width, text_width, draw_width], [16 + missing + 1; 3]);
     }
 
     #[test]

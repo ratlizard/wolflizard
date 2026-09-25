@@ -198,6 +198,13 @@ pub fn get_glyph(font_id: i16, size: i16, ch: char) -> Option<(&'static Glyph, &
         return get_macroman_glyph(font_id, size, 0x14);
     }
 
+    // A control code or DEL is looked up in the font like any other byte, and
+    // draws the font's missing-character glyph when the font has nothing
+    // for it.
+    if let Some(code @ (0x00..=0x1F | 0x7F)) = u8::try_from(ch).ok() {
+        return get_macroman_glyph(font_id, size, code);
+    }
+
     // HLE chrome stores text as Unicode for layout and logging. Route every
     // representable extended character back through its Mac Roman glyph slot
     // so titles and menus use the same bitmap repertoire as guest DrawText.
@@ -421,6 +428,35 @@ mod tests {
         assert!(data[glyph.data_offset..glyph.data_offset + glyph_len]
             .iter()
             .any(|pixel| *pixel != 0));
+    }
+
+    fn ink(glyph: &crate::quickdraw::fonts::Glyph, data: &[u8]) -> bool {
+        let len = usize::from(glyph.width) * usize::from(glyph.height);
+        data[glyph.data_offset..glyph.data_offset + len]
+            .iter()
+            .any(|pixel| *pixel != 0)
+    }
+
+    #[test]
+    fn a_control_character_draws_the_fonts_missing_character_box() {
+        use crate::quickdraw::fonts::FONT_GENEVA;
+        // An Escape typed into a TextEdit field: a real Mac draws the font's
+        // missing-character box, not a gap.
+        let (glyph, data) =
+            get_glyph(FONT_GENEVA, 12, '\u{1b}').expect("Escape should draw a glyph");
+        assert!(glyph.advance > 0);
+        assert!(ink(glyph, data), "the missing-character glyph has ink");
+    }
+
+    #[test]
+    fn return_and_tab_follow_the_fonts_macintosh_cmap() {
+        use crate::quickdraw::fonts::FONT_GENEVA;
+        let (space, _) = get_glyph(FONT_GENEVA, 12, ' ').unwrap();
+        let (tab, data) = get_glyph(FONT_GENEVA, 12, '\t').expect("tab maps to a glyph");
+        assert_eq!(tab.advance, space.advance);
+        assert!(!ink(tab, data));
+        let (ret, data) = get_glyph(FONT_GENEVA, 12, '\r').expect("return maps to a glyph");
+        assert!(!ink(ret, data));
     }
 
     #[test]

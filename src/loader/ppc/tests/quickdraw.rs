@@ -821,6 +821,44 @@ fn hle_import_runner_inverts_quickdraw_rect_pixels() {
 }
 
 #[test]
+fn invert_rect_with_the_hilite_bit_clear_swaps_background_and_highlight() {
+    // Imaging With QuickDraw, p. 4-42: Cythera clears HiliteMode's high bit
+    // and calls InvertRect to select a list row. The white background takes
+    // the highlight colour, the black text stays, and the bit is set again.
+    let pef = synthetic_pef_with_import(b"InvertRect");
+    let mut loaded = load_pef_application(&pef).unwrap();
+    let rect_ptr = PPC_DATA_BASE + 0x1000;
+    loaded.memory.add_region(rect_ptr, vec![0; 8]);
+    ppc_write_rect(&mut loaded.memory, rect_ptr, 1, 1, 3, 4).unwrap();
+    let front = ppc_front_buffer_for_gworld(&loaded.gworlds, *loaded.current_gworld).unwrap();
+    let white = ppc_quickdraw_indexed_pixel_value(&mut loaded.memory, front, PPC_RGB_WHITE).unwrap();
+    let black = ppc_quickdraw_indexed_pixel_value(&mut loaded.memory, front, PPC_RGB_BLACK).unwrap();
+    let (red, green, blue) = PPC_DEFAULT_HILITE_COLOR;
+    let hilite = ppc_quickdraw_indexed_pixel_value(
+        &mut loaded.memory,
+        front,
+        PpcRgbColor { red, green, blue },
+    )
+    .unwrap();
+    assert_ne!(hilite, white);
+    for x in 1..4 {
+        ppc_quickdraw_write_raw_pixel(&mut loaded.memory, front, (x, 1), white);
+        ppc_quickdraw_write_raw_pixel(&mut loaded.memory, front, (x, 2), black);
+    }
+    loaded.quickdraw_back_color = PPC_RGB_WHITE;
+    loaded.memory.write_u8(0x0938, 0x7f).unwrap();
+    loaded.cpu.gpr[3] = rect_ptr;
+
+    loaded.run_with_hle_imports(64);
+
+    for x in 1..4 {
+        assert_eq!(ppc_quickdraw_read_pixel(&mut loaded.memory, front, (x, 1)), Some(hilite));
+        assert_eq!(ppc_quickdraw_read_pixel(&mut loaded.memory, front, (x, 2)), Some(black));
+    }
+    assert_eq!(loaded.memory.read_u8(0x0938), Some(0xff));
+}
+
+#[test]
 fn hle_import_runner_inverts_one_bit_bitmap_before_region_conversion() {
     let pef = synthetic_pef_with_import(b"InvertRect");
     let mut loaded = load_pef_application(&pef).unwrap();
@@ -2237,7 +2275,7 @@ fn hilite_color_keeps_distinct_values_when_switching_between_ports() {
             .quickdraw_hilite_color(basic_port),
         None
     );
-    let (red, green, blue) = DEFAULT_QUICKDRAW_HILITE_COLOR;
+    let (red, green, blue) = PPC_DEFAULT_HILITE_COLOR;
     assert_eq!(
         ppc_current_hilite_color(
             &mut loaded.memory,

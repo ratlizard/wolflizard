@@ -100,7 +100,6 @@ use crate::process_context::{
     SharedProcessControlManager, SharedProcessEventQueue,
     SharedProcessFileSystem, SharedProcessGraphicsDevice, SharedProcessGraphicsPort,
     SharedProcessInputState, SharedProcessMemoryManager,
-    DEFAULT_QUICKDRAW_HILITE_COLOR,
     SharedProcessMixedModeM68kState,
     SharedProcessQuickDrawError, SharedProcessQuickDrawHiliteColors, SharedProcessQuickDrawOpColors,
     SharedProcessDisplayGamma, SharedProcessQuickDrawPixelStates, SharedProcessResourcePolicy,
@@ -10859,6 +10858,11 @@ fn load_pef_application_with_config_and_optional_system_reservation(
     );
     let _ = memory.write_u16_be(PPC_MBAR_HEIGHT_ADDR, 20);
     let _ = memory.write_u16_be(PPC_THE_MENU_ADDR, 0);
+    // HiliteMode starts with its high bit set, highlighting off; an
+    // application clears the bit before the one call it should highlight
+    // (Imaging With QuickDraw, 1994, p. 4-42). Left at zero, every
+    // InvertRect would highlight instead of inverting.
+    let _ = memory.write_u8(0x0938, 0xFF);
     // PaintOne normally starts with PaintWhite enabled. Carbon's generated
     // low-memory accessors preserve this flag around window creation.
     let _ = memory.write_u16_be(0x09dc, 1);
@@ -23621,6 +23625,84 @@ fn ppc_invert_rect_bounds(
     wrote
 }
 
+/// InvertRect with HiliteMode's pHiliteBit clear: pixels in the background
+/// colour take the highlight colour and pixels in the highlight colour take
+/// the background colour; every other pixel is left alone. On a one-bit map
+/// it inverts, as InvertRect does. Imaging With QuickDraw (1994), pp. 4-41--
+/// 4-42. Cythera's list rows are selected this way, and inverting drew them
+/// black where Mac OS 8.5 shows the highlight colour behind black text.
+pub(super) fn ppc_hilite_rect_bounds(
+    memory: &mut PpcSectionMem,
+    gworlds: &[PpcGWorldRecord],
+    current_gworld: u32,
+    rect: (i16, i16, i16, i16),
+    back_color: PpcRgbColor,
+    hilite_color: PpcRgbColor,
+) -> bool {
+    let Some(surface) = ppc_live_quickdraw_surface(memory, gworlds, current_gworld) else {
+        return false;
+    };
+    let front_buffer = surface.front_buffer;
+    let (back, hilite) = match front_buffer.depth {
+        1 => return ppc_invert_rect_bounds(memory, gworlds, current_gworld, rect),
+        2 | 4 | 8 => {
+            let (Some(back), Some(hilite)) = (
+                ppc_quickdraw_indexed_pixel_value(memory, front_buffer, back_color),
+                ppc_quickdraw_indexed_pixel_value(memory, front_buffer, hilite_color),
+            ) else {
+                return false;
+            };
+            (back, hilite)
+        }
+        16 => (
+            ppc_rgb_color_to_rgb555(back_color),
+            ppc_rgb_color_to_rgb555(hilite_color),
+        ),
+        _ => return false,
+    };
+    if back == hilite {
+        return false;
+    }
+    let (top, left, bottom, right) = surface.local_rect(rect);
+    let left = left.max(0).min(front_buffer.width as i32);
+    let top = top.max(0).min(front_buffer.height as i32);
+    let right = right.max(0).min(front_buffer.width as i32);
+    let bottom = bottom.max(0).min(front_buffer.height as i32);
+    let swap = |value: u16| {
+        if value == back {
+            hilite
+        } else if value == hilite {
+            back
+        } else {
+            value
+        }
+    };
+    let mut wrote = false;
+    for y in top..bottom {
+        for x in left..right {
+            let Some(pixel) = ppc_quickdraw_read_pixel(memory, front_buffer, (x, y)) else {
+                continue;
+            };
+            // Outline text keeps its coverage; only its background colour
+            // follows the swap, as the pixels beneath it do.
+            let mut detail = crate::memory::SavedPixels::<()>::default();
+            let indexed_detail = front_buffer.depth == 8;
+            if indexed_detail {
+                ppc_capture_saved_detail(memory, front_buffer, (x, y), &mut detail, 0);
+            }
+            let swapped = swap(pixel);
+            if swapped != pixel {
+                wrote |= ppc_quickdraw_write_raw_pixel(memory, front_buffer, (x, y), swapped);
+            }
+            if indexed_detail {
+                detail.transform_detail(|_, value| swap(u16::from(value)) as u8);
+                ppc_restore_saved_detail(memory, front_buffer, (x, y), &detail, 0);
+            }
+        }
+    }
+    wrote
+}
+
 #[allow(clippy::too_many_arguments)]
 fn ppc_frame_rect(
     cpu: &PpcCpu,
@@ -26148,9 +26230,8 @@ fn ppc_standard_screen_clut(depth: u32, is_color: bool) -> Option<([[u16; 3]; 25
     } else if depth == 2 {
         // Inside Macintosh: Volume VI (1991), pp. 17-17--17-18: a color
         // 2-bit screen uses the enhanced standard table, whose spare entry
-        // carries the current highlight color. PPC currently exposes the
-        // System 7 default highlight green used by the shared 68k Toolbox.
-        (clut, _) = TrapDispatcher::standard_mac_enhanced_clut(2, DEFAULT_QUICKDRAW_HILITE_COLOR)?;
+        // carries the current highlight color.
+        (clut, _) = TrapDispatcher::standard_mac_enhanced_clut(2, PPC_DEFAULT_HILITE_COLOR)?;
     }
     Some((clut, entry_count))
 }
@@ -26936,6 +27017,15 @@ fn ppc_port_hilite_color_from_graf_vars(
     ppc_read_rgb_color(memory, hilite_color)
 }
 
+/// The PowerPC slice's highlight colour when a port has none of its own.
+/// Mac OS 8.5, the reference this slice is compared with, draws Cythera's
+/// selected list rows in its palette entry 113, (0xB800, 0xDC00, 0xFC00), as
+/// measured in Infinite Mac; the system's own HiliteRGB comes from parameter
+/// RAM and was not read, so this is that palette entry, which any highlight
+/// colour nearer to it than to its neighbours reproduces. The 68K slice
+/// keeps the shared default, which matches its System 7.5.3 reference.
+pub(super) const PPC_DEFAULT_HILITE_COLOR: (u16, u16, u16) = (0xB800, 0xDC00, 0xFC00);
+
 fn ppc_current_hilite_color(
     memory: &mut PpcSectionMem,
     port: u32,
@@ -26948,7 +27038,7 @@ fn ppc_current_hilite_color(
                 .map(|(red, green, blue)| PpcRgbColor { red, green, blue })
         })
         .unwrap_or_else(|| {
-            let (red, green, blue) = DEFAULT_QUICKDRAW_HILITE_COLOR;
+            let (red, green, blue) = PPC_DEFAULT_HILITE_COLOR;
             PpcRgbColor { red, green, blue }
         })
 }

@@ -1,5 +1,8 @@
 use super::*;
 
+/// The low-memory HiliteMode byte (Imaging With QuickDraw, p. 4-42).
+const PPC_HILITE_MODE_ADDR: u32 = 0x0938;
+
 pub(super) struct PpcQuickDrawDispatchContext<'a> {
     pub(super) binding: &'a PpcImportBinding,
     pub(super) cpu: &'a mut PpcCpu,
@@ -704,7 +707,27 @@ pub(super) fn dispatch_quickdraw_import(
             Some(PpcImportAction::ReturnPreserve)
         }
         PpcImportDispatcherTarget::InvertRect => {
-            let _ = ppc_invert_rect(cpu, memory, gworlds, current_gworld);
+            // Imaging With QuickDraw (1994), p. 4-42: with pHiliteBit (bit 0
+            // in BitClr's numbering, the high bit) of HiliteMode clear,
+            // InvertRect highlights instead, and the bit is set again after.
+            let hilite_mode = memory.read_u8(PPC_HILITE_MODE_ADDR).unwrap_or(0xFF);
+            if hilite_mode & 0x80 == 0 {
+                if let Some(rect) = ppc_read_rect(memory, cpu.gpr[3]) {
+                    let hilite =
+                        ppc_current_hilite_color(memory, current_gworld, quickdraw_hilite_colors);
+                    let _ = ppc_hilite_rect_bounds(
+                        memory,
+                        gworlds,
+                        current_gworld,
+                        rect,
+                        *quickdraw_back_color,
+                        hilite,
+                    );
+                }
+                let _ = memory.write_u8(PPC_HILITE_MODE_ADDR, hilite_mode | 0x80);
+            } else {
+                let _ = ppc_invert_rect(cpu, memory, gworlds, current_gworld);
+            }
             Some(PpcImportAction::ReturnPreserve)
         }
         PpcImportDispatcherTarget::FrameRect => {

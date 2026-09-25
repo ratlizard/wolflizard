@@ -302,8 +302,7 @@ pub(super) fn dispatch_quickdraw_import(
             // tolerant entries select their palette RGB, while explicit
             // entries select the corresponding device-table index.
             let entry = cpu.gpr[3] as u16 as i16;
-            let assigned_palette =
-                ppc_window_palette_handle(memory, toolbox_startup, current_gworld);
+            let assigned_palette = ppc_window_palette(toolbox_startup, current_gworld);
             let palette_handle = if assigned_palette != 0 {
                 assigned_palette
             } else {
@@ -346,7 +345,7 @@ pub(super) fn dispatch_quickdraw_import(
         }
         PpcImportDispatcherTarget::PmBackColor => {
             let entry = cpu.gpr[3] as u16 as i16;
-            let assigned = ppc_window_palette_handle(memory, toolbox_startup, current_gworld);
+            let assigned = ppc_window_palette(toolbox_startup, current_gworld);
             let palette = if assigned != 0 {
                 assigned
             } else {
@@ -2293,12 +2292,9 @@ pub(super) fn ppc_dispatch_quickdraw_compatibility(
                 cpu.gpr[3] as u16 as i16,
             );
             if palette != 0 && current_gworld != 0 {
-                let _ = memory.write_u32_be(
-                    current_gworld + PPC_CGRAF_PORT_PALETTE_HANDLE_OFFSET,
-                    palette,
-                );
-                let _ =
-                    memory.write_u16_be(current_gworld + PPC_CGRAF_PORT_PALETTE_UPDATES_OFFSET, 1);
+                toolbox_startup
+                    .window_palettes
+                    .insert(current_gworld, (palette, 1));
             }
             PpcImportAction::Return(palette)
         }
@@ -2545,7 +2541,7 @@ pub(super) fn ppc_dispatch_quickdraw_compatibility(
         PpcQuickDrawCompatibilityOperation::AnimateEntry => {
             let window = cpu.gpr[3];
             let entry = usize::from(cpu.gpr[4] as u16);
-            let assigned_palette = ppc_window_palette_handle(memory, toolbox_startup, window);
+            let assigned_palette = ppc_window_palette(toolbox_startup, window);
             let palette = if assigned_palette != 0 {
                 assigned_palette
             } else {
@@ -2602,7 +2598,7 @@ pub(super) fn ppc_dispatch_quickdraw_compatibility(
             let src_index = u32::from(cpu.gpr[5] as u16);
             let dst_entry = u32::from(cpu.gpr[6] as u16);
             let dst_length = u32::from(cpu.gpr[7] as u16);
-            let assigned_palette = ppc_window_palette_handle(memory, toolbox_startup, window);
+            let assigned_palette = ppc_window_palette(toolbox_startup, window);
             let palette_handle = if assigned_palette != 0 {
                 assigned_palette
             } else {

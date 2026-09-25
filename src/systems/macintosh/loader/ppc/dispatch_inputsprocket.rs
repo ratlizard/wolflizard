@@ -15,6 +15,7 @@ pub(super) struct PpcInputSprocketDispatchContext<'a> {
     pub(super) tick_count: u32,
     pub(super) vfs_resources: &'a [PpcVfsResourceRecord],
     pub(super) current_resource_refnum: i16,
+    pub(super) idle_poll: &'a mut (u32, u32),
 }
 
 pub(super) fn dispatch_inputsprocket_import(
@@ -33,6 +34,7 @@ pub(super) fn dispatch_inputsprocket_import(
         tick_count,
         vfs_resources,
         current_resource_refnum,
+        idle_poll,
     } = context;
 
     match binding.dispatcher_target {
@@ -61,16 +63,23 @@ pub(super) fn dispatch_inputsprocket_import(
                 ppc_isp_element_list_add_elements(cpu, memory, input_sprocket_virtual_elements),
             )))
         }
-        PpcImportDispatcherTarget::ISpElementListGetNextEvent => Some(PpcImportAction::Return(
-            ppc_i16_result(ppc_isp_element_list_get_next_event(
+        PpcImportDispatcherTarget::ISpElementListGetNextEvent => {
+            let result = ppc_isp_element_list_get_next_event(
                 cpu,
                 memory,
                 input,
                 *input_sprocket,
                 input_sprocket_virtual_elements,
                 tick_count,
-            )),
-        )),
+            );
+            let idle = result == PPC_NO_ERR && memory.read_u8(cpu.gpr[6]) == Some(0);
+            Some(super::dispatch_event::ppc_idle_poll_charge(
+                idle_poll,
+                cpu.lr,
+                idle,
+                PpcImportAction::Return(ppc_i16_result(result)),
+            ))
+        }
         PpcImportDispatcherTarget::ISpElementListFlush => Some(PpcImportAction::Return(
             ppc_i16_result(ppc_isp_element_list_flush(
                 cpu,

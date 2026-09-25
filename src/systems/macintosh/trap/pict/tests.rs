@@ -175,6 +175,13 @@ fn render_v1_styled_text_pair(face: u8, missing: bool) -> (Vec<u8>, Vec<u8>) {
             .0
             .advance,
     );
+    // A control code draws the font's missing-character glyph.
+    let missing_advance = i16::from(
+        crate::quickdraw::text::get_glyph(3, 9, '\u{1}')
+            .expect("a control code draws the missing-character glyph")
+            .0
+            .advance,
+    );
     let picture = |face: u8, split: bool, missing: bool| {
         let mut commands = Vec::new();
         commands.extend_from_slice(&[0x03, 0x00, 0x03]); // TxFont Geneva
@@ -182,12 +189,24 @@ fn render_v1_styled_text_pair(face: u8, missing: bool) -> (Vec<u8>, Vec<u8>) {
         commands.extend_from_slice(&[0x0D, 0x00, 0x09]); // TxSize 9
         if split {
             push_v1_long_text(&mut commands, 20, 20, b"A");
+            if missing {
+                push_v1_long_text(
+                    &mut commands,
+                    20,
+                    20 + glyph_advance + i16::from(face & 1),
+                    b"\x01",
+                );
+            }
             push_v1_long_text(
                 &mut commands,
                 20,
                 20 + glyph_advance
                     + i16::from(face & 1)
-                    + if missing { 6 + i16::from(face & 1) } else { 0 },
+                    + if missing {
+                        missing_advance + i16::from(face & 1)
+                    } else {
+                        0
+                    },
                 b"A",
             );
         } else {

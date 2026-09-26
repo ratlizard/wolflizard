@@ -1554,7 +1554,6 @@ pub enum PpcImportDispatcherTarget {
     PaintBehind,
     CalcVisBehind,
     GetMouse,
-    CheckUpdate,
     ActivatePalette,
     NSetPalette,
     GetPalette,
@@ -13500,7 +13499,6 @@ fn dispatcher_target_for_import(
         ("InterfaceLib", "GetOSEvent") => PpcImportDispatcherTarget::GetOSEvent,
         ("InterfaceLib", "EventAvail") => PpcImportDispatcherTarget::EventAvail,
         ("InterfaceLib", "OSEventAvail") => PpcImportDispatcherTarget::OSEventAvail,
-        ("InterfaceLib", "CheckUpdate") => PpcImportDispatcherTarget::CheckUpdate,
         ("InterfaceLib", "PostEvent") => PpcImportDispatcherTarget::PostEvent,
         ("InterfaceLib", "Button") => PpcImportDispatcherTarget::Button,
         ("InterfaceLib", "StillDown") => PpcImportDispatcherTarget::StillDown,
@@ -13861,6 +13859,9 @@ fn dispatcher_target_for_import(
         ),
         ("InterfaceLib", "CalcVis") => PpcImportDispatcherTarget::LegacyWindow(
             PpcLegacyWindowOperation::CalculateVisibleRegion,
+        ),
+        ("InterfaceLib", "CheckUpdate") => PpcImportDispatcherTarget::LegacyWindow(
+            PpcLegacyWindowOperation::CheckUpdate,
         ),
         ("InterfaceLib", "DisposeWindow") => PpcImportDispatcherTarget::LegacyWindow(
             PpcLegacyWindowOperation::DisposeWindow,
@@ -17012,7 +17013,6 @@ fn dispatch_supported_import(context: PpcDispatchContext<'_>) -> Option<PpcImpor
         | PpcImportDispatcherTarget::GetOSEvent
         | PpcImportDispatcherTarget::EventAvail
         | PpcImportDispatcherTarget::OSEventAvail
-        | PpcImportDispatcherTarget::CheckUpdate
         | PpcImportDispatcherTarget::PostEvent
         | PpcImportDispatcherTarget::Button
         | PpcImportDispatcherTarget::StillDown

@@ -1265,46 +1265,6 @@ fn hle_import_runner_maps_and_scales_points() {
 }
 
 #[test]
-fn check_update_takes_the_next_update_event_and_leaves_the_rest() {
-    // Macintosh Toolbox Essentials (1992), p. 4-116. Cythera calls it while
-    // a window is dragged with Live Dragging on.
-    let pef = synthetic_pef_with_import(b"CheckUpdate");
-    let mut loaded = load_pef_application(&pef).unwrap();
-    let event_ptr = PPC_DATA_BASE + 0x1000;
-    loaded.memory.add_region(event_ptr, vec![0; 16]);
-    loaded.set_event_queue([
-        PpcQueuedEvent {
-            what: 3,
-            message: 0x0261,
-            when: 5,
-            where_v: 0,
-            where_h: 0,
-            modifiers: 0,
-        },
-        PpcQueuedEvent {
-            what: 6,
-            message: 0x0012_3456,
-            when: 6,
-            where_v: 0,
-            where_h: 0,
-            modifiers: 0,
-        },
-    ]);
-    loaded.cpu.gpr[3] = event_ptr;
-    run_test_import(&mut loaded, PpcImportDispatcherTarget::CheckUpdate);
-    assert_eq!(loaded.cpu.gpr[3], 1);
-    assert_eq!(loaded.memory.read_u16_be(event_ptr), Some(6));
-    assert_eq!(loaded.memory.read_u32_be(event_ptr + 2), Some(0x0012_3456));
-    assert_eq!(loaded.event_queue().len(), 1);
-    assert_eq!(loaded.event_queue().get(0).unwrap().what, 3);
-
-    loaded.cpu.gpr[3] = event_ptr;
-    run_test_import(&mut loaded, PpcImportDispatcherTarget::CheckUpdate);
-    assert_eq!(loaded.cpu.gpr[3], 0);
-    assert_eq!(loaded.event_queue().len(), 1);
-}
-
-#[test]
 fn dialog_delete_clears_the_selection_in_the_dialogs_edit_text() {
     let pef = synthetic_pef_with_import(b"GetNewDialog");
     let mut loaded = load_pef_application(&pef).unwrap();

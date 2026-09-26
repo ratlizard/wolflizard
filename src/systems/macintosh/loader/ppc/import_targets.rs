@@ -272,7 +272,6 @@ pub enum PpcImportDispatcherTarget {
     PaintBehind,
     CalcVisBehind,
     GetMouse,
-    CheckUpdate,
     ActivatePalette,
     NSetPalette,
     GetPalette,
@@ -3987,7 +3986,6 @@ pub(crate) fn dispatcher_target_for_import(
         ("InterfaceLib", "GetOSEvent") => PpcImportDispatcherTarget::GetOSEvent,
         ("InterfaceLib" | "CarbonLib", "EventAvail") => PpcImportDispatcherTarget::EventAvail,
         ("InterfaceLib", "OSEventAvail") => PpcImportDispatcherTarget::OSEventAvail,
-        ("InterfaceLib", "CheckUpdate") => PpcImportDispatcherTarget::CheckUpdate,
         ("InterfaceLib", "PostEvent") => PpcImportDispatcherTarget::PostEvent,
         ("InterfaceLib", "Button") => PpcImportDispatcherTarget::Button,
         ("InterfaceLib", "StillDown") => PpcImportDispatcherTarget::StillDown,
@@ -4647,6 +4645,12 @@ pub(crate) fn dispatcher_target_for_import(
             PpcImportDispatcherTarget::LegacyWindow(
                 PpcLegacyWindowOperation::ChangeWindowAttributes,
             )
+        }
+        (
+            "InterfaceLib" | "AppearanceLib" | "CarbonLib",
+            "CheckUpdate" | "checkupdate",
+        ) => {
+            PpcImportDispatcherTarget::LegacyWindow(PpcLegacyWindowOperation::CheckUpdate)
         }
         (
             "InterfaceLib" | "AppearanceLib" | "CarbonLib",

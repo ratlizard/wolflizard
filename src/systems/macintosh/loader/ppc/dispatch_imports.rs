@@ -2799,7 +2799,6 @@ pub(crate) fn dispatch_supported_import(
         | PpcImportDispatcherTarget::GetOSEvent
         | PpcImportDispatcherTarget::EventAvail
         | PpcImportDispatcherTarget::OSEventAvail
-        | PpcImportDispatcherTarget::CheckUpdate
         | PpcImportDispatcherTarget::PostEvent
         | PpcImportDispatcherTarget::Button
         | PpcImportDispatcherTarget::StillDown

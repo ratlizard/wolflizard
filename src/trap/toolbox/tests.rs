@@ -8627,6 +8627,87 @@
         assert_eq!(data_bounds_bottom, 1);
     }
 
+    // More Macintosh Toolbox (1993), p. 4-76: LDelRow with a count of 0
+    // deletes every row. Cythera empties its inventory list that way and then
+    // draws the cells LRect still gives it a rectangle for.
+    #[test]
+    fn pack0_ldelrow_with_count_zero_deletes_every_row() {
+        let (mut disp, mut cpu, mut bus) = setup();
+        let sp = TEST_SP;
+        let view_rect_ptr = 0x352400u32;
+        let data_bounds_ptr = 0x352500u32;
+        let data_ptr = 0x352600u32;
+        let out_ptr = 0x352620u32;
+        let out_len_ptr = 0x352630u32;
+        let rect_ptr = 0x352640u32;
+
+        bus.write_word(view_rect_ptr, 0);
+        bus.write_word(view_rect_ptr + 2, 0);
+        bus.write_word(view_rect_ptr + 4, 40);
+        bus.write_word(view_rect_ptr + 6, 80);
+        bus.write_word(data_bounds_ptr, 0);
+        bus.write_word(data_bounds_ptr + 2, 0);
+        bus.write_word(data_bounds_ptr + 4, 2); // two rows
+        bus.write_word(data_bounds_ptr + 6, 1); // one column
+
+        bus.write_word(sp, 0x0044); // LNew
+        bus.write_word(sp + 2, 0);
+        bus.write_word(sp + 4, 0);
+        bus.write_word(sp + 6, 0);
+        bus.write_word(sp + 8, 0);
+        bus.write_long(sp + 10, 0x210000);
+        bus.write_word(sp + 14, 0);
+        bus.write_word(sp + 16, 10);
+        bus.write_word(sp + 18, 40);
+        bus.write_long(sp + 20, data_bounds_ptr);
+        bus.write_long(sp + 24, view_rect_ptr);
+        bus.write_long(sp + 28, 0);
+        disp.dispatch_toolbox(true, 0x1E7, &mut cpu, &mut bus).unwrap().unwrap();
+        let list_handle = bus.read_long(sp + 28);
+
+        bus.write_bytes(data_ptr, b"A");
+        cpu.write_reg(Register::A7, sp);
+        bus.write_word(sp, 0x0058); // LSetCell row 0
+        bus.write_long(sp + 2, list_handle);
+        bus.write_word(sp + 6, 0);
+        bus.write_word(sp + 8, 0);
+        bus.write_word(sp + 10, 1);
+        bus.write_long(sp + 12, data_ptr);
+        disp.dispatch_toolbox(true, 0x1E7, &mut cpu, &mut bus).unwrap().unwrap();
+
+        cpu.write_reg(Register::A7, sp);
+        bus.write_word(sp, 0x0024); // LDelRow(0, 0, list)
+        bus.write_long(sp + 2, list_handle);
+        bus.write_word(sp + 6, 0); // rowNum
+        bus.write_word(sp + 8, 0); // count: every row
+        disp.dispatch_toolbox(true, 0x1E7, &mut cpu, &mut bus).unwrap().unwrap();
+        assert_eq!(cpu.read_reg(Register::A7), sp + 10);
+
+        let list_ptr = bus.read_long(list_handle);
+        assert_eq!(bus.read_word(list_ptr + 76) as i16, 0, "dataBounds.bottom is its top");
+
+        cpu.write_reg(Register::A7, sp);
+        bus.write_word(sp, 0x0038); // LGetCell row 0
+        bus.write_long(sp + 2, list_handle);
+        bus.write_word(sp + 6, 0);
+        bus.write_word(sp + 8, 0);
+        bus.write_long(sp + 10, out_len_ptr);
+        bus.write_long(sp + 14, out_ptr);
+        bus.write_word(out_len_ptr, 1);
+        disp.dispatch_toolbox(true, 0x1E7, &mut cpu, &mut bus).unwrap().unwrap();
+        assert_eq!(bus.read_word(out_len_ptr), 0, "no data left in the deleted cell");
+
+        cpu.write_reg(Register::A7, sp);
+        bus.write_word(sp, 0x004C); // LRect row 0
+        bus.write_long(sp + 2, list_handle);
+        bus.write_word(sp + 6, 0);
+        bus.write_word(sp + 8, 0);
+        bus.write_long(sp + 10, rect_ptr);
+        bus.write_bytes(rect_ptr, &[0xAA; 8]);
+        disp.dispatch_toolbox(true, 0x1E7, &mut cpu, &mut bus).unwrap().unwrap();
+        assert_eq!(bus.read_bytes(rect_ptr, 8), vec![0u8; 8], "a deleted cell has no rectangle");
+    }
+
     // Pack0 / List Manager ($A9E7) — LSetSelect selector $005C and
     // LGetSelect selector $003C.
     // IM:IV 1986 p. IV-273: selection toggles are driven by

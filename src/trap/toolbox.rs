@@ -12511,6 +12511,14 @@ impl super::TrapDispatcher {
                         let count = bus.read_word(sp + 8) as i16;
 
                         self.list_states.with_record_mut(list_handle, |state| {
+                            // More Macintosh Toolbox (1993), p. 4-75: a count
+                            // of 0 deletes every column, as LDelRow's does
+                            // every row.
+                            let (col, count) = if count == 0 {
+                                (state.data_bounds.1, state.data_bounds.3 - state.data_bounds.1)
+                            } else {
+                                (col, count)
+                            };
                             if count > 0 && col < state.data_bounds.3 {
                                 state.cells.retain(|&(_, cell_col), _| {
                                     cell_col < col || cell_col >= col + count
@@ -12571,6 +12579,17 @@ impl super::TrapDispatcher {
                         let count = bus.read_word(sp + 8) as i16;
 
                         self.list_states.with_record_mut(list_handle, |state| {
+                            // More Macintosh Toolbox (1993), p. 4-76: a count
+                            // of 0 deletes every row. Cythera empties its
+                            // inventory list that way before refilling it, and
+                            // while this ignored it the rows stayed for LRect
+                            // and LFind to answer, so an item dropped out of
+                            // the list was drawn in it again.
+                            let (row, count) = if count == 0 {
+                                (state.data_bounds.0, state.data_bounds.2 - state.data_bounds.0)
+                            } else {
+                                (row, count)
+                            };
                             if count > 0 && row < state.data_bounds.2 {
                                 state.cells.retain(|&(cell_row, _), _| {
                                     cell_row < row || cell_row >= row + count

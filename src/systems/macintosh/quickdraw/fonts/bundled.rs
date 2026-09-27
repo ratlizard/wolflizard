@@ -3,7 +3,7 @@ use super::*;
 
 pub(super) fn bytes(font_id: i16) -> Option<&'static [u8]> {
     Some(match font_id {
-        FONT_CHICAGO => include_bytes!("urw/NimbusSans-Bold.ttf"),
+        FONT_CHICAGO | FONT_CHARCOAL => include_bytes!("urw/NimbusSans-Bold.ttf"),
         FONT_APPLICATION | FONT_GENEVA | FONT_HELVETICA => {
             include_bytes!("urw/NimbusSans-Regular.ttf")
         }
@@ -27,6 +27,10 @@ pub(super) fn pixel_strike(font_id: i16, size: i16) -> Option<(&'static [u8], f3
             Some((include_bytes!("fontstruct/geneva-9.ttf"), 16.0))
         }
         (FONT_CHICAGO, 12) => Some((include_bytes!("chicago-kare/ChicagoKare-Regular.ttf"), 16.0)),
+        (FONT_CHARCOAL, 12) => Some((
+            include_bytes!("fontstruct/charcoal-12/charcoal-12.otf"),
+            16.0,
+        )),
         _ => None,
     }
 }

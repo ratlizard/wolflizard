@@ -193,8 +193,8 @@ impl<'a> Pen<'a> {
             self.gworlds,
             self.port,
             pen,
-            PPC_QD_TEXT_FONT_DEFAULT,
-            PPC_QD_TEXT_SIZE_SYSTEM,
+            crate::quickdraw::fonts::FONT_CHARCOAL,
+            12,
             PPC_QD_TEXT_MODE_SRC_OR,
             PPC_RGB_BLACK,
             None,
@@ -384,11 +384,14 @@ pub(super) fn ppc_draw_platinum_control(
     Some(true)
 }
 
+/// A title's advance in Charcoal 12, and the ascent and descent the
+/// measured layouts were read against: the system font's at 12 points, whose
+/// baseline sits twelve pixels below a group box's top and whose line centres
+/// on a button's height.
 fn title_metrics(title: &[u8]) -> (i16, i16, i16) {
     let advance =
-        ppc_text_bytes_advance_for_font(title, PPC_QD_TEXT_FONT_DEFAULT, PPC_QD_TEXT_SIZE_SYSTEM);
-    let metrics = get_font_metrics(PPC_QD_TEXT_FONT_DEFAULT, PPC_QD_TEXT_SIZE_SYSTEM);
-    (advance, metrics.ascent, metrics.descent)
+        ppc_text_bytes_advance_for_font(title, crate::quickdraw::fonts::FONT_CHARCOAL, 12);
+    (advance, 12, 3)
 }
 
 /// The baseline that centres a line of the system font in `top..bottom`.

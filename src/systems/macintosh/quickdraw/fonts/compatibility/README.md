@@ -101,6 +101,35 @@ cmp /tmp/chicago12-advances.bin src/quickdraw/fonts/compatibility/chicago12-adva
 cmp /tmp/chicago12-bearings.bin src/quickdraw/fonts/compatibility/chicago12-bearings.bin
 ```
 
+## Charcoal 12 advances, bearings and frame
+
+`charcoal12-advances.bin` contains 95 one-byte logical advances and
+`charcoal12-bearings.bin` 95 signed one-byte left bearings, each in Mac Roman
+ASCII order from `0x20` through `0x7E`, for the
+[Charcoal 12 FontStruction](../fontstruct/charcoal-12/README.md), whose glyphs
+they place. Their SHA-256 hashes are
+`ea63577dfd0c4a87f5440db80708d1bf4eef205c8088386ed115a671a9d59ed9` and
+`23d4e40eafc0652fe06e6f3fd0619e26187f8778877be31d736cf66c8f22c910`. The face's
+ascent 12, descent 3, leading 1 and maximum width 12 are constants in
+[`mod.rs`](mod.rs).
+
+They were measured by this project off the screen of Mac OS 8.5 running in
+Infinite Mac on 27 September 2026, the way the FontStruction's glyphs were
+drawn, and contain no font software. SimpleText, Charcoal 12, with the
+Appearance control panel's "Smooth all fonts on screen" off, showed a line of
+eight `H` and then every printable ASCII character between two `H`, ten to a
+line. Each glyph was found on the screen by its exact shape from the
+FontStruction, which matched all 95. An `H`'s advance is the step between the
+first line's `H`; a character's advance is the step between the `H` either
+side of it less that; its bearing is where its ink starts after the `H` before
+it, less that `H`'s advance, plus the `H`'s bearing. The pen stands one column
+right of TextEdit's caret: in the same session Chicago 12's `H` stands two
+columns right of the caret, where the Chicago 12 table above puts it one right
+of the pen. The line is the caret's height, 16 pixels, with the baseline 12
+below its top. Redrawing the eleven typed lines from these tables and the
+FontStruction reproduces every one of the screen's 6,810 black pixels; the
+FontStruction's own spacing misses 6,798 of them.
+
 ## Monaco maximum advance
 
 The bundled Monaco substitute retains its own outline pixels and per-glyph

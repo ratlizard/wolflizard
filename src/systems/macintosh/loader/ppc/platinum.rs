@@ -303,10 +303,10 @@ const TICK: &[(i16, i16, u8)] = &[
     (12, 1, 0),
     (10, 2, 0),
     (12, 2, 148),
-    (13, 2, 60),
+    (13, 2, 191),
     (9, 3, 0),
     (10, 3, 0),
-    (12, 3, 60),
+    (12, 3, 191),
     (8, 4, 0),
     (9, 4, 0),
     (10, 4, 118),
@@ -321,19 +321,19 @@ const TICK: &[(i16, i16, u8)] = &[
     (6, 6, 0),
     (7, 6, 0),
     (8, 6, 148),
-    (9, 6, 60),
-    (3, 7, 60),
+    (9, 6, 191),
+    (3, 7, 191),
     (4, 7, 0),
     (5, 7, 0),
     (6, 7, 0),
     (7, 7, 148),
-    (8, 7, 60),
-    (4, 8, 60),
+    (8, 7, 191),
+    (4, 8, 191),
     (5, 8, 0),
     (6, 8, 148),
-    (7, 8, 60),
+    (7, 8, 191),
     (5, 9, 148),
-    (6, 9, 60),
+    (6, 9, 191),
 ];
 
 /// A control in a Platinum window, drawn as Mac OS 8.5 draws it, in the
@@ -539,7 +539,7 @@ fn draw_default_ring(pen: &mut Pen<'_>, (t, l, b, r): (i16, i16, i16, i16)) {
 
 /// A check box: a twelve-pixel box two pixels in from the control's left
 /// and centred on its height, white inside its top and left edges and mid
-/// grey inside its bottom and right, the title six pixels after it.
+/// grey inside its bottom and right, the title's pen five pixels after it.
 fn draw_check_box(
     pen: &mut Pen<'_>,
     (t, l, b, _): (i16, i16, i16, i16),
@@ -563,13 +563,13 @@ fn draw_check_box(
     }
     if !title.is_empty() {
         let (_, ascent, descent) = title_metrics(title);
-        pen.text((x + 17, centred_baseline(t, b, ascent, descent)), title);
+        pen.text((x + 16, centred_baseline(t, b, ascent, descent)), title);
     }
 }
 
 /// A group box: an embossed frame, a mid grey line with a white one inside
 /// it, whose top runs level with the title's baseline and breaks three
-/// pixels before the title's pen, which is twelve pixels in, and four after
+/// pixels before the title's pen, which is twelve pixels in, and three after
 /// its advance.
 fn draw_group_box(pen: &mut Pen<'_>, (t, l, b, r): (i16, i16, i16, i16), title: &[u8]) {
     let (advance, ascent, _) = title_metrics(title);
@@ -578,7 +578,7 @@ fn draw_group_box(pen: &mut Pen<'_>, (t, l, b, r): (i16, i16, i16, i16), title: 
     let (gap_start, gap_end) = if title.is_empty() {
         (r, r)
     } else {
-        (text_left - 3, text_left + advance + 4)
+        (text_left - 3, text_left + advance + 3)
     };
     let dark = grey(161);
     let light = grey(WHITE);
@@ -596,9 +596,9 @@ fn draw_group_box(pen: &mut Pen<'_>, (t, l, b, r): (i16, i16, i16, i16), title: 
     pen.vline(l, frame_top, b - 2, dark);
     pen.vline(l + 1, frame_top + 1, b - 3, light);
     pen.vline(r - 2, frame_top, b - 2, dark);
-    pen.vline(r - 1, frame_top, b - 1, light);
+    pen.vline(r - 1, frame_top + 1, b - 1, light);
     pen.hline(b - 2, l, r - 2, dark);
-    pen.hline(b - 1, l, r - 1, light);
+    pen.hline(b - 1, l + 1, r - 1, light);
     if !title.is_empty() {
         pen.text((text_left, t + ascent), title);
     }

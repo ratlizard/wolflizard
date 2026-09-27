@@ -116,6 +116,7 @@ mod dispatch_bit_transfers;
 mod dispatch_collection;
 mod dispatch_drag;
 mod appearance_controls;
+mod platinum;
 pub use appearance_controls::PpcAppearanceControlOperation;
 mod dispatch_color_tables;
 mod dispatch_control;

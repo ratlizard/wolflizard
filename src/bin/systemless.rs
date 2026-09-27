@@ -2704,11 +2704,14 @@ impl App {
         // Software cursors and the debug overlay patch only their changed cells
         // in a cloned compact image so the rest of the frame keeps GPU coverage.
         #[cfg(target_os = "macos")]
+        // The undither filter runs in the raster path, so a window with it
+        // on does not take the compact one, whichever presenter is in use.
         let compact_ready = (self.wgpu.is_some()
             || self
                 .surface
                 .as_ref()
                 .is_some_and(|surface| surface.supports_compact()))
+            && !self.surface.as_ref().is_some_and(|surface| surface.undither())
             && retained.is_some()
             && cursor.is_none()
             && frame.help_balloon.is_none()
@@ -2895,6 +2898,8 @@ impl App {
 
         let mut presented = std::mem::take(&mut self.presentation_argb);
         #[cfg(target_os = "macos")]
+        let screen_width = game_w;
+        #[cfg(target_os = "macos")]
         let logical_size = (presentation_rect.width, presentation_rect.height);
         #[cfg(not(target_os = "macos"))]
         let drawable_rect = aspect_fit_dimensions(game_w, game_h, buf_w, buf_h);
@@ -3006,6 +3011,22 @@ impl App {
                 return;
             };
             let _timing = FramePhaseTimer::new("raster presentation submission");
+            // The undither filter reads the guest's own pixels beside the
+            // presented raster, which is `scale` raster pixels to each.
+            let (_, guest_row_bytes, _, _, guest_pixel_size) = frame.screen.screen_mode;
+            let undither = surface.undither() && !frame.screen.pixels.is_empty();
+            let presented_scale = (game_w / screen_width.max(1)).max(1);
+            let guest_indices = |content: ContentRect| {
+                undither.then(|| metal_present::GuestIndices {
+                    framebuffer: &frame.screen.pixels,
+                    row_bytes: guest_row_bytes,
+                    pixel_size: guest_pixel_size,
+                    left: content.left / presented_scale,
+                    top: content.top / presented_scale,
+                    scale: presented_scale,
+                    palette: &frame.screen.palette,
+                })
+            };
             if let Some((width, height)) = borrowed_size {
                 surface
                     .present(
@@ -3014,6 +3035,12 @@ impl App {
                         height,
                         buf_w,
                         buf_h,
+                        guest_indices(ContentRect {
+                            left: 0,
+                            top: 0,
+                            width,
+                            height,
+                        }),
                     )
                     .expect("Failed to present framebuffer");
             } else {
@@ -3023,6 +3050,7 @@ impl App {
                         presentation_layout(presentation_rect, game_w),
                         buf_w,
                         buf_h,
+                        guest_indices(presentation_rect),
                     )
                     .expect("Failed to present framebuffer");
             }

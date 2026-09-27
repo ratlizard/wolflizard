@@ -117,6 +117,7 @@ mod dispatch_appletalk;
 mod dispatch_bit_transfers;
 mod dispatch_collection;
 mod appearance_controls;
+mod platinum;
 pub use appearance_controls::PpcAppearanceControlOperation;
 mod dispatch_color_tables;
 mod dispatch_control;

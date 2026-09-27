@@ -1086,6 +1086,9 @@ pub(super) fn ppc_window_structure_bounds(
     // I-273), with the frame widths the 68K path draws: an eight-pixel
     // double border, a single line, and a line with a two-pixel shadow right
     // and below.
+    if proc_id == super::platinum::PPC_PLATINUM_MODAL_DIALOG_PROC {
+        return super::platinum::ppc_platinum_modal_structure_bounds(content);
+    }
     let (top, left, bottom, right) = match proc_id {
         1 => (8, 8, 8, 8),
         2 => (1, 1, 1, 1),
@@ -1098,6 +1101,16 @@ pub(super) fn ppc_window_structure_bounds(
         content.2.saturating_add(bottom),
         content.3.saturating_add(right),
     )
+}
+
+/// The window type whose structure a window has: the classic type it is
+/// drawn as, except an Appearance modal dialog, whose frame is Mac OS 8's.
+pub(super) fn ppc_window_structure_proc_id(memory: &mut PpcSectionMem, window: u32) -> i16 {
+    if super::platinum::ppc_window_is_platinum_modal(memory, window) {
+        super::platinum::PPC_PLATINUM_MODAL_DIALOG_PROC
+    } else {
+        ppc_window_proc_id(memory, window)
+    }
 }
 
 pub(super) fn ppc_window_proc_id(memory: &mut PpcSectionMem, window: u32) -> i16 {
@@ -1166,7 +1179,7 @@ pub(super) fn ppc_update_window_manager_regions(
             super::dispatch_defproc::WDEF_CALC_REGIONS,
         );
     }
-    let structure = ppc_window_structure_bounds(ppc_window_proc_id(memory, window), content);
+    let structure = ppc_window_structure_bounds(ppc_window_structure_proc_id(memory, window), content);
     ppc_write_rgn_bbox(
         memory,
         content_rgn,
@@ -1774,6 +1787,8 @@ fn ppc_draw_existing_window_frame_in_open_port(
             .unwrap_or(0)
             != 0;
         ppc_draw_standard_window_frame(memory, gworlds, window, width, height, go_away);
+    } else if proc_id == 1 && super::platinum::ppc_window_is_platinum_modal(memory, window) {
+        super::platinum::ppc_draw_platinum_dialog_frame(memory, gworlds, window, height, width);
     } else if proc_id == 1 {
         ppc_draw_dialog_box_frame(memory, gworlds, window, height, width);
     } else if matches!(proc_id, 2 | 3) {
@@ -1873,7 +1888,7 @@ pub(super) fn ppc_window_global_structure_bounds(
     }
     let content = ppc_window_global_content_bounds(memory, gworlds, window)?;
     Some(ppc_window_structure_bounds(
-        ppc_window_proc_id(memory, window),
+        ppc_window_structure_proc_id(memory, window),
         content,
     ))
 }
@@ -2126,7 +2141,7 @@ pub(super) fn ppc_restore_window_removal_exposure(
         let Some(content) = ppc_window_global_content_bounds(memory, gworlds, window) else {
             continue;
         };
-        let structure = ppc_window_structure_bounds(ppc_window_proc_id(memory, window), content);
+        let structure = ppc_window_structure_bounds(ppc_window_structure_proc_id(memory, window), content);
         let intersects = structure.0 < exposed.2
             && exposed.0 < structure.2
             && structure.1 < exposed.3
@@ -5491,7 +5506,7 @@ pub(super) fn ppc_dispatch_drag_window(
         return PpcImportAction::ReturnPreserve;
     }
     let original_structure =
-        ppc_window_structure_bounds(ppc_window_proc_id(memory, call.window), original_content);
+        ppc_window_structure_bounds(ppc_window_structure_proc_id(memory, call.window), original_content);
     let mut state = PpcDragWindowTrackingState {
         call,
         front_buffer,
@@ -5559,7 +5574,7 @@ pub(super) fn ppc_refresh_grow_window_outline(
         state.original_content.1.saturating_add(width),
     );
     let outline = ppc_window_structure_bounds(
-        ppc_window_proc_id(memory, state.call.window),
+        ppc_window_structure_proc_id(memory, state.call.window),
         proposed_content,
     );
     if !state.saved_pixels.is_empty() && state.outline == outline {
@@ -5701,7 +5716,7 @@ pub(super) fn ppc_dispatch_grow_window(
         original_content,
         size_limits,
         outline: ppc_window_structure_bounds(
-            ppc_window_proc_id(memory, call.window),
+            ppc_window_structure_proc_id(memory, call.window),
             original_content,
         ),
         saved_pixels: Vec::new().into(),

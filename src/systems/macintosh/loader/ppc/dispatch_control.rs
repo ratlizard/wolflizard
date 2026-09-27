@@ -264,7 +264,15 @@ pub(super) fn dispatch_control_import(
                 Op::SetThemeWindowBackground => {
                     let window = cpu.gpr[3];
                     if window != 0 {
-                        let color = ppc_theme_rgb(ppc_ui_theme(gworlds).provider().palette().window_background);
+                        // kThemeBrushDialogBackgroundActive, in a window drawn
+                        // in Mac OS 8's look, is that look's dialog grey.
+                        let color = if cpu.gpr[4] as u16 as i16 == 1
+                            && super::platinum::ppc_window_is_platinum(memory, window)
+                        {
+                            super::platinum::ppc_platinum_dialog_background(memory, gworlds, window)
+                        } else {
+                            ppc_theme_rgb(ppc_ui_theme(gworlds).provider().palette().window_background)
+                        };
                         let _ = ppc_write_rgb_color(memory, window + PPC_CGRAF_PORT_RGB_BK_COLOR_OFFSET, color);
                         let _ = memory.write_u32_be(window + PPC_CGRAF_PORT_BK_PIXPAT_OFFSET, 0);
                     }
@@ -1157,8 +1165,16 @@ pub(super) fn ppc_dispatch_legacy_control(
                     if let Some(rect) = ppc_read_rect(memory, control + PPC_CONTROL_RECT_OFFSET) {
                         let min = memory.read_u16_be(control + PPC_CONTROL_MIN_OFFSET).unwrap_or(0) as i16;
                         let max = memory.read_u16_be(control + PPC_CONTROL_MAX_OFFSET).unwrap_or(0) as i16;
-                        let value =
-                            super::appearance_controls::ppc_slider_value_at(rect, pointer, min, max);
+                        let value = if super::platinum::ppc_window_is_platinum(memory, owner) {
+                            let (top, left, bottom, right) = rect;
+                            if bottom - top > right - left {
+                                super::platinum::ppc_platinum_slider_value_at(top, bottom, pointer.0, min, max)
+                            } else {
+                                super::platinum::ppc_platinum_slider_value_at(left, right, pointer.1, min, max)
+                            }
+                        } else {
+                            super::appearance_controls::ppc_slider_value_at(rect, pointer, min, max)
+                        };
                         if memory.read_u16_be(control + PPC_CONTROL_VALUE_OFFSET) != Some(value as u16) {
                             let _ = memory.write_u16_be(control + PPC_CONTROL_VALUE_OFFSET, value as u16);
                             let _ = ppc_draw_control(
@@ -3266,6 +3282,21 @@ pub(super) fn ppc_draw_control_inner(
     let palette = ppc_ui_theme(gworlds).provider().palette();
     let record = controls.iter().find(|record| record.handle == handle);
     let proc_id = record.map_or(0, |record| record.proc_id) & 0x0fff;
+    // A window an application built through the Appearance Manager has its
+    // controls drawn in Mac OS 8's look (loader/ppc/platinum.rs).
+    if super::platinum::ppc_window_is_platinum(memory, owner) {
+        if let Some(drawn) = super::platinum::ppc_draw_platinum_control(
+            memory,
+            gworlds,
+            owner,
+            handle,
+            control,
+            proc_id,
+            (top, left, bottom, right),
+        ) {
+            return drawn;
+        }
+    }
     if matches!(proc_id, 320 | 321) {
         // An icon control's value is the ID of the 'cicn' or 'ICON' it
         // shows (Universal Interfaces 3.4.2, Controls.h, "ICON CONTROL (CDEF

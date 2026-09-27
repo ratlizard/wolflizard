@@ -4203,3 +4203,132 @@ fn control_lookup_interaction_and_tracking_commands_dispatch_with_canonical_eval
         assert_eq!(loaded.memory.read_u8(out_tracks_ptr), Some(1));
     }
 }
+
+/// A window of type `window_proc` at (40, 40) with one visible control in
+/// it, and the screen's index for a black pixel.
+fn window_with_one_control(
+    window_proc: i16,
+    control_proc: i16,
+    rect: (i16, i16, i16, i16),
+    value: i16,
+    title: &[u8],
+) -> (PpcLoadedApp, u32, u8) {
+    let mut loaded = load_pef_application(&synthetic_pef_with_import(b"NewControl")).unwrap();
+    let scratch = PPC_DATA_BASE + 0x1000;
+    loaded.memory.add_region(scratch, vec![0; 0x100]);
+    let window = create_test_cwindow(&mut loaded, scratch, (40, 40, 200, 300), window_proc, true, u32::MAX);
+    ppc_write_rect(&mut loaded.memory, scratch + 0x20, rect.0, rect.1, rect.2, rect.3).unwrap();
+    write_ppc_pstring(&mut loaded.memory, scratch + 0x30, title);
+    loaded.cpu.gpr[3] = window;
+    loaded.cpu.gpr[4] = scratch + 0x20;
+    loaded.cpu.gpr[5] = scratch + 0x30;
+    loaded.cpu.gpr[6] = 1;
+    loaded.cpu.gpr[7] = value as u16 as u32;
+    loaded.cpu.gpr[8] = 0;
+    loaded.cpu.gpr[9] = 1;
+    loaded.cpu.gpr[10] = control_proc as u16 as u32;
+    run_test_import(
+        &mut loaded,
+        PpcImportDispatcherTarget::LegacyControl(PpcLegacyControlOperation::NewControl),
+    );
+    let control = loaded.cpu.gpr[3];
+    assert_ne!(control, 0);
+    let front = ppc_front_buffer_for_gworld(&loaded.gworlds, PPC_MAIN_GWORLD).unwrap();
+    let black = ppc_quickdraw_indexed_pixel_value(&mut loaded.memory, front, PPC_RGB_BLACK).unwrap();
+    (loaded, control, black as u8)
+}
+
+/// The screen pixel at window-local (h, v) of a window made by
+/// `window_with_one_control`.
+fn local_pixel(loaded: &mut PpcLoadedApp, h: i32, v: i32) -> Option<u16> {
+    let front = ppc_front_buffer_for_gworld(&loaded.gworlds, PPC_MAIN_GWORLD).unwrap();
+    ppc_quickdraw_read_pixel(&mut loaded.memory, front, (40 + h, 40 + v))
+}
+
+#[test]
+fn a_check_box_in_an_appearance_dialog_is_drawn_as_mac_os_8_5_draws_it() {
+    // Cythera's Preferences window is an Appearance modal dialog (1042)
+    // holding classic check boxes. Mac OS 8.5 draws them as a twelve-pixel
+    // bevelled box two pixels in, centred on the control's height, whose
+    // tick reaches two pixels past the box. In a classic dialog the same
+    // control keeps the System 7 box, which is what shows the difference is
+    // the window's.
+    let rect = (10, 10, 30, 120);
+    let (mut platinum, _, black) = window_with_one_control(1042, 1, rect, 1, b"Mute");
+    let (x, y) = (12, 14);
+    let black = Some(u16::from(black));
+    assert_eq!(local_pixel(&mut platinum, x, y), black, "box corner");
+    assert_eq!(local_pixel(&mut platinum, x + 11, y + 11), black, "box corner");
+    assert_eq!(local_pixel(&mut platinum, x + 5, y + 8), black, "tick");
+    assert_eq!(local_pixel(&mut platinum, x + 12, y + 1), black, "tick past the box");
+
+    let (mut classic, _, _) = window_with_one_control(1, 1, rect, 1, b"Mute");
+    assert_ne!(local_pixel(&mut classic, x + 12, y + 1), black);
+}
+
+#[test]
+fn a_default_push_button_in_an_appearance_dialog_has_mac_os_8_5s_ring() {
+    // Cythera marks its Save button with SetControlData('dflt'), which this
+    // host refused. Mac OS 8.5 then rings the button three pixels out,
+    // black at the ring's outer edge; unmarked, there is no ring.
+    use super::appearance_controls::PpcAppearanceControlOperation as Op;
+    let rect = (40, 40, 60, 115);
+    let (mut loaded, button, black) = window_with_one_control(1042, 0, rect, 0, b"Save");
+    let black = Some(u16::from(black));
+    let ring = (rect.1 as i32 - 3, rect.0 as i32 + 5);
+    assert_ne!(local_pixel(&mut loaded, ring.0, ring.1), black, "no ring yet");
+    assert_eq!(local_pixel(&mut loaded, rect.1 as i32, rect.0 as i32 + 5), black, "the button's own edge");
+
+    let flag = PPC_DATA_BASE + 0x10F0;
+    loaded.memory.write_u8(flag, 1).unwrap();
+    loaded.cpu.gpr[3] = button;
+    loaded.cpu.gpr[4] = 0;
+    loaded.cpu.gpr[5] = u32::from_be_bytes(*b"dflt");
+    loaded.cpu.gpr[6] = 1;
+    loaded.cpu.gpr[7] = flag;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::AppearanceControl(Op::SetControlData));
+    assert_eq!(loaded.cpu.gpr[3], 0, "SetControlData('dflt') is accepted");
+    assert!(super::appearance_controls::ppc_control_is_default(button));
+
+    loaded.cpu.gpr[3] = button;
+    run_test_import(
+        &mut loaded,
+        PpcImportDispatcherTarget::LegacyControl(PpcLegacyControlOperation::DrawOneControl),
+    );
+    assert_eq!(local_pixel(&mut loaded, ring.0, ring.1), black, "the ring's outer edge");
+}
+
+#[test]
+fn platinum_sliders_and_dialog_frames_sit_where_mac_os_8_5_puts_them() {
+    // Measured from Cythera's Preferences on Mac OS 8.5 at 640x480: the
+    // Sound slider spans 104..275 and shows 5 of 1..8 with its thumb at 194;
+    // the Game Control slider spans 134..245 and shows 2 of 0..2 at 227; the
+    // dialog's content (28, 54)-(308, 586) has its black line three pixels
+    // out and a one-pixel shadow beyond it right and below.
+    use super::platinum::*;
+    let sound = ppc_platinum_slider_track(104, 275);
+    assert_eq!(sound.start + ppc_platinum_thumb_offset(sound.travel, 5, 1, 8), 194);
+    let quality = ppc_platinum_slider_track(134, 245);
+    assert_eq!(quality.start + ppc_platinum_thumb_offset(quality.travel, 2, 0, 2), 227);
+    // A click on a thumb's centre gives back the value it shows.
+    assert_eq!(ppc_platinum_slider_value_at(104, 275, 194 + PPC_PLATINUM_THUMB_WIDTH / 2, 1, 8), 5);
+    assert_eq!(
+        ppc_window_structure_bounds(PPC_PLATINUM_MODAL_DIALOG_PROC, (28, 54, 308, 586)),
+        (25, 51, 312, 590)
+    );
+}
+
+#[test]
+fn a_colour_the_table_holds_exactly_is_that_entry() {
+    // Two greys in one 5-bit cell: asked for the second exactly, the first
+    // used to be taken because the search compared cells alone.
+    let mut clut = [[0u16; 3]; 256];
+    clut[3] = [0xE000; 3];
+    clut[7] = [0xE3E3; 3];
+    let color = PpcRgbColor {
+        red: 0xE3E3,
+        green: 0xE3E3,
+        blue: 0xE3E3,
+    };
+    assert_eq!(ppc_rgb_color_to_index_in_clut(color, &clut, 256), 7);
+}

@@ -27,3 +27,7 @@ pub const FONT_MOBILE: i16 = 24;
 /// [`super::styled_face`]). Family numbers are never negative, so no guest
 /// font can claim it.
 pub const FONT_BUNDLED_ROMAN_BOLD: i16 = -0x4E42;
+/// Mac OS 8's system font, by the family ID of the Charcoal suitcase on Mac OS
+/// 9.0's disk. Used for the windows drawn in Mac OS 8's look; not a name this
+/// host answers a guest's GetFNum with.
+pub const FONT_CHARCOAL: i16 = 2002;

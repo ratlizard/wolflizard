@@ -1,6 +1,6 @@
 //! Keep the qualified Metal default while software presentation is qualified.
 use super::{
-    metal_present::MetalPresenter, raster_layout::RasterLayout, software_present::SoftwarePresenter,
+    metal_present::{GuestIndices, MetalPresenter}, raster_layout::RasterLayout, software_present::SoftwarePresenter,
 };
 use std::{rc::Rc, sync::Arc};
 use systemless::{display::CursorImage, memory::CompactPresentation};
@@ -43,6 +43,14 @@ impl Presenter {
             Self::Software(_) => false,
         }
     }
+    /// Whether frames go through grimoire's undither filter
+    /// (`SYSTEMLESS_UNDITHER=1`), which only the Metal presenter has.
+    pub(super) fn undither(&self) -> bool {
+        match self {
+            Self::Metal(p) => p.undither(),
+            Self::Software(_) => false,
+        }
+    }
     pub(super) fn present(
         &mut self,
         pixels: &[u32],
@@ -50,9 +58,10 @@ impl Presenter {
         height: u32,
         dw: u32,
         dh: u32,
+        guest: Option<GuestIndices<'_>>,
     ) -> Result<(), String> {
         match self {
-            Self::Metal(p) => p.present(pixels, width, height, dw, dh),
+            Self::Metal(p) => p.present(pixels, width, height, dw, dh, guest),
             Self::Software(p) => p.present(pixels, RasterLayout::whole((width, height)), (dw, dh)),
         }
     }
@@ -62,9 +71,10 @@ impl Presenter {
         layout: RasterLayout,
         dw: u32,
         dh: u32,
+        guest: Option<GuestIndices<'_>>,
     ) -> Result<Vec<u32>, String> {
         match self {
-            Self::Metal(p) => p.present_owned(pixels, layout, dw, dh),
+            Self::Metal(p) => p.present_owned(pixels, layout, dw, dh, guest),
             Self::Software(p) => {
                 p.present(&pixels, layout, (dw, dh))?;
                 Ok(pixels)

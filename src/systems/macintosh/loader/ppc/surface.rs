@@ -88,6 +88,18 @@ pub(crate) fn ppc_rgb_color_to_valid_index_in_clut(
     valid: &[bool; 256],
     entry_count: usize,
 ) -> Option<u8> {
+    // A colour the table holds exactly is that entry, whatever else shares
+    // its 5-bit cell; the nearest-cell search below would otherwise take the
+    // first entry in the cell.
+    if let Some(index) = clut
+        .iter()
+        .take(entry_count.min(clut.len()))
+        .enumerate()
+        .find(|(index, entry)| valid[*index] && **entry == [color.red, color.green, color.blue])
+        .map(|(index, _)| index as u8)
+    {
+        return Some(index);
+    }
     let target = ppc_rgb_color_to_rgb555(color);
     let target_r = i64::from((target >> 10) & 0x1f);
     let target_g = i64::from((target >> 5) & 0x1f);

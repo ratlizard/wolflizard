@@ -58,6 +58,9 @@ const CONTROL_USER_PANE_PROC: i16 = 256;
 /// kControlFontStyleTag and the size of its ControlFontStyleRec.
 const CONTROL_FONT_STYLE_TAG: [u8; 4] = *b"font";
 const CONTROL_FONT_STYLE_SIZE: u32 = 24;
+/// kControlPushButtonDefaultTag: a Boolean, whether a push button is drawn
+/// as the default one, with the ring around it.
+const CONTROL_PUSH_BUTTON_DEFAULT_TAG: [u8; 4] = *b"dflt";
 
 /// kControlSliderProc (48) and its variants: bit 0 live feedback, bit 1 tick
 /// marks, bit 2 reverse direction, bit 3 non-directional.
@@ -197,11 +200,16 @@ pub(super) fn ppc_set_control_data(memory: &mut PpcSectionMem, cpu: &PpcCpu) -> 
         cpu.gpr[6],
         cpu.gpr[7],
     );
+    let expected_size = match tag {
+        CONTROL_FONT_STYLE_TAG => CONTROL_FONT_STYLE_SIZE,
+        CONTROL_PUSH_BUTTON_DEFAULT_TAG => 1,
+        _ => 0,
+    };
     if ppc_control_ptr(memory, control).is_none() {
         CONTROL_HANDLE_INVALID_ERR
-    } else if tag != CONTROL_FONT_STYLE_TAG {
+    } else if expected_size == 0 {
         ERR_DATA_NOT_SUPPORTED
-    } else if size != CONTROL_FONT_STYLE_SIZE {
+    } else if size != expected_size {
         ERR_DATA_SIZE_MISMATCH
     } else if data == 0 {
         PPC_PARAM_ERR
@@ -212,6 +220,16 @@ pub(super) fn ppc_set_control_data(memory: &mut PpcSectionMem, cpu: &PpcCpu) -> 
         TAGGED.with(|tagged| tagged.borrow_mut().insert((control, part, tag), bytes));
         PPC_NO_ERR
     }
+}
+
+/// Whether SetControlData('dflt') made a push button the default one.
+pub(super) fn ppc_control_is_default(control: u32) -> bool {
+    TAGGED.with(|tagged| {
+        tagged
+            .borrow()
+            .get(&(control, 0, CONTROL_PUSH_BUTTON_DEFAULT_TAG))
+            .is_some_and(|bytes| bytes.first().is_some_and(|byte| *byte != 0))
+    })
 }
 
 /// A control's ControlFontStyleRec, as SetControlData('font') left it:

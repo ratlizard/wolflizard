@@ -38,6 +38,9 @@ use winit::window::Window;
 use systemless::display::CursorImage;
 use systemless::memory::CompactPresentation;
 
+#[path = "metal_undither.rs"]
+mod undither;
+
 // Double buffering prevents the CPU from overwriting the texture used by the
 // in-flight GPU frame without allowing a third drawable to queue and add input
 // latency. The 800x600 upload is far below the GPU throughput limit.
@@ -94,6 +97,24 @@ struct GuestFrameMetadata {
     uniforms: GuestFrameUniforms,
     cursor: GuestCursorData,
     drawable_size: (u32, u32),
+    /// Draw the frame through the undither filter.
+    undither: bool,
+}
+
+/// The guest's pixels under a presented raster, which the undither filter
+/// needs beside the raster itself.
+pub struct GuestIndices<'a> {
+    /// The guest's whole framebuffer.
+    pub framebuffer: &'a [u8],
+    pub row_bytes: u32,
+    pub pixel_size: u16,
+    /// The guest pixel under the raster's top-left corner.
+    pub left: u32,
+    pub top: u32,
+    /// Raster pixels per guest pixel, each way.
+    pub scale: u32,
+    /// The colours the guest's indices stand for, as the raster was drawn.
+    pub palette: &'a [u32; 256],
 }
 
 #[derive(Default)]
@@ -111,6 +132,7 @@ enum FrameMetadata {
     Raster {
         layout: RasterLayout,
         drawable_size: (u32, u32),
+        undither: Option<undither::RasterUndither>,
     },
     Compact(CompactFrameUniforms),
 }
@@ -245,6 +267,8 @@ struct GuestRenderWorker {
     next_upload_texture: usize,
     compact_pipeline: Retained<ProtocolObject<dyn MTLRenderPipelineState>>,
     compact_buffers: CompactBuffers,
+    undither_pipelines: Option<undither::UnditherPipelines>,
+    undither_targets: undither::UnditherTargets,
 }
 
 /// Double-buffered shared storage for compact cells and detail. Callers
@@ -385,6 +409,7 @@ fn replace_pending_raster_frame(
     pixels: Vec<u32>,
     layout: RasterLayout,
     drawable_size: (u32, u32),
+    guest: Option<&GuestIndices<'_>>,
 ) -> Vec<u32> {
     let spare = match take_superseded_pending(state) {
         Some(FramePixels::Argb(superseded)) => Some(superseded),
@@ -397,11 +422,16 @@ fn replace_pending_raster_frame(
     let spare = spare
         .or_else(|| state.recycled_argb.pop())
         .unwrap_or_default();
+    let undither = guest.and_then(|guest| {
+        let indices = state.recycled.pop().unwrap_or_default();
+        undither::raster_undither(guest, (layout.width, layout.height), indices)
+    });
     state.pending = Some(GuestFrameSubmission {
         pixels: FramePixels::Argb(pixels),
         metadata: FrameMetadata::Raster {
             layout,
             drawable_size,
+            undither,
         },
     });
     spare
@@ -439,6 +469,7 @@ impl AsyncGuestPresenter {
         pixels: &[u32],
         source_size: (u32, u32),
         drawable_size: (u32, u32),
+        guest: Option<&GuestIndices<'_>>,
     ) -> Result<(), String> {
         let mut state = self
             .mailbox
@@ -457,6 +488,7 @@ impl AsyncGuestPresenter {
             staged,
             RasterLayout::whole(source_size),
             drawable_size,
+            guest,
         );
         state.recycled_argb.push(spare);
         self.mailbox.changed.notify_one();
@@ -470,6 +502,7 @@ impl AsyncGuestPresenter {
         pixels: Vec<u32>,
         layout: RasterLayout,
         drawable_size: (u32, u32),
+        guest: Option<&GuestIndices<'_>>,
     ) -> Result<Vec<u32>, String> {
         let mut state = self
             .mailbox
@@ -480,7 +513,7 @@ impl AsyncGuestPresenter {
             return Err(error.clone());
         }
         state.paused = false;
-        let spare = replace_pending_raster_frame(&mut state, pixels, layout, drawable_size);
+        let spare = replace_pending_raster_frame(&mut state, pixels, layout, drawable_size, guest);
         self.mailbox.changed.notify_one();
         Ok(spare)
     }
@@ -667,6 +700,13 @@ impl GuestRenderWorker {
                 state.error = result.err();
             }
             state.recycle(submission.pixels);
+            if let FrameMetadata::Raster {
+                undither: Some(undither),
+                ..
+            } = submission.metadata
+            {
+                state.recycled.push(undither.indices);
+            }
             mailbox.changed.notify_all();
         }
     }
@@ -682,6 +722,7 @@ impl GuestRenderWorker {
             FrameMetadata::Raster {
                 layout,
                 drawable_size,
+                undither,
             } => {
                 let source_size = (layout.width, layout.height);
                 if self.upload_size != source_size {
@@ -692,6 +733,24 @@ impl GuestRenderWorker {
                 }
                 let index = self.next_upload_texture;
                 self.next_upload_texture = (index + 1) % self.upload_textures.len();
+                if let (Some(undither), Some(pipelines)) =
+                    (undither.as_ref(), self.undither_pipelines.as_ref())
+                {
+                    return encode_undithered_raster_frame(
+                        &self.command_queue,
+                        &self.device,
+                        &self.raster_pipeline,
+                        pipelines,
+                        &mut self.undither_targets,
+                        &self.upload_textures[index],
+                        drawable,
+                        framebuffer,
+                        *layout,
+                        undither,
+                        *drawable_size,
+                        false,
+                    );
+                }
                 return encode_raster_frame(
                     &self.command_queue,
                     &self.raster_pipeline,
@@ -731,6 +790,23 @@ impl GuestRenderWorker {
             );
         }
 
+        if let Some(pipelines) = self
+            .undither_pipelines
+            .as_ref()
+            .filter(|_| metadata.undither)
+        {
+            return encode_undithered_guest_frame(
+                &self.command_queue,
+                &self.device,
+                &self.raster_pipeline,
+                pipelines,
+                &mut self.undither_targets,
+                guest_buffer,
+                drawable,
+                metadata,
+                false,
+            );
+        }
         encode_guest_frame(
             &self.command_queue,
             &self.pipeline,
@@ -790,6 +866,9 @@ pub struct MetalPresenter {
     /// unchanged owner frame is not uploaded again.
     last_compact: Option<(Arc<CompactPresentation>, CompactFrameUniforms)>,
     async_guest_presenter: AsyncGuestPresenter,
+    undither: bool,
+    undither_pipelines: Option<undither::UnditherPipelines>,
+    undither_targets: undither::UnditherTargets,
 }
 
 /// The GPU that scans out the main display. Rendering there avoids copying every
@@ -909,6 +988,18 @@ impl MetalPresenter {
         let compact_pipeline = device
             .newRenderPipelineStateWithDescriptor_error(&descriptor)
             .map_err(|error| format!("Metal compact pipeline creation failed: {error}"))?;
+        // Built only when asked for. A filter that cannot be built leaves the
+        // screen as the game draws it: a display filter must not be able to
+        // stop the game.
+        let undither_pipelines = undither::enabled_by_environment()
+            .then(|| undither::UnditherPipelines::new(&device))
+            .and_then(|built| {
+                built
+                    .map_err(|error| {
+                        eprintln!("[METAL] {error}; the undither filter is unavailable")
+                    })
+                    .ok()
+            });
 
         let async_command_queue = device
             .newCommandQueue()
@@ -927,6 +1018,8 @@ impl MetalPresenter {
             next_upload_texture: 0,
             compact_pipeline: compact_pipeline.clone(),
             compact_buffers: CompactBuffers::default(),
+            undither_pipelines: undither_pipelines.clone(),
+            undither_targets: undither::UnditherTargets::default(),
         })?;
 
         Ok(Self {
@@ -958,7 +1051,20 @@ impl MetalPresenter {
                 .is_none_or(|value| value != "0"),
             last_compact: None,
             async_guest_presenter,
+            undither: undither_pipelines.is_some(),
+            undither_pipelines,
+            undither_targets: undither::UnditherTargets::default(),
         })
+    }
+
+    /// Whether frames are drawn through the undither filter.
+    pub fn undither(&self) -> bool {
+        self.undither
+    }
+
+    /// The indices to send with a raster frame, when the filter is on.
+    fn raster_guest<'a>(&self, guest: Option<GuestIndices<'a>>) -> Option<GuestIndices<'a>> {
+        guest.filter(|guest| self.undither && guest.pixel_size == 8)
     }
 
     /// Couple the next drawable presentation to the current Core Animation
@@ -985,7 +1091,9 @@ impl MetalPresenter {
         source_height: u32,
         drawable_width: u32,
         drawable_height: u32,
+        guest: Option<GuestIndices<'_>>,
     ) -> Result<(), String> {
+        let guest = self.raster_guest(guest);
         let expected_pixels = source_width as usize * source_height as usize;
         if pixels.len() < expected_pixels || expected_pixels == 0 {
             return Err("framebuffer dimensions do not match its pixel data".to_string());
@@ -1002,6 +1110,7 @@ impl MetalPresenter {
                 &pixels[..expected_pixels],
                 (source_width, source_height),
                 (drawable_width, drawable_height),
+                guest.as_ref(),
             );
         }
         self.async_guest_presenter.pause_and_wait();
@@ -1017,13 +1126,35 @@ impl MetalPresenter {
         let upload_index = self.next_upload_texture;
         self.next_upload_texture = (upload_index + 1) % self.upload_textures.len();
         let upload = &self.upload_textures[upload_index];
+        let layout = RasterLayout::whole((source_width, source_height));
+        if let (Some(undither), Some(pipelines)) = (
+            guest.and_then(|guest| {
+                undither::raster_undither(&guest, (source_width, source_height), Vec::new())
+            }),
+            self.undither_pipelines.as_ref(),
+        ) {
+            return encode_undithered_raster_frame(
+                &self.command_queue,
+                &self.device,
+                &self.pipeline,
+                pipelines,
+                &mut self.undither_targets,
+                upload,
+                &drawable,
+                argb_bytes(pixels),
+                layout,
+                &undither,
+                (drawable_width, drawable_height),
+                true,
+            );
+        }
         encode_raster_frame(
             &self.command_queue,
             &self.pipeline,
             upload,
             &drawable,
             argb_bytes(pixels),
-            RasterLayout::whole((source_width, source_height)),
+            layout,
             (drawable_width, drawable_height),
             true,
         )?;
@@ -1043,7 +1174,9 @@ impl MetalPresenter {
         layout: RasterLayout,
         drawable_width: u32,
         drawable_height: u32,
+        guest: Option<GuestIndices<'_>>,
     ) -> Result<Vec<u32>, String> {
+        let guest = self.raster_guest(guest);
         let byte_len = frame.len().saturating_mul(size_of::<u32>());
         if layout.texel_byte_offset(byte_len).is_none() {
             return Err("framebuffer dimensions do not match its pixel data".to_string());
@@ -1060,6 +1193,7 @@ impl MetalPresenter {
                 frame,
                 layout,
                 (drawable_width, drawable_height),
+                guest.as_ref(),
             );
         }
         self.async_guest_presenter.pause_and_wait();
@@ -1075,6 +1209,28 @@ impl MetalPresenter {
         let upload_index = self.next_upload_texture;
         self.next_upload_texture = (upload_index + 1) % self.upload_textures.len();
         let upload = &self.upload_textures[upload_index];
+        if let (Some(undither), Some(pipelines)) = (
+            guest.and_then(|guest| {
+                undither::raster_undither(&guest, (layout.width, layout.height), Vec::new())
+            }),
+            self.undither_pipelines.as_ref(),
+        ) {
+            encode_undithered_raster_frame(
+                &self.command_queue,
+                &self.device,
+                &self.pipeline,
+                pipelines,
+                &mut self.undither_targets,
+                upload,
+                &drawable,
+                argb_bytes(&frame),
+                layout,
+                &undither,
+                (drawable_width, drawable_height),
+                true,
+            )?;
+            return Ok(frame);
+        }
         encode_raster_frame(
             &self.command_queue,
             &self.pipeline,
@@ -1155,6 +1311,7 @@ impl MetalPresenter {
             uniforms,
             cursor: cursor_data,
             drawable_size,
+            undither: self.undither && pixel_size == 8,
         };
 
         let presentation_start = Instant::now();
@@ -1201,14 +1358,32 @@ impl MetalPresenter {
                 framebuffer,
                 visible_layout,
             );
-            encode_guest_frame(
-                &self.command_queue,
-                &self.guest_pipeline,
-                guest_buffer,
-                &drawable,
-                &metadata,
-                true,
-            )?;
+            if let Some(pipelines) = self
+                .undither_pipelines
+                .as_ref()
+                .filter(|_| metadata.undither)
+            {
+                encode_undithered_guest_frame(
+                    &self.command_queue,
+                    &self.device,
+                    &self.pipeline,
+                    pipelines,
+                    &mut self.undither_targets,
+                    guest_buffer,
+                    &drawable,
+                    &metadata,
+                    true,
+                )?;
+            } else {
+                encode_guest_frame(
+                    &self.command_queue,
+                    &self.guest_pipeline,
+                    guest_buffer,
+                    &drawable,
+                    &metadata,
+                    true,
+                )?;
+            }
         } else {
             self.async_guest_presenter
                 .enqueue(framebuffer, visible_layout, metadata.clone())?;
@@ -1723,6 +1898,76 @@ fn encode_guest_frame(
         command_buffer.commit();
     }
     Ok(())
+}
+
+/// Present a native guest frame through the undither filter.
+#[allow(clippy::too_many_arguments)]
+fn encode_undithered_guest_frame(
+    command_queue: &ProtocolObject<dyn MTLCommandQueue>,
+    device: &ProtocolObject<dyn MTLDevice>,
+    raster_pipeline: &ProtocolObject<dyn MTLRenderPipelineState>,
+    pipelines: &undither::UnditherPipelines,
+    targets: &mut undither::UnditherTargets,
+    guest_buffer: &ProtocolObject<dyn MTLBuffer>,
+    drawable: &ProtocolObject<dyn CAMetalDrawable>,
+    metadata: &GuestFrameMetadata,
+    transactional: bool,
+) -> Result<(), String> {
+    undither::present_texture(
+        command_queue,
+        raster_pipeline,
+        |command_buffer| {
+            undither::encode_guest(
+                command_buffer,
+                device,
+                pipelines,
+                targets,
+                guest_buffer,
+                metadata,
+                undither::LIGHT,
+            )
+        },
+        drawable,
+        metadata.drawable_size,
+        transactional,
+    )
+}
+
+/// Upload a raster frame and present it through the undither filter.
+#[allow(clippy::too_many_arguments)]
+fn encode_undithered_raster_frame(
+    command_queue: &ProtocolObject<dyn MTLCommandQueue>,
+    device: &ProtocolObject<dyn MTLDevice>,
+    raster_pipeline: &ProtocolObject<dyn MTLRenderPipelineState>,
+    pipelines: &undither::UnditherPipelines,
+    targets: &mut undither::UnditherTargets,
+    upload: &ProtocolObject<dyn MTLTexture>,
+    drawable: &ProtocolObject<dyn CAMetalDrawable>,
+    pixels: &[u8],
+    layout: RasterLayout,
+    raster_undither: &undither::RasterUndither,
+    drawable_size: (u32, u32),
+    transactional: bool,
+) -> Result<(), String> {
+    upload_raster_region(upload, pixels, layout)?;
+    undither::present_texture(
+        command_queue,
+        raster_pipeline,
+        |command_buffer| {
+            undither::encode_presented(
+                command_buffer,
+                device,
+                pipelines,
+                targets,
+                upload,
+                raster_undither,
+                undither::LIGHT,
+            )
+        },
+        drawable,
+        drawable_size,
+        transactional,
+    )
 }
 
 fn non_null_bytes<T>(value: &T) -> NonNull<c_void> {
@@ -2608,7 +2853,9 @@ mod tests {
             let mut pixels = vec![0xff123456; 16];
             for color in [0xff123456, 0xffabcdef] {
                 pixels.fill(color);
-                presenter.enqueue_raster(&pixels, (4, 4), (8, 8)).unwrap();
+                presenter
+                    .enqueue_raster(&pixels, (4, 4), (8, 8), None)
+                    .unwrap();
             }
             pixels.fill(0); // queued pixels must own their storage
             sent.send(presenter).unwrap();
@@ -2628,6 +2875,7 @@ mod tests {
                     == FrameMetadata::Raster {
                         layout: RasterLayout::whole((4, 4)),
                         drawable_size: (8, 8),
+                        undither: None,
                     }
             );
         }
@@ -2639,6 +2887,7 @@ mod tests {
             uniforms: GuestFrameUniforms::default(),
             cursor: GuestCursorData::default(),
             drawable_size: (8, 8),
+            undither: false,
         };
         presenter
             .enqueue(
@@ -2661,6 +2910,7 @@ mod tests {
             uniforms: GuestFrameUniforms::default(),
             cursor: GuestCursorData::default(),
             drawable_size: (8, 4),
+            undither: false,
         };
         let mut state = GuestFrameMailboxState::default();
 
@@ -2703,6 +2953,7 @@ mod tests {
             uniforms: GuestFrameUniforms::default(),
             cursor: GuestCursorData::default(),
             drawable_size: (6, 4),
+            undither: false,
         };
         let framebuffer = [
             0, 1, 2, 3, 4, 5, // outside the crop
@@ -2792,7 +3043,7 @@ mod tests {
         for _ in 0..FRAMES {
             let start = Instant::now();
             presenter
-                .enqueue_raster(&full, (WIDTH, HEIGHT), (WIDTH, HEIGHT))
+                .enqueue_raster(&full, (WIDTH, HEIGHT), (WIDTH, HEIGHT), None)
                 .unwrap();
             staged_borrowed.push(start.elapsed());
         }
@@ -2811,7 +3062,7 @@ mod tests {
         for _ in 0..FRAMES {
             let start = Instant::now();
             scratch = presenter
-                .enqueue_raster_owned(scratch, layout, (WIDTH, HEIGHT))
+                .enqueue_raster_owned(scratch, layout, (WIDTH, HEIGHT), None)
                 .unwrap();
             handoff_owned.push(start.elapsed());
             std::hint::black_box(&scratch);
@@ -2886,7 +3137,7 @@ mod tests {
         let first: Vec<u32> = (0..16).collect();
         let first_pixels = first.as_ptr();
         let spare = presenter
-            .enqueue_raster_owned(first, layout, (8, 8))
+            .enqueue_raster_owned(first, layout, (8, 8), None)
             .unwrap();
         assert!(
             spare.is_empty(),
@@ -2910,6 +3161,7 @@ mod tests {
                     == FrameMetadata::Raster {
                         layout,
                         drawable_size: (8, 8),
+                        undither: None,
                     }
             );
         }
@@ -2918,7 +3170,7 @@ mod tests {
         let second: Vec<u32> = (100..116).collect();
         let second_pixels = second.as_ptr();
         let spare = presenter
-            .enqueue_raster_owned(second, layout, (8, 8))
+            .enqueue_raster_owned(second, layout, (8, 8), None)
             .unwrap();
         assert_eq!(
             spare.as_ptr(),

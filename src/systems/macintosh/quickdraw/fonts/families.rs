@@ -21,3 +21,7 @@ pub const FONT_HELVETICA: i16 = 21;
 pub const FONT_COURIER: i16 = 22;
 pub const FONT_SYMBOL: i16 = 23;
 pub const FONT_MOBILE: i16 = 24;
+/// Mac OS 8's system font, by the family ID of the Charcoal suitcase on Mac OS
+/// 9.0's disk. Used for the windows drawn in Mac OS 8's look; not a name this
+/// host answers a guest's GetFNum with.
+pub const FONT_CHARCOAL: i16 = 2002;

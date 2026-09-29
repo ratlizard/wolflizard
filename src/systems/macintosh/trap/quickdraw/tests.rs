@@ -5532,6 +5532,61 @@
     }
 
     #[test]
+    fn char_extra_is_carried_in_fixed_point_and_measured_as_drawn() {
+        // Inside Macintosh Volume V (1986), p. V-77. Cythera fits a name under
+        // a conversation portrait with a fractional negative CharExtra and
+        // centres it by TextWidth, so the width measured has to be the width
+        // drawn, fraction and all.
+        const TEXT: &[u8] = b"Name here";
+        let (mut d, mut cpu, mut bus) = setup_with_port();
+        let pascal = 0x300000u32;
+        let raw = 0x300100u32;
+        bus.write_byte(pascal, TEXT.len() as u8);
+        bus.write_bytes(pascal + 1, TEXT);
+        bus.write_bytes(raw, TEXT);
+        // [TextWidth, StringWidth, DrawText's advance, DrawString's advance]
+        let widths = |d: &mut TrapDispatcher,
+                      cpu: &mut super::super::test_helpers::MockCpu,
+                      bus: &mut MacMemoryBus| {
+            cpu.write_reg(Register::A7, TEST_SP);
+            bus.write_word(TEST_SP, TEXT.len() as u16);
+            bus.write_word(TEST_SP + 2, 0);
+            bus.write_long(TEST_SP + 4, raw);
+            d.dispatch_quickdraw(true, 0x086, cpu, bus).unwrap().unwrap();
+            let text_width = bus.read_word(TEST_SP + 8) as i16;
+            cpu.write_reg(Register::A7, TEST_SP);
+            bus.write_long(TEST_SP, pascal);
+            d.dispatch_quickdraw(true, 0x08C, cpu, bus).unwrap().unwrap();
+            let string_width = bus.read_word(TEST_SP + 4) as i16;
+            d.pn_loc = (40, 20);
+            cpu.write_reg(Register::A7, TEST_SP);
+            bus.write_word(TEST_SP, TEXT.len() as u16);
+            bus.write_word(TEST_SP + 2, 0);
+            bus.write_long(TEST_SP + 4, raw);
+            d.dispatch_quickdraw(true, 0x085, cpu, bus).unwrap().unwrap();
+            let draw_text = d.pn_loc.1 - 20;
+            d.pn_loc = (40, 20);
+            cpu.write_reg(Register::A7, TEST_SP);
+            bus.write_long(TEST_SP, pascal);
+            d.dispatch_quickdraw(true, 0x084, cpu, bus).unwrap().unwrap();
+            let draw_string = d.pn_loc.1 - 20;
+            [text_width, string_width, draw_text, draw_string]
+        };
+        let plain = widths(&mut d, &mut cpu, &mut bus);
+        assert_eq!(plain, [plain[0]; 4], "with no extra every measure is the drawn width");
+
+        // CharExtra(-1.25).
+        cpu.write_reg(Register::A7, TEST_SP);
+        bus.write_long(TEST_SP, (-(5i32 << 16) / 4) as u32);
+        d.dispatch_quickdraw(true, 0x223, &mut cpu, &mut bus).unwrap().unwrap();
+
+        // Eight non-spaces at -1.25 from a pen at one half: plain - 9.5, so
+        // plain - 10. Whole pixels rounded down would draw plain - 16 and
+        // measure plain.
+        assert_eq!(widths(&mut d, &mut cpu, &mut bus), [plain[0] - 10; 4]);
+    }
+
+    #[test]
     fn test_text_width() {
         let (mut d, mut cpu, mut bus) = setup();
         let buf = 0x300000u32;

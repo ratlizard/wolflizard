@@ -24,6 +24,7 @@ pub mod game;
 pub(crate) mod guest_call;
 pub(crate) mod guest_procedure;
 pub(crate) mod list_manager;
+pub(crate) mod text_extra;
 pub mod loader;
 pub(crate) mod mac_roman;
 pub mod machine_profile;

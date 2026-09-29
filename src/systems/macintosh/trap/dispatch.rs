@@ -1913,6 +1913,10 @@ pub struct TrapDispatcher {
     /// when drawing text, expressed as a Fixed16.16 value. Set by
     /// CharExtra ($AA23) per IM:V V-149.
     pub char_extra: i32,
+    /// Set while `draw_text_run` places a run's characters itself, so
+    /// `draw_char` advances by the glyph alone and the run adds the
+    /// character and space extra in fixed point (`text_extra`).
+    pub(crate) text_run_places_extras: bool,
     /// Current background pattern
     pub bk_pat: [u8; 8],
     /// Current pen location (v, h)
@@ -4056,6 +4060,7 @@ impl TrapDispatcher {
             pm_bg_color: None,
             makergbpat_colors: HashMap::default(),
             char_extra: 0,
+            text_run_places_extras: false,
             bk_pat: [0x00; 8],
             pn_loc: (0, 0),
             pn_size: (1, 1),

@@ -91,6 +91,7 @@ pub(super) fn dispatch_font_import(context: PpcFontDispatchContext<'_>) -> Optio
                 text_font,
                 *quickdraw_text_size,
                 text_face,
+                toolbox_startup.quickdraw_char_extra,
             )))
         }
         PpcImportDispatcherTarget::TruncString => {
@@ -109,10 +110,15 @@ pub(super) fn dispatch_font_import(context: PpcFontDispatchContext<'_>) -> Optio
         PpcImportDispatcherTarget::StringWidth => {
             let text_font = ppc_current_text_font(memory, current_gworld);
             let text_face = ppc_current_text_style(memory, current_gworld);
+            let char_extra = toolbox_startup.quickdraw_char_extra;
             let width = ppc_read_pascal_string(memory, cpu.gpr[3])
                 .map(|bytes| {
-                    ppc_text_width_bytes(text_font, *quickdraw_text_size, text_face, &bytes).max(0)
-                        as u32
+                    ppc_width_with_extra(
+                        ppc_text_width_bytes(text_font, *quickdraw_text_size, text_face, &bytes),
+                        &bytes,
+                        char_extra,
+                    )
+                    .max(0) as u32
                 })
                 .unwrap_or(0);
             Some(PpcImportAction::Return(width))
@@ -121,11 +127,15 @@ pub(super) fn dispatch_font_import(context: PpcFontDispatchContext<'_>) -> Optio
             let text_font = ppc_current_text_font(memory, current_gworld);
             let text_face = ppc_current_text_style(memory, current_gworld);
             Some(PpcImportAction::Return(
-                ppc_text_width_bytes(
-                    text_font,
-                    *quickdraw_text_size,
-                    text_face,
+                ppc_width_with_extra(
+                    ppc_text_width_bytes(
+                        text_font,
+                        *quickdraw_text_size,
+                        text_face,
+                        &[(cpu.gpr[3] & 0xff) as u8],
+                    ),
                     &[(cpu.gpr[3] & 0xff) as u8],
+                    toolbox_startup.quickdraw_char_extra,
                 )
                 .max(0) as u32,
             ))
@@ -206,32 +216,29 @@ pub(super) fn dispatch_font_import(context: PpcFontDispatchContext<'_>) -> Optio
             // Inside Macintosh Volume V (1986), p. V-77: CharExtra widens
             // (or, negative, narrows) every character but the space. Cythera
             // narrows a name that would not fit under its portrait.
-            let char_extra = (toolbox_startup.quickdraw_char_extra >> 16) as i16;
+            // The extra is carried in fixed point across the run, as the
+            // 68K side does (`text_extra`).
+            let char_extra = toolbox_startup.quickdraw_char_extra;
             let advance = if let Some(commands) =
                 ppc_open_picture_commands(toolbox_startup, current_gworld)
             {
                 pict::recording_push_long_text(commands, *quickdraw_pen_v, *quickdraw_pen_h, &bytes);
                 ppc_text_width_bytes(text_font, *quickdraw_text_size, text_style, &bytes)
             } else if char_extra != 0 {
-                let mut pen_h = *quickdraw_pen_h;
-                for &byte in &bytes {
-                    let glyph = ppc_draw_text_bytes_styled(
-                        memory,
-                        gworlds,
-                        current_gworld,
-                        (pen_h, *quickdraw_pen_v),
-                        text_font,
-                        *quickdraw_text_size,
-                        *quickdraw_text_mode,
-                        *quickdraw_fore_color,
-                        quickdraw_fore_indices.get(&current_gworld).copied(),
-                        text_style,
-                        &[byte],
-                    );
-                    let extra = if byte == b' ' { 0 } else { char_extra };
-                    pen_h = pen_h.saturating_add(glyph).saturating_add(extra);
-                }
-                pen_h.saturating_sub(*quickdraw_pen_h)
+                ppc_draw_text_run_with_extra(
+                    memory,
+                    gworlds,
+                    current_gworld,
+                    (*quickdraw_pen_h, *quickdraw_pen_v),
+                    text_font,
+                    *quickdraw_text_size,
+                    *quickdraw_text_mode,
+                    *quickdraw_fore_color,
+                    quickdraw_fore_indices.get(&current_gworld).copied(),
+                    text_style,
+                    &bytes,
+                    char_extra,
+                )
             } else {
                 ppc_draw_text_bytes_styled(
                     memory,
@@ -278,6 +285,21 @@ pub(super) fn dispatch_font_import(context: PpcFontDispatchContext<'_>) -> Optio
                         &bytes,
                     );
                     ppc_text_width_bytes(text_font, *quickdraw_text_size, text_style, &bytes)
+                } else if toolbox_startup.quickdraw_char_extra != 0 {
+                    ppc_draw_text_run_with_extra(
+                        memory,
+                        gworlds,
+                        current_gworld,
+                        (*quickdraw_pen_h, *quickdraw_pen_v),
+                        text_font,
+                        *quickdraw_text_size,
+                        *quickdraw_text_mode,
+                        *quickdraw_fore_color,
+                        quickdraw_fore_indices.get(&current_gworld).copied(),
+                        text_style,
+                        &bytes,
+                        toolbox_startup.quickdraw_char_extra,
+                    )
                 } else {
                     ppc_draw_text_bytes_styled(
                         memory,
@@ -389,12 +411,63 @@ pub(super) fn dispatch_font_import(context: PpcFontDispatchContext<'_>) -> Optio
     }
 }
 
+/// A run drawn with the character extra carried in fixed point from a pen
+/// at one half, each glyph at the pen's whole pixel (`text_extra`); the
+/// advance is where the pen ends. The space takes no extra here, the
+/// PowerPC side having no space extra.
+#[allow(clippy::too_many_arguments)]
+fn ppc_draw_text_run_with_extra(
+    memory: &mut PpcSectionMem,
+    gworlds: &[PpcGWorldRecord],
+    current_gworld: u32,
+    pen: (i16, i16),
+    text_font: i16,
+    text_size: i16,
+    text_mode: i16,
+    color: PpcRgbColor,
+    explicit_index: Option<u8>,
+    style: u8,
+    bytes: &[u8],
+    char_extra: i32,
+) -> i16 {
+    use crate::systems::macintosh::text_extra::{advance_pen, pen_pixel, RUN_START_FRACTION};
+    let clamp = |h: i32| h.clamp(i32::from(i16::MIN), i32::from(i16::MAX)) as i16;
+    let mut fixed = RUN_START_FRACTION;
+    for &byte in bytes {
+        let at = clamp(i32::from(pen.0) + pen_pixel(fixed));
+        let glyph = ppc_draw_text_bytes_styled(
+            memory,
+            gworlds,
+            current_gworld,
+            (at, pen.1),
+            text_font,
+            text_size,
+            text_mode,
+            color,
+            explicit_index,
+            style,
+            &[byte],
+        );
+        fixed = advance_pen(fixed, i32::from(glyph), byte == b' ', char_extra, 0);
+    }
+    clamp(pen_pixel(fixed))
+}
+
+/// A measured width with the character extra drawing adds.
+fn ppc_width_with_extra(base: i16, bytes: &[u8], char_extra: i32) -> i16 {
+    let spaces = bytes.iter().filter(|&&b| b == b' ').count() as i32;
+    let non_spaces = bytes.len() as i32 - spaces;
+    let width = crate::systems::macintosh::text_extra::run_width(i32::from(base), non_spaces, spaces, char_extra, 0);
+    width.clamp(i32::from(i16::MIN), i32::from(i16::MAX)) as i16
+}
+
 fn ppc_text_width(
     cpu: &mut PpcCpu,
     memory: &mut PpcSectionMem,
     text_font: i16,
     text_size: i16,
     text_face: u8,
+    char_extra: i32,
 ) -> u32 {
     let text_ptr = cpu.gpr[3];
     let first_byte = cpu.gpr[4];
@@ -409,7 +482,7 @@ fn ppc_text_width(
         };
         bytes.push(memory.read_u8(addr).unwrap_or(0));
     }
-    ppc_text_width_bytes(text_font, text_size, text_face, &bytes).max(0) as u32
+    ppc_width_with_extra(ppc_text_width_bytes(text_font, text_size, text_face, &bytes), &bytes, char_extra).max(0) as u32
 }
 
 fn ppc_get_font_info(memory: &mut PpcSectionMem, info_ptr: u32, text_font: i16, text_size: i16) {

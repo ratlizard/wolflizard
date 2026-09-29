@@ -2038,6 +2038,8 @@ impl super::TrapDispatcher {
                     total_base += advance;
                 }
                 let total_width = self.proportional_text_width(total_base);
+                let bytes = bus.read_bytes(start_addr, usize::from(len));
+                let total_width = self.measured_width_with_extras(bus, i32::from(total_width), &bytes);
                 let new_sp = sp + 4;
                 bus.write_word(new_sp, total_width as u16);
                 cpu.write_reg(Register::A7, new_sp);
@@ -2058,6 +2060,7 @@ impl super::TrapDispatcher {
                     i32::from(self.missing_glyph_advance())
                 };
                 let advance = self.proportional_text_width(advance);
+                let advance = self.measured_width_with_extras(bus, i32::from(advance), &[ch as u8]);
                 bus.write_word(sp + 2, advance as u16);
                 cpu.write_reg(Register::A7, sp + 2);
                 Ok(())
@@ -2085,6 +2088,8 @@ impl super::TrapDispatcher {
                     total_base += advance;
                 }
                 let total_width = self.proportional_text_width(total_base);
+                let bytes = bus.read_bytes(start_addr, usize::try_from(byte_count).unwrap_or(0));
+                let total_width = self.measured_width_with_extras(bus, i32::from(total_width), &bytes);
                 let new_sp = sp + 8;
                 bus.write_word(new_sp, total_width as u16);
                 cpu.write_reg(Register::A7, new_sp);
@@ -2242,10 +2247,8 @@ impl super::TrapDispatcher {
                     return Some(Ok(()));
                 }
                 bus.begin_presentation_text_run(self.tx_mode == 0);
-                for i in 0..byte_count {
-                    let ch = bus.read_byte(start + i as u32) as char;
-                    self.draw_char(cpu, bus, ch);
-                }
+                let bytes = bus.read_bytes(start, usize::try_from(byte_count).unwrap_or(0));
+                self.draw_text_run(cpu, bus, &bytes);
                 bus.end_presentation_text_run();
                 self.refresh_visible_dialog_snapshot_for_port(bus, *self.current_port);
                 Ok(())

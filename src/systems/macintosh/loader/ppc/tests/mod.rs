@@ -1668,6 +1668,49 @@ fn char_extra_narrows_every_character_but_the_space() {
 }
 
 #[test]
+fn a_fractional_char_extra_is_carried_and_measured_as_drawn() {
+    // A fractional extra keeps its fraction from one character to the next,
+    // from a pen at one half, and TextWidth answers with the width drawn;
+    // Cythera centres a name it has narrowed by TextWidth.
+    let pef = synthetic_pef_with_import(b"DrawText");
+    let mut loaded = load_pef_application(&pef).unwrap();
+    let text = PPC_DATA_BASE + 0x1000;
+    loaded.memory.add_region(text, b"ab c".to_vec());
+    let pen_h = |loaded: &mut PpcLoadedApp| {
+        loaded
+            .memory
+            .read_u16_be(PPC_MAIN_GWORLD + PPC_CGRAF_PORT_PN_LOC_OFFSET + 2)
+            .unwrap() as i16
+    };
+    let draw = |loaded: &mut PpcLoadedApp| {
+        loaded.cpu.gpr[3] = 20;
+        loaded.cpu.gpr[4] = 10;
+        run_test_import(loaded, PpcImportDispatcherTarget::MoveTo);
+        loaded.cpu.gpr[3] = text;
+        loaded.cpu.gpr[4] = 0;
+        loaded.cpu.gpr[5] = 4;
+        run_test_import(loaded, PpcImportDispatcherTarget::DrawText);
+    };
+    let measure = |loaded: &mut PpcLoadedApp| {
+        loaded.cpu.gpr[3] = text;
+        loaded.cpu.gpr[4] = 0;
+        loaded.cpu.gpr[5] = 4;
+        run_test_import(loaded, PpcImportDispatcherTarget::TextWidth);
+        loaded.cpu.gpr[3] as i16
+    };
+    draw(&mut loaded);
+    let plain = pen_h(&mut loaded) - 20;
+    assert_eq!(measure(&mut loaded), plain);
+
+    // CharExtra(-1.25): three non-spaces from one half, plain - 3.25, so plain - 4.
+    loaded.cpu.gpr[3] = (-(5i32 << 16) / 4) as u32;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::CharExtra);
+    draw(&mut loaded);
+    assert_eq!(pen_h(&mut loaded) - 20, plain - 4);
+    assert_eq!(measure(&mut loaded), plain - 4);
+}
+
+#[test]
 fn appearance_static_text_wraps_in_its_style() {
     // Cythera's Preferences labels: static text (procID 288) with a
     // ControlFontStyleRec of flags 0x47, font -2 (small system), centred

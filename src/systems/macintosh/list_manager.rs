@@ -25,7 +25,87 @@ pub struct ProcessListRecord {
     pub(crate) last_click_tick: u32,
 }
 
+/// The guest's copy of a list's cells as last written: the `cellArray` words
+/// and the `cells` handle's bytes.
+pub(crate) type ListGuestImage = (Vec<u16>, Vec<u8>);
+
 impl ProcessListRecord {
+    /// Rows times columns of `dataBounds`.
+    pub(crate) fn cell_count(&self) -> usize {
+        let columns = usize::try_from(i32::from(self.data_bounds.3) - i32::from(self.data_bounds.1))
+            .unwrap_or(0);
+        let rows = usize::try_from(i32::from(self.data_bounds.2) - i32::from(self.data_bounds.0))
+            .unwrap_or(0);
+        columns.saturating_mul(rows)
+    }
+
+    /// The cell at `index` in the order the list record keeps them, row by
+    /// row: index = row * columns + column, counted from `dataBounds`.
+    pub(crate) fn cell_for_index(&self, index: usize) -> Option<(i16, i16)> {
+        let columns = usize::try_from(i32::from(self.data_bounds.3) - i32::from(self.data_bounds.1))
+            .unwrap_or(0);
+        if columns == 0 || index >= self.cell_count() {
+            return None;
+        }
+        Some((
+            self.data_bounds.0.saturating_add((index / columns) as i16),
+            self.data_bounds.1.saturating_add((index % columns) as i16),
+        ))
+    }
+
+    /// The cells as the guest's `ListRec` holds them: `cellArray`, one word a
+    /// cell in index order with the cell's selection in the high bit and
+    /// where its data starts in the `cells` handle in the rest, and one word
+    /// more where the last cell's data ends; and the data, packed in the same
+    /// order. More Macintosh Toolbox (1993), pp. 4-72--4-73.
+    pub(crate) fn guest_image(&self) -> ListGuestImage {
+        let count = self.cell_count();
+        let mut offsets = Vec::with_capacity(count + 1);
+        let mut data = Vec::new();
+        for index in 0..count {
+            let cell = self.cell_for_index(index).expect("index is inside dataBounds");
+            let selected = if self.selected.contains(&cell) { 0x8000 } else { 0 };
+            offsets.push(selected | (data.len().min(0x7FFF) as u16));
+            if let Some(bytes) = self.cells.get(&cell) {
+                let room = 0x7FFF - data.len().min(0x7FFF);
+                data.extend_from_slice(&bytes[..bytes.len().min(room)]);
+            }
+        }
+        offsets.push(data.len().min(0x7FFF) as u16);
+        (offsets, data)
+    }
+
+    /// Take the cells and their selection back from a guest copy, as an
+    /// application that edits `**cells` in place leaves it; Cythera sorts a
+    /// list's data that way. Nothing changes, and false is returned, when the
+    /// copy is not one of this list's shape: a word a cell and one more,
+    /// starts that never go back, and an end that is the data's length.
+    pub(crate) fn absorb_guest_image(&mut self, offsets: &[u16], data: &[u8]) -> bool {
+        let count = self.cell_count();
+        if offsets.len() != count + 1 {
+            return false;
+        }
+        let starts: Vec<usize> = offsets.iter().map(|word| usize::from(word & 0x7FFF)).collect();
+        if starts.windows(2).any(|pair| pair[1] < pair[0]) || starts[count] != data.len() {
+            return false;
+        }
+        let mut cells = HashMap::new();
+        let mut selected = BTreeSet::new();
+        for index in 0..count {
+            let cell = self.cell_for_index(index).expect("index is inside dataBounds");
+            let bytes = &data[starts[index]..starts[index + 1]];
+            if !bytes.is_empty() {
+                cells.insert(cell, bytes.to_vec());
+            }
+            if offsets[index] & 0x8000 != 0 {
+                selected.insert(cell);
+            }
+        }
+        self.cells = cells;
+        self.selected = selected;
+        true
+    }
+
     /// LScroll is bounded by fully visible cells; a clipped last row must
     /// still be scrollable into full view. More Macintosh Toolbox, pp. 4-89--4-90;
     /// confirmed with 150-pixel views and 18-pixel rows on Mac OS 8.1.
@@ -83,11 +163,16 @@ impl ProcessListRecord {
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct ProcessListManagerState {
     records: HashMap<u32, ProcessListRecord>,
+    /// What the 68K dispatcher last wrote into each list's `cellArray` and
+    /// `cells`, so a copy that differs is known to be the application's own
+    /// edit, and one that does not leaves the record, which may be newer,
+    /// alone.
+    guest_images: HashMap<u32, ListGuestImage>,
 }
 
 impl ProcessListManagerState {
     pub(crate) fn is_pristine(&self) -> bool {
-        self.records.is_empty()
+        self.records.is_empty() && self.guest_images.is_empty()
     }
 
     pub(crate) fn insert_record(&mut self, handle: u32, record: ProcessListRecord) {
@@ -95,7 +180,16 @@ impl ProcessListManagerState {
     }
 
     pub(crate) fn remove_record(&mut self, handle: u32) -> Option<ProcessListRecord> {
+        self.guest_images.remove(&handle);
         self.records.remove(&handle)
+    }
+
+    pub(crate) fn guest_image(&self, handle: u32) -> Option<&ListGuestImage> {
+        self.guest_images.get(&handle)
+    }
+
+    pub(crate) fn set_guest_image(&mut self, handle: u32, image: ListGuestImage) {
+        self.guest_images.insert(handle, image);
     }
 
     pub(crate) fn with_record_mut<R>(
@@ -140,6 +234,7 @@ impl ProcessListManagerState {
     #[allow(dead_code)]
     pub(crate) fn clear(&mut self) {
         self.records.clear();
+        self.guest_images.clear();
     }
 }
 
@@ -216,5 +311,60 @@ mod tests {
         assert_eq!(state.records().len(), 1);
         assert_eq!(state.remove_record(0x1000).unwrap().handle, 0x1000);
         assert!(state.is_empty());
+    }
+
+    fn two_by_three() -> ProcessListRecord {
+        let mut cells = HashMap::new();
+        cells.insert((0, 0), b"ab".to_vec());
+        cells.insert((0, 2), b"c".to_vec());
+        cells.insert((1, 1), b"def".to_vec());
+        ProcessListRecord {
+            handle: 0x1000,
+            cells_handle: 0x2000,
+            view_rect: (0, 0, 40, 90),
+            data_bounds: (0, 0, 2, 3),
+            cell_size: (20, 30),
+            visible: (0, 0, 2, 3),
+            port: 0,
+            draw_enabled: false,
+            active: true,
+            cells,
+            selected: [(1, 1)].into_iter().collect(),
+            last_click: (0, 0),
+            last_click_tick: 0,
+        }
+    }
+
+    #[test]
+    fn guest_image_packs_cells_row_by_row_with_selection_in_the_high_bit() {
+        let (offsets, data) = two_by_three().guest_image();
+        // (0,0) "ab", (0,1) empty, (0,2) "c", (1,0) empty, (1,1) "def" selected, (1,2) empty.
+        assert_eq!(offsets, vec![0, 2, 2, 3, 0x8003, 6, 6]);
+        assert_eq!(data, b"abcdef".to_vec());
+    }
+
+    #[test]
+    fn absorb_guest_image_takes_an_in_place_edit_and_refuses_another_shape() {
+        let mut list = two_by_three();
+        let (mut offsets, mut data) = list.guest_image();
+        // The application rewrites the bytes where they lie, leaving the
+        // starts alone as a sort of equal-length cells does, and moves the
+        // selection from (1,1) to (0,0).
+        data = b"dec".iter().chain(b"ab".iter()).chain(b"f".iter()).copied().collect();
+        offsets[0] |= 0x8000;
+        offsets[4] &= 0x7FFF;
+        assert!(list.absorb_guest_image(&offsets, &data));
+        assert_eq!(list.cells.get(&(0, 0)), Some(&b"de".to_vec()));
+        assert_eq!(list.cells.get(&(0, 2)), Some(&b"c".to_vec()));
+        assert_eq!(list.cells.get(&(1, 1)), Some(&b"abf".to_vec()));
+        assert_eq!(list.selected, [(0, 0)].into_iter().collect());
+
+        let before = list.clone();
+        assert!(!list.absorb_guest_image(&offsets[..6], &data));
+        assert!(!list.absorb_guest_image(&offsets, &data[..5]));
+        let mut backwards = offsets.clone();
+        backwards[2] = 1;
+        assert!(!list.absorb_guest_image(&backwards, &data));
+        assert_eq!(list, before);
     }
 }

@@ -356,10 +356,8 @@ impl super::TrapDispatcher {
         if !is_underline {
             // No underline, no outline/shadow: simple per-character drawing
             bus.begin_presentation_text_run(self.tx_mode == 0);
-            for i in 0..len {
-                let ch = bus.read_byte(s_ptr + 1 + i as u32);
-                self.draw_char(cpu, bus, ch as char);
-            }
+            let bytes = bus.read_bytes(s_ptr + 1, usize::from(len));
+            self.draw_text_run(cpu, bus, &bytes);
             bus.end_presentation_text_run();
             return;
         }
@@ -1142,12 +1140,16 @@ impl super::TrapDispatcher {
             // for space characters per IM:I I-171 (SpaceExtra) and
             // self.char_extra for non-space characters per IM:V V-149
             // (CharExtra).
-            let space_bonus = if ch == ' ' {
+            let space_bonus = if self.text_run_places_extras {
+                0
+            } else if ch == ' ' {
                 self.space_extra_pixels(bus)
             } else {
                 0
             };
-            let char_bonus = if ch != ' ' {
+            let char_bonus = if self.text_run_places_extras {
+                0
+            } else if ch != ' ' {
                 (self.char_extra >> 16) as i16
             } else {
                 0
@@ -1172,6 +1174,44 @@ impl super::TrapDispatcher {
     /// Read the current port's spExtra (Fixed-point) and return the
     /// integer-pixel portion to add to a space character's advance.
     /// Per IM:I I-171, SpaceExtra adds this value to every space drawn.
+    /// The port's space extra (`spExtra`, +76) as the Fixed it is kept in.
+    pub(super) fn space_extra_fixed(&self, bus: &MacMemoryBus) -> i32 {
+        if *self.current_port == 0 {
+            return 0;
+        }
+        bus.read_long(*self.current_port + 76) as i32
+    }
+
+    /// Draw a run of characters with the character and space extra carried
+    /// in fixed point from a pen at one half, each character at the pen's
+    /// whole pixel (`text_extra`); `draw_char` draws each glyph and its own
+    /// advance, and the run adds the extra. With both extras 0 the positions
+    /// are the whole advances, as a run of `draw_char` calls gives.
+    pub(super) fn draw_text_run<C: CpuOps>(&mut self, cpu: &mut C, bus: &mut MacMemoryBus, bytes: &[u8]) {
+        let start_h = i32::from(self.pn_loc.1);
+        let char_extra = self.char_extra;
+        let space_extra = self.space_extra_fixed(bus);
+        let mut pen = crate::systems::macintosh::text_extra::RUN_START_FRACTION;
+        self.text_run_places_extras = true;
+        for &byte in bytes {
+            let at = start_h + crate::systems::macintosh::text_extra::pen_pixel(pen);
+            self.pn_loc.1 = at.clamp(i32::from(i16::MIN), i32::from(i16::MAX)) as i16;
+            self.draw_char(cpu, bus, byte as char);
+            let advance = i32::from(self.pn_loc.1) - at;
+            pen = crate::systems::macintosh::text_extra::advance_pen(pen, advance, byte == b' ', char_extra, space_extra);
+        }
+        self.text_run_places_extras = false;
+        let end = start_h + crate::systems::macintosh::text_extra::pen_pixel(pen);
+        self.pn_loc.1 = end.clamp(i32::from(i16::MIN), i32::from(i16::MAX)) as i16;
+    }
+
+    /// A measured run's width with the extras `draw_text_run` would add.
+    pub(super) fn measured_width_with_extras(&self, bus: &MacMemoryBus, base_px: i32, bytes: &[u8]) -> i32 {
+        let spaces = bytes.iter().filter(|&&b| b == b' ').count() as i32;
+        let non_spaces = bytes.len() as i32 - spaces;
+        crate::systems::macintosh::text_extra::run_width(base_px, non_spaces, spaces, self.char_extra, self.space_extra_fixed(bus))
+    }
+
     pub(super) fn space_extra_pixels(&self, bus: &MacMemoryBus) -> i16 {
         if *self.current_port == 0 {
             return 0;

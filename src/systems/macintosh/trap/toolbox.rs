@@ -5072,40 +5072,136 @@ impl super::TrapDispatcher {
         cells
     }
 
+    /// Where each non-empty cell's data lies in the `cells` handle, for an
+    /// LDEF's lDataOffset and lDataLen and for LFind (LGetCellDataLocation), after
+    /// taking any edit the application made there and writing the guest's
+    /// copy afresh.
     fn sync_list_cell_data_handle(
         &mut self,
         bus: &mut MacMemoryBus,
         list_handle: u32,
-        state: &super::dispatch::ListState,
+        _state: &super::dispatch::ListState,
     ) -> HashMap<(i16, i16), (i16, i16)> {
+        self.read_list_guest_image(bus, list_handle);
+        self.write_list_guest_image(bus, list_handle);
+        let Some(record) = self.list_states.get_record(list_handle) else {
+            return HashMap::new();
+        };
+        let (offsets, _) = record.guest_image();
+        let mut located = HashMap::new();
+        for index in 0..record.cell_count() {
+            let start = offsets[index] & 0x7FFF;
+            let end = offsets[index + 1] & 0x7FFF;
+            if end > start {
+                if let Some(cell) = record.cell_for_index(index) {
+                    located.insert(cell, (start as i16, (end - start) as i16));
+                }
+            }
+        }
+        located
+    }
+
+    /// Write a list's cells into the guest's `ListRec` as a Mac keeps them:
+    /// `cellArray` grown to a word a cell and one more, and the data packed
+    /// into the `cells` handle in the same order. More Macintosh Toolbox
+    /// (1993), pp. 4-72--4-73. Until 28 September 2026 the 68K side kept the
+    /// cells in the process record alone and filled `cells` only just before
+    /// an LDEF drew, so a list filled with drawing off had a `cells` handle
+    /// whose master pointer was nil. Cythera fills an inventory list that way
+    /// when a saved game reopens a character window, then sorts `**cells` in
+    /// place; the sort ran from address 0, overwrote the Line 1010 vector at
+    /// $28, and the next A-line trap jumped to the bytes it left there. The
+    /// PowerPC side has always written the guest's copy after each change
+    /// (`ppc_list_sync_guest_storage`).
+    fn write_list_guest_image(&mut self, bus: &mut MacMemoryBus, list_handle: u32) {
+        let Some(record) = self.list_states.get_record(list_handle) else {
+            return;
+        };
+        let image = record.guest_image();
         let list_ptr = Self::list_record_ptr(bus, list_handle);
         if list_ptr == 0 {
-            return HashMap::new();
+            return;
         }
-        let cells_handle = bus.read_long(list_ptr + Self::LIST_CELLS_OFFSET);
-        if cells_handle == 0 {
-            return HashMap::new();
+        let needed = (Self::LIST_CELL_ARRAY_OFFSET + image.0.len() as u32 * 2)
+            .max(Self::LIST_RECORD_SIZE);
+        if bus.get_alloc_size(list_ptr).unwrap_or(0) < needed {
+            let mut bytes = bus.read_bytes(list_ptr, Self::LIST_CELL_ARRAY_OFFSET as usize);
+            bytes.resize(needed as usize, 0);
+            self.write_bytes_to_handle(bus, list_handle, &bytes);
         }
+        let list_ptr = Self::list_record_ptr(bus, list_handle);
+        if list_ptr == 0 {
+            return;
+        }
+        for (index, word) in image.0.iter().enumerate() {
+            bus.write_word(
+                list_ptr + Self::LIST_CELL_ARRAY_OFFSET + index as u32 * 2,
+                *word,
+            );
+        }
+        self.write_bytes_to_handle(bus, record.cells_handle, &image.1);
+        self.list_states
+            .with_mut(|manager| manager.set_guest_image(list_handle, image));
+    }
 
-        let mut packed = Vec::new();
-        let mut offsets = HashMap::new();
-        let mut entries: Vec<_> = state.cells.iter().collect();
-        entries.sort_by_key(|(&(row, col), _)| (row, col));
-        for (&cell, data) in entries {
-            if data.is_empty() {
-                continue;
-            }
-            let offset = packed.len().min(i16::MAX as usize) as i16;
-            let copy_len = data.len().min(i16::MAX as usize - offset as usize);
-            if copy_len == 0 {
-                continue;
-            }
-            packed.extend_from_slice(&data[..copy_len]);
-            offsets.insert(cell, (offset, copy_len as i16));
+    /// Take back what the application wrote into a list's `cellArray` and
+    /// `cells` since the last write above. A copy that is still the one
+    /// written leaves the process record alone, since the record may be the
+    /// newer of the two (a selection a click changed on a path that hands the
+    /// CPU to guest code before returning). A list whose shape changed since
+    /// then, or that was never written, has nothing of the application's to
+    /// take.
+    fn read_list_guest_image(&mut self, bus: &mut MacMemoryBus, list_handle: u32) {
+        let Some((count, cells_handle)) = self
+            .list_states
+            .with_record_ref(list_handle, |record| (record.cell_count(), record.cells_handle))
+        else {
+            return;
+        };
+        let Some(written) = self
+            .list_states
+            .with_ref(|manager| manager.guest_image(list_handle).cloned())
+        else {
+            return;
+        };
+        if written.0.len() != count + 1 {
+            return;
         }
-
-        self.write_bytes_to_handle(bus, cells_handle, &packed);
-        offsets
+        let list_ptr = Self::list_record_ptr(bus, list_handle);
+        let words = count as u32 + 1;
+        if list_ptr == 0
+            || bus.get_alloc_size(list_ptr).unwrap_or(0) < Self::LIST_CELL_ARRAY_OFFSET + words * 2
+        {
+            return;
+        }
+        let offsets: Vec<u16> = (0..words)
+            .map(|index| bus.read_word(list_ptr + Self::LIST_CELL_ARRAY_OFFSET + index * 2))
+            .collect();
+        let length = u32::from(offsets[count] & 0x7FFF);
+        let data = if length == 0 {
+            Vec::new()
+        } else {
+            let data_ptr = if cells_handle != 0 {
+                bus.read_long(cells_handle)
+            } else {
+                0
+            };
+            if data_ptr == 0 || bus.get_alloc_size(data_ptr).unwrap_or(0) < length {
+                return;
+            }
+            bus.read_bytes(data_ptr, length as usize)
+        };
+        if written.0 == offsets && written.1 == data {
+            return;
+        }
+        let taken = self
+            .list_states
+            .with_record_mut(list_handle, |record| record.absorb_guest_image(&offsets, &data))
+            .unwrap_or(false);
+        if taken {
+            self.list_states
+                .with_mut(|manager| manager.set_guest_image(list_handle, (offsets, data)));
+        }
     }
 
     fn draw_list_cells_with_ldef_message<C: CpuOps>(
@@ -12201,7 +12297,19 @@ impl super::TrapDispatcher {
                     );
                 }
 
-                match selector {
+                // Every routine but LNew takes the list last, so its handle
+                // is the long above the selector. The guest's `cellArray` and
+                // `cells` are the list as far as the application is
+                // concerned: take any edit it made there before the call,
+                // and write them afresh after it (write_list_guest_image).
+                let list_arg = (selector != 0x44)
+                    .then(|| bus.read_long(sp + 2))
+                    .filter(|handle| self.list_states.with_record_ref(*handle, |_| ()).is_some());
+                if let Some(handle) = list_arg {
+                    self.read_list_guest_image(bus, handle);
+                }
+
+                let result = match selector {
                     // LNew (selector 68 / $44)
                     // Creates a new list and returns a ListHandle.
                     // FUNCTION LNew(rView, dataBounds: Rect; cSize: Point; theProc: INTEGER;
@@ -13429,6 +13537,16 @@ impl super::TrapDispatcher {
                         self.dispose_control_handle(bus, h_scroll);
                         if list_ptr != 0 {
                             bus.free(list_ptr);
+                            self.untrack_handle_ptr(list_ptr);
+                        }
+                        let cells_ptr = if cells_handle != 0 {
+                            bus.read_long(cells_handle)
+                        } else {
+                            0
+                        };
+                        if cells_ptr != 0 {
+                            bus.free(cells_ptr);
+                            self.untrack_handle_ptr(cells_ptr);
                         }
                         if cells_handle != 0 {
                             bus.free(cells_handle);
@@ -13441,7 +13559,18 @@ impl super::TrapDispatcher {
                     }
 
                     _ => self.pack0_fallback(cpu, bus, sp, selector),
+                };
+                let written = if selector == 0x44 {
+                    Some(bus.read_long(sp + 28))
+                } else {
+                    list_arg
+                };
+                if let Some(handle) =
+                    written.filter(|handle| self.list_states.with_record_ref(*handle, |_| ()).is_some())
+                {
+                    self.write_list_guest_image(bus, handle);
                 }
+                result
             }
 
             // Pack1 ($A9E8) — List Manager Package
@@ -13612,6 +13741,16 @@ impl super::TrapDispatcher {
                         self.dispose_control_handle(bus, h_scroll);
                         if list_ptr != 0 {
                             bus.free(list_ptr);
+                            self.untrack_handle_ptr(list_ptr);
+                        }
+                        let cells_ptr = if cells_handle != 0 {
+                            bus.read_long(cells_handle)
+                        } else {
+                            0
+                        };
+                        if cells_ptr != 0 {
+                            bus.free(cells_ptr);
+                            self.untrack_handle_ptr(cells_ptr);
                         }
                         if cells_handle != 0 {
                             bus.free(cells_handle);

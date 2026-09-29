@@ -8374,9 +8374,11 @@
         let create = disp.dispatch_toolbox(true, 0x1E7, &mut cpu, &mut bus);
         assert!(create.unwrap().is_ok());
         let list_handle = bus.read_long(sp + 28);
-        let list_ptr = bus.read_long(list_handle);
-        // dataBounds is at +72; right is the fourth word of that Rect.
-        let data_bounds_right = |bus: &MacMemoryBus| bus.read_word(list_ptr + 78) as i16;
+        // dataBounds is at +72; right is the fourth word of that Rect. The
+        // record is relocatable and grows with cellArray, so it is read
+        // through the handle each time, as an application must.
+        let data_bounds_right =
+            |bus: &MacMemoryBus| bus.read_word(bus.read_long(list_handle) + 78) as i16;
         assert_eq!(data_bounds_right(&bus), 1);
 
         cpu.write_reg(Register::A7, sp);
@@ -8472,6 +8474,101 @@
                 assert_eq!(bus.read_bytes(cells_ptr, 5), b"hello");
             }
         }
+    }
+
+    // Pack0 / List Manager ($A9E7): the guest's cellArray and cells are the
+    // list as an application sees it. More Macintosh Toolbox (1993),
+    // pp. 4-72--4-73. Cythera fills a list with drawing off and then sorts
+    // **cells in place; with cells left nil the sort ran from address 0.
+    #[test]
+    fn pack0_cells_handle_holds_the_list_and_takes_an_in_place_edit() {
+        let (mut disp, mut cpu, mut bus) = setup();
+        let sp = TEST_SP;
+        let view_rect_ptr = 0x353000u32;
+        let data_bounds_ptr = 0x353100u32;
+        let text_ptr = 0x353200u32;
+        let len_ptr = 0x353300u32;
+        let out_ptr = 0x353310u32;
+
+        bus.write_word(view_rect_ptr, 0);
+        bus.write_word(view_rect_ptr + 2, 0);
+        bus.write_word(view_rect_ptr + 4, 48);
+        bus.write_word(view_rect_ptr + 6, 80);
+        bus.write_word(data_bounds_ptr, 0);
+        bus.write_word(data_bounds_ptr + 2, 0);
+        bus.write_word(data_bounds_ptr + 4, 0);
+        bus.write_word(data_bounds_ptr + 6, 1);
+
+        bus.write_word(sp, 0x0044); // LNew
+        bus.write_word(sp + 2, 0);
+        bus.write_word(sp + 4, 0);
+        bus.write_word(sp + 6, 0);
+        bus.write_word(sp + 8, 0); // drawIt = FALSE
+        bus.write_long(sp + 10, 0x210000);
+        bus.write_word(sp + 14, 0);
+        bus.write_word(sp + 16, 12);
+        bus.write_word(sp + 18, 24);
+        bus.write_long(sp + 20, data_bounds_ptr);
+        bus.write_long(sp + 24, view_rect_ptr);
+        bus.write_long(sp + 28, 0);
+        assert!(disp.dispatch_toolbox(true, 0x1E7, &mut cpu, &mut bus).unwrap().is_ok());
+        let list_handle = bus.read_long(sp + 28);
+
+        cpu.write_reg(Register::A7, sp);
+        bus.write_word(sp, 0x0008); // LAddRow
+        bus.write_long(sp + 2, list_handle);
+        bus.write_word(sp + 6, 0); // rowNum
+        bus.write_word(sp + 8, 3); // count
+        bus.write_word(sp + 10, 0xBEEF);
+        assert!(disp.dispatch_toolbox(true, 0x1E7, &mut cpu, &mut bus).unwrap().is_ok());
+
+        for (row, bytes) in [(0u16, b"c3"), (1, b"a1"), (2, b"b2")] {
+            bus.write_bytes(text_ptr, bytes);
+            cpu.write_reg(Register::A7, sp);
+            bus.write_word(sp, 0x0058); // LSetCell
+            bus.write_long(sp + 2, list_handle);
+            bus.write_word(sp + 6, row); // cell.v
+            bus.write_word(sp + 8, 0); // cell.h
+            bus.write_word(sp + 10, 2); // dataLen
+            bus.write_long(sp + 12, text_ptr);
+            assert!(disp.dispatch_toolbox(true, 0x1E7, &mut cpu, &mut bus).unwrap().is_ok());
+        }
+
+        let list_ptr = bus.read_long(list_handle);
+        let cells_handle = bus.read_long(list_ptr + 80);
+        let cells_ptr = bus.read_long(cells_handle);
+        assert_ne!(cells_ptr, 0, "cells holds the data though the list never drew");
+        assert_eq!(bus.read_bytes(cells_ptr, 6), b"c3a1b2");
+        let cell_array: Vec<u16> = (0..4).map(|i| bus.read_word(list_ptr + 86 + i * 2)).collect();
+        assert_eq!(cell_array, vec![0, 2, 4, 6]);
+
+        // The application sorts **cells where it lies.
+        bus.write_bytes(cells_ptr, b"a1b2c3");
+        cpu.write_reg(Register::A7, sp);
+        bus.write_word(len_ptr, 8);
+        bus.write_word(sp, 0x0038); // LGetCell
+        bus.write_long(sp + 2, list_handle);
+        bus.write_word(sp + 6, 0);
+        bus.write_word(sp + 8, 0);
+        bus.write_long(sp + 10, len_ptr);
+        bus.write_long(sp + 14, out_ptr);
+        assert!(disp.dispatch_toolbox(true, 0x1E7, &mut cpu, &mut bus).unwrap().is_ok());
+        assert_eq!(bus.read_word(len_ptr), 2);
+        assert_eq!(bus.read_bytes(out_ptr, 2), b"a1", "the sorted order is the list's");
+
+        // A later change through the List Manager keeps it.
+        bus.write_bytes(text_ptr, b"zz");
+        cpu.write_reg(Register::A7, sp);
+        bus.write_word(sp, 0x0058); // LSetCell
+        bus.write_long(sp + 2, list_handle);
+        bus.write_word(sp + 6, 2);
+        bus.write_word(sp + 8, 0);
+        bus.write_word(sp + 10, 2);
+        bus.write_long(sp + 12, text_ptr);
+        assert!(disp.dispatch_toolbox(true, 0x1E7, &mut cpu, &mut bus).unwrap().is_ok());
+        let list_ptr = bus.read_long(list_handle);
+        let cells_ptr = bus.read_long(bus.read_long(list_ptr + 80));
+        assert_eq!(bus.read_bytes(cells_ptr, 6), b"a1b2zz");
     }
 
     // Pack0 / List Manager ($A9E7) — LAddToCell selector $000C

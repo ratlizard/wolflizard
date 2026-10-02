@@ -45,7 +45,20 @@ pub(super) fn dispatch_control_import(
         last_resource_error,
     } = context;
 
-    match binding.dispatcher_target {
+    // Upstream binds these Appearance Manager calls too, but only answers
+    // them: its HandleControlClick reports the part without tracking, so a
+    // slider in Cythera's Preferences would not drag, and its root control
+    // and control data are kept where this file's drawing and activation do
+    // not read them. They are answered here as the fork answers them.
+    let dispatcher_target = match binding.dispatcher_target.clone() {
+        PpcImportDispatcherTarget::LegacyControl(operation) => {
+            super::appearance_controls::ppc_appearance_op_for_legacy(operation)
+                .map(PpcImportDispatcherTarget::AppearanceControl)
+                .unwrap_or(PpcImportDispatcherTarget::LegacyControl(operation))
+        }
+        target => target,
+    };
+    match dispatcher_target {
         PpcImportDispatcherTarget::DrawControls => {
             let window = cpu.gpr[3];
             if memory.read_u16_be(window + PPC_CWINDOW_WINDOW_KIND_OFFSET) == Some(2) {
@@ -208,9 +221,24 @@ pub(super) fn dispatch_control_import(
                         handles,
                         controls,
                     );
+                    // Upstream's GetRootControl and AutoEmbedControl look for
+                    // the root in the control records.
+                    if let Some(root) = ppc_window_root_control(cpu.gpr[3]) {
+                        if let Some(record) = controls.iter_mut().find(|record| record.handle == root) {
+                            record.is_root = true;
+                        }
+                    }
                     result(err)
                 }
-                Op::EmbedControl => result(ppc_embed_control(memory, cpu.gpr[3], cpu.gpr[4])),
+                Op::EmbedControl => {
+                    let err = ppc_embed_control(memory, cpu.gpr[3], cpu.gpr[4]);
+                    // Upstream's GetSuperControl, CountSubControls and the
+                    // rest read the hierarchy from the control records.
+                    if err == PPC_NO_ERR {
+                        let _ = self::ppc_embed_control(controls, cpu.gpr[3], cpu.gpr[4]);
+                    }
+                    result(err)
+                }
                 // FindControlUnderMouse(inWhere, inWindow, VAR outPart):
                 // ControlHandle, the part code in the VAR parameter.
                 Op::FindControlUnderMouse => {
@@ -255,6 +283,48 @@ pub(super) fn dispatch_control_import(
                         let _ = memory.write_u32_be(cpu.gpr[4], 0);
                     }
                     result(PPC_NO_ERR)
+                }
+                // The fork keeps the two tags its drawing reads ('font' and
+                // 'dflt'); any other tag is upstream's to store and return.
+                Op::SetControlData if !ppc_control_data_tag_is_drawn(cpu.gpr[5]) => {
+                    ppc_dispatch_legacy_control(
+                        PpcLegacyControlOperation::SetControlData,
+                        cpu,
+                        process_memory_manager,
+                        memory,
+                        heap_cursor,
+                        heap_limit,
+                        last_mem_error,
+                        handles,
+                        controls,
+                        gworlds,
+                        screen_clut,
+                        toolbox_startup,
+                        input,
+                        vfs_resources,
+                        current_resource_refnum,
+                        last_resource_error,
+                    )
+                }
+                Op::GetControlData if !ppc_control_data_tag_is_drawn(cpu.gpr[5]) => {
+                    ppc_dispatch_legacy_control(
+                        PpcLegacyControlOperation::GetControlData,
+                        cpu,
+                        process_memory_manager,
+                        memory,
+                        heap_cursor,
+                        heap_limit,
+                        last_mem_error,
+                        handles,
+                        controls,
+                        gworlds,
+                        screen_clut,
+                        toolbox_startup,
+                        input,
+                        vfs_resources,
+                        current_resource_refnum,
+                        last_resource_error,
+                    )
                 }
                 Op::SetControlData => result(ppc_set_control_data(memory, cpu)),
                 Op::GetControlData => result(ppc_get_control_data(memory, cpu)),

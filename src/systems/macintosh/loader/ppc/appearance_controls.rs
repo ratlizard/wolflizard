@@ -64,6 +64,25 @@ const CONTROL_PUSH_BUTTON_DEFAULT_TAG: [u8; 4] = *b"dflt";
 
 /// kControlSliderProc (48) and its variants: bit 0 live feedback, bit 1 tick
 /// marks, bit 2 reverse direction, bit 3 non-directional.
+/// The fork's operation for a call upstream classifies as a classic
+/// control call; see `dispatch_control_import`.
+pub(super) fn ppc_appearance_op_for_legacy(
+    operation: super::dispatch_control::PpcLegacyControlOperation,
+) -> Option<PpcAppearanceControlOperation> {
+    use super::dispatch_control::PpcLegacyControlOperation as Legacy;
+    use PpcAppearanceControlOperation as Op;
+    Some(match operation {
+        Legacy::CreateRootControl => Op::CreateRootControl,
+        Legacy::EmbedControl => Op::EmbedControl,
+        Legacy::FindControlUnderMouse => Op::FindControlUnderMouse,
+        Legacy::HandleControlClick => Op::HandleControlClick,
+        Legacy::IdleControls => Op::IdleControls,
+        Legacy::SetControlData => Op::SetControlData,
+        Legacy::GetControlData => Op::GetControlData,
+        _ => return None,
+    })
+}
+
 pub(super) fn ppc_is_slider_proc_id(proc_id: i16) -> bool {
     (48..=63).contains(&proc_id)
 }
@@ -137,7 +156,9 @@ pub(super) fn ppc_create_root_control(
     let (window, out_control) = (cpu.gpr[3], cpu.gpr[4]);
     let (root, err) = if window == 0 {
         (0, PPC_PARAM_ERR)
-    } else if let Some(existing) = ppc_window_root_control(window) {
+    } else if let Some(existing) = ppc_window_root_control(window)
+        .filter(|root| controls.iter().any(|record| record.handle == *root))
+    {
         (existing, ERR_ROOT_ALREADY_EXISTS)
     } else {
         let bounds = ppc_read_rect(memory, window.wrapping_add(16)).unwrap_or((0, 0, 0, 0));
@@ -220,6 +241,12 @@ pub(super) fn ppc_set_control_data(memory: &mut PpcSectionMem, cpu: &PpcCpu) -> 
         TAGGED.with(|tagged| tagged.borrow_mut().insert((control, part, tag), bytes));
         PPC_NO_ERR
     }
+}
+
+/// Whether a SetControlData or GetControlData tag is one this file keeps:
+/// the font style and the default-button flag, which the drawing reads.
+pub(super) fn ppc_control_data_tag_is_drawn(tag: u32) -> bool {
+    matches!(tag.to_be_bytes(), CONTROL_FONT_STYLE_TAG | CONTROL_PUSH_BUTTON_DEFAULT_TAG)
 }
 
 /// Whether SetControlData('dflt') made a push button the default one.

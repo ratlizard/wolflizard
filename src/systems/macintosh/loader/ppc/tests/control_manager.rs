@@ -2254,13 +2254,14 @@ fn control_hit_testing_and_tracking_commands_dispatch_with_canonical_evaluation(
                 0,
                 0,
                 100,
-                0x0033,
+                0x0003,
                 0x9999_8888,
             )
         );
         assert_ne!(handle, 0);
 
-        // 1. GetControlVariant(handle) -> 3 (since proc_id 0x0033 & 0x0F == 3)
+        // 1. GetControlVariant(handle) -> 3 (since proc_id 0x0003 & 0x0F == 3; not
+        // 0x0033, a slider, whose thumb answers kControlIndicatorPart)
         loaded.imports[0].dispatcher_target = dispatcher_target_for_import(lib_str, "GetControlVariant");
         loaded.cpu.pc = loaded.entry_pc;
         loaded.cpu.lr = PPC_HALT_PC;

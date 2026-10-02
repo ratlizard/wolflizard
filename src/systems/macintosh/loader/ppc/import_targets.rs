@@ -4654,13 +4654,6 @@ pub(crate) fn dispatcher_target_for_import(
             "InterfaceLib" | "AppearanceLib" | "DialogsLib" | "CarbonLib",
             "NewDialog" | "NewColorDialog" | "NewCDialog",
         ) => PpcImportDispatcherTarget::NewDialog,
-        ("AppearanceLib" | "InterfaceLib", symbol)
-            if appearance_controls::ppc_appearance_control_symbol_op(symbol).is_some() =>
-        {
-            PpcImportDispatcherTarget::AppearanceControl(
-                appearance_controls::ppc_appearance_control_symbol_op(symbol).expect("checked"),
-            )
-        }
         ("InterfaceLib" | "AppearanceLib", "RegisterAppearanceClient") => {
             PpcImportDispatcherTarget::RegisterAppearanceClient
         }
@@ -7896,6 +7889,13 @@ pub(crate) fn dispatcher_target_for_import(
         {
             PpcImportDispatcherTarget::Glu(
                 super::classic_gl::glu::GluFunction::from_name(symbol).expect("checked"),
+            )
+        }
+        ("AppearanceLib" | "InterfaceLib", symbol)
+            if appearance_controls::ppc_appearance_control_symbol_op(symbol).is_some() =>
+        {
+            PpcImportDispatcherTarget::AppearanceControl(
+                appearance_controls::ppc_appearance_control_symbol_op(symbol).expect("checked"),
             )
         }
         _ => PpcImportDispatcherTarget::Unsupported,

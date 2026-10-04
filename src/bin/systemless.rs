@@ -4455,15 +4455,18 @@ fn main() {
     let cli = Cli::parse()
         .validate_renderer()
         .unwrap_or_else(|error| error.exit());
-    if !cli.prefer_classic_68k {
+    // An explicit CLI choice takes precedence over a preference inherited
+    // from the parent process or native application relaunch; with neither
+    // flag, SYSTEMLESS_PREFER_POWERPC in the environment is left as it is
+    // (0 prefers the 68K slice), and unset it means PowerPC.
+    if cli.prefer_classic_68k {
         // SAFETY: the runner has not started and no worker threads exist yet.
-        unsafe { std::env::set_var("SYSTEMLESS_PREFER_POWERPC", "1") };
-        eprintln!("[SYSTEMLESS] Native PowerPC slice preferred when available");
-    } else {
-        // An explicit CLI choice takes precedence over a preference inherited
-        // from the parent process or native application relaunch.
         unsafe { std::env::set_var("SYSTEMLESS_PREFER_POWERPC", "0") };
         eprintln!("[SYSTEMLESS] Classic 68K slice preferred when available");
+    } else if cli.prefer_powerpc || std::env::var_os("SYSTEMLESS_PREFER_POWERPC").is_none() {
+        // SAFETY: as above.
+        unsafe { std::env::set_var("SYSTEMLESS_PREFER_POWERPC", "1") };
+        eprintln!("[SYSTEMLESS] Native PowerPC slice preferred when available");
     }
     let use_wgpu = cli.renderer.uses_wgpu(cli.gpu);
     eprintln!(

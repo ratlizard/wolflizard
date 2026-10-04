@@ -283,7 +283,8 @@ struct Cli {
     )]
     headless_start_time: Option<u32>,
 
-    /// Prefer a native PowerPC slice when a classic 68K slice is also available
+    /// Prefer a native PowerPC slice when a classic 68K slice is also available.
+    /// This is the default; SYSTEMLESS_PREFER_POWERPC=0 prefers the 68K slice
     #[arg(long, visible_alias = "prefer-ppc")]
     prefer_powerpc: bool,
 
@@ -4248,7 +4249,7 @@ fn run_headless(
 
 fn main() {
     let cli = Cli::parse();
-    if cli.prefer_powerpc {
+    if cli.prefer_powerpc || std::env::var_os("SYSTEMLESS_PREFER_POWERPC").is_none() {
         // SAFETY: the runner has not started and no worker threads exist yet.
         unsafe { std::env::set_var("SYSTEMLESS_PREFER_POWERPC", "1") };
         eprintln!("[SYSTEMLESS] Native PowerPC slice preferred");

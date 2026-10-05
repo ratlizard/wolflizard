@@ -26,6 +26,10 @@ pub struct PpcToolboxStartupState {
     /// The menu bar height HideMenuBar saved, while the bar is hidden.
     pub(crate) hidden_menu_bar_height: Option<u16>,
     pub(super) fullscreen: Option<dispatch_window::PpcFullScreenState>,
+    /// The Help menu's item was chosen in MenuSelect, which answered the
+    /// application 0; the dispatcher turns the balloons on or off for it
+    /// (systemless/balloons-aobtjf).
+    pub(crate) help_menu_chosen: bool,
     pub(crate) pending_native_menu_selection: SharedNativeMenuSelection,
     pub(crate) execution: ExecutionMenuViews,
     /// Process-owned 68k switch marker/gateway and compatibility stack used
@@ -169,6 +173,7 @@ impl Default for PpcToolboxStartupState {
             host_menu_bar_hidden: false,
             hidden_menu_bar_height: None,
             fullscreen: None,
+            help_menu_chosen: false,
             pending_native_menu_selection: SharedNativeMenuSelection::default(),
             execution: ExecutionMenuViews::detached(),
             mixed_mode_m68k: SharedProcessMixedModeM68kState::default(),

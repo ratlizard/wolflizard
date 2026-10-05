@@ -472,6 +472,7 @@ pub enum PpcImportDispatcherTarget {
     StdTxMeas,
     IsOutline,
     OutlineMetrics,
+    HMRemoveBalloon,
     HMIsBalloon,
     HMSetBalloons,
     HiliteMenu,
@@ -3700,6 +3701,11 @@ pub(crate) fn dispatcher_target_for_import(
         ("InterfaceLib" | "AppearanceLib" | "CarbonLib", "HMGetBalloons" | "hmgetballoons") => {
             PpcImportDispatcherTarget::HMGetBalloons
         }
+        // As the 68K Pack14 does: the balloon is kept for the host to
+        // draw while balloons are on, and hmHelpDisabled answers while they
+        // are off (More Macintosh Toolbox (1993), pp. 3-100 to 3-107).
+        // HMShowBalloon is upstream's binding, below.
+        ("InterfaceLib" | "CarbonLib", "HMRemoveBalloon") => PpcImportDispatcherTarget::HMRemoveBalloon,
         ("InterfaceLib" | "AppearanceLib" | "CarbonLib", "HMIsBalloon" | "hmisballoon") => {
             PpcImportDispatcherTarget::HMIsBalloon
         }
@@ -4135,9 +4141,7 @@ pub(crate) fn dispatcher_target_for_import(
         ("InterfaceLib", "CloseDriver" | "KillIO" | "SerReset" | "SerSetBuf" | "SerGetBuf") => {
             PpcImportDispatcherTarget::ToolboxCompat(PpcToolboxCompatOperation::UnopenedDriver)
         }
-        // HMRemoveBalloon succeeds with no balloon shown; GZSaveHnd is nil
-        // outside a grow-zone procedure.
-        ("InterfaceLib" | "CarbonLib", "HMRemoveBalloon") => PpcImportDispatcherTarget::ReturnNoErr,
+        // GZSaveHnd is nil outside a grow-zone procedure.
         ("InterfaceLib", "GZSaveHnd") => PpcImportDispatcherTarget::ReturnNoErr,
         ("InterfaceLib", "GetRegionBounds") => {
             PpcImportDispatcherTarget::ToolboxCompat(PpcToolboxCompatOperation::GetRegionBounds)

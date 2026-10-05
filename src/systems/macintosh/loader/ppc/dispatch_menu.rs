@@ -950,29 +950,6 @@ pub(super) fn dispatch_menu_import(context: PpcMenuDispatchContext<'_>) -> Optio
                 crate::menu_manager::HM_HELP_MANAGER_NOT_INITED_ERR,
             )))
         }
-        PpcImportDispatcherTarget::HMGetBalloons => {
-            // HMGetBalloons returns whether Balloon Help is enabled.
-            // Inside Macintosh VI (1991), chapter 11, pp. 11-65–11-66.
-            Some(PpcImportAction::Return(u32::from(
-                toolbox_startup.help_balloons_enabled,
-            )))
-        }
-        PpcImportDispatcherTarget::HMShowBalloon => {
-            // Inside Macintosh: More Macintosh Toolbox (HMShowBalloon): no
-            // balloon is shown while Balloon Help is off (hmHelpDisabled).
-            // The runtime does not draw help balloons, so when it is on the
-            // request ends as hmBalloonAborted, the result for a balloon that
-            // could not be kept on screen.
-            const HM_HELP_DISABLED: i16 = -850;
-            const HM_BALLOON_ABORTED: i16 = -853;
-            Some(PpcImportAction::Return(ppc_i16_result(
-                if toolbox_startup.help_balloons_enabled {
-                    HM_BALLOON_ABORTED
-                } else {
-                    HM_HELP_DISABLED
-                },
-            )))
-        }
         PpcImportDispatcherTarget::SetMCEntries => {
             // Inside Macintosh Volume V (SetMCEntries): copies numEntries
             // MCEntry records into the menu color information table,
@@ -1015,25 +992,6 @@ pub(super) fn dispatch_menu_import(context: PpcMenuDispatchContext<'_>) -> Optio
                 }
             }
             Some(PpcImportAction::ReturnPreserve)
-        }
-        PpcImportDispatcherTarget::HMSetBalloons => {
-            // HMSetBalloons (InterfaceLib)
-            // Updates the modeled Balloon Help setting.
-            // FUNCTION HMSetBalloons(flag: Boolean): OSErr;
-            // Inside Macintosh Volume VI (1991), chapter 11, p. 11-65.
-            let params = crate::menu_manager::evaluate_hm_set_balloons_parameters(cpu.gpr[3]);
-            toolbox_startup.help_balloons_enabled = params.enabled();
-            Some(PpcImportAction::Return(ppc_i16_result(PPC_NO_ERR)))
-        }
-        PpcImportDispatcherTarget::HMIsBalloon => {
-            // HMIsBalloon (InterfaceLib)
-            // Reports whether a help balloon is currently displayed.
-            // FUNCTION HMIsBalloon: Boolean;
-            // Inside Macintosh Volume VI (1991), chapter 11, p. 11-66.
-            // The 68k Pack14 path has the same no-balloon state.
-            Some(PpcImportAction::Return(u32::from(
-                crate::menu_manager::evaluate_hm_is_balloon(),
-            )))
         }
         PpcImportDispatcherTarget::HiliteMenu => {
             // HiliteMenu first restores the currently highlighted title, then

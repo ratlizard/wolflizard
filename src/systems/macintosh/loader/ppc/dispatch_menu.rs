@@ -23,6 +23,7 @@ pub(super) struct PpcMenuDispatchContext<'a> {
     pub(super) current_gdevice: &'a mut u32,
     pub(super) event_queue: &'a mut EventQueue,
     pub(super) input: PpcInputSnapshot,
+    pub(super) help_balloons: &'a SharedProcessHelpBalloons,
 }
 
 pub(super) fn dispatch_menu_import(context: PpcMenuDispatchContext<'_>) -> Option<PpcImportAction> {
@@ -47,6 +48,7 @@ pub(super) fn dispatch_menu_import(context: PpcMenuDispatchContext<'_>) -> Optio
         current_gdevice,
         event_queue,
         input,
+        help_balloons,
     } = context;
 
     match binding.dispatcher_target {
@@ -866,6 +868,21 @@ pub(super) fn dispatch_menu_import(context: PpcMenuDispatchContext<'_>) -> Optio
             )))
         }
         PpcImportDispatcherTarget::DrawMenuBar => {
+            {
+                let mut allocator = PpcProcessAllocatorView {
+                    memory_manager: process_memory_manager,
+                };
+                ppc_ensure_help_menu(
+                    Some(&mut allocator),
+                    memory,
+                    heap_cursor,
+                    heap_limit,
+                    last_mem_error,
+                    handles,
+                    help_balloons.enabled(),
+                );
+                *current_menu_list = ppc_current_menu_list(memory);
+            }
             // An explicit draw satisfies any earlier deferred request.
             event_queue.take_menu_bar_invalidation();
             toolbox_startup.menu_bar_draw_count =

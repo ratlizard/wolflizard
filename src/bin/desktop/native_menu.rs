@@ -98,12 +98,9 @@ impl GuestMenuTarget {
     }
 }
 
-use systemless::menu_model::HELP_MENU_ID;
 
 pub struct NativeMenuBridge {
     app_name: String,
-    balloons_on: bool,
-    help_item: Option<Retained<NSMenuItem>>,
     target: Option<Retained<GuestMenuTarget>>,
     main_menu: Option<Retained<NSMenu>>,
     guest_menus: Vec<(Retained<NSMenu>, isize)>,
@@ -115,8 +112,6 @@ impl NativeMenuBridge {
     pub fn new(app_name: String) -> Self {
         Self {
             app_name,
-            balloons_on: std::env::var("SYSTEMLESS_BALLOONS").is_ok_and(|v| v == "1"),
-            help_item: None,
             target: None,
             main_menu: None,
             guest_menus: Vec::new(),
@@ -137,25 +132,8 @@ impl NativeMenuBridge {
         self.app_name = app_name;
     }
 
-    pub fn drain_commands(&mut self) -> Vec<(i16, i16)> {
-        let commands: Vec<(i16, i16)> = commands().lock().unwrap().drain(..).collect();
-        for &(menu, item) in &commands {
-            if (menu, item) == (HELP_MENU_ID, 1) {
-                self.balloons_on = !self.balloons_on;
-                if let Some(help_item) = &self.help_item {
-                    unsafe { help_item.setTitle(&NSString::from_str(self.help_title())) };
-                }
-            }
-        }
-        commands
-    }
-
-    fn help_title(&self) -> &'static str {
-        if self.balloons_on {
-            "Hide Balloons"
-        } else {
-            "Show Balloons"
-        }
+    pub fn drain_commands(&self) -> Vec<(i16, i16)> {
+        commands().lock().unwrap().drain(..).collect()
     }
 
     pub fn sync(&mut self, snapshot: GuestMenuSnapshot) {
@@ -216,30 +194,6 @@ impl NativeMenuBridge {
                 guest_process_name = Some(root_title.to_owned());
             }
             root_items.push((root_item, root_title.to_owned()));
-        }
-
-        // The Help menu, last, as the system's is on a Mac.
-        {
-            let help_root = new_item("Help", None, "", mtm);
-            let help_menu = new_menu("Help", mtm);
-            let item = new_item(
-                self.help_title(),
-                Some(sel!(systemlessGuestMenuItemSelected:)),
-                "",
-                mtm,
-            );
-            let packed = ((HELP_MENU_ID as u16 as u32) << 16) | 1;
-            unsafe {
-                item.setTarget(Some(
-                    &**self.target.as_ref().expect("native menu target initialized"),
-                ));
-                item.setTag(packed as isize);
-            }
-            help_menu.addItem(&item);
-            help_root.setSubmenu(Some(&help_menu));
-            unsafe { help_root.setTitle(&NSString::from_str("Help")) };
-            main_menu.addItem(&help_root);
-            self.help_item = Some(item);
         }
 
         let app = NSApplication::sharedApplication(mtm);

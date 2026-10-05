@@ -20,6 +20,10 @@ pub struct PpcToolboxStartupState {
     pub menu_bar_draw_count: u32,
     pub host_menu_bar_hidden: bool,
     pub(super) fullscreen: Option<dispatch_window::PpcFullScreenState>,
+    /// The Help menu's item was chosen in MenuSelect, which answered the
+    /// application 0; the dispatcher turns the balloons on or off for it
+    /// (systemless/balloons-aobtjf).
+    pub(crate) help_menu_chosen: bool,
     pub(crate) pending_native_menu_selection: SharedNativeMenuSelection,
     pub(crate) execution: ExecutionMenuViews,
     /// Process-owned 68k switch marker/gateway and compatibility stack used
@@ -143,6 +147,7 @@ impl Default for PpcToolboxStartupState {
             menu_bar_draw_count: 0,
             host_menu_bar_hidden: false,
             fullscreen: None,
+            help_menu_chosen: false,
             pending_native_menu_selection: SharedNativeMenuSelection::default(),
             execution: ExecutionMenuViews::detached(),
             mixed_mode_m68k: SharedProcessMixedModeM68kState::default(),

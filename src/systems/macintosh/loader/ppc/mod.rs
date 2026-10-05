@@ -63,7 +63,7 @@ use crate::process_context::{
     ProcessSyntheticAppleEvent, ProcessVfsFileRecords, ProcessVfsResourceFileRecords,
     ProcessWorkingDirectory, SharedProcessAppleEventDescriptors, SharedProcessAppleEventHandlers,
     SharedProcessAppleEventLaunchState, SharedProcessCallbackScheduling,
-    SharedProcessCollectionManager, SharedProcessControlManager, SharedProcessCursorState,
+    SharedProcessCollectionManager, SharedProcessControlManager, SharedProcessCursorState, SharedProcessHelpBalloons,
     SharedProcessDragManager,
     SharedProcessDialogText, SharedProcessDisplayClut, SharedProcessDisplayGamma,
     SharedProcessEventQueue, SharedProcessFileSystem, SharedProcessGraphicsDevice,

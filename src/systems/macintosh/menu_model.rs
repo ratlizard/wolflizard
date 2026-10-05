@@ -100,3 +100,10 @@ mod tests {
         assert_eq!(snapshot(true, parent).selectable_result(-120, 2), None);
     }
 }
+
+/// The Help Manager's menu ID, kHMHelpMenuID (More Macintosh Toolbox (1993),
+/// p. 3-15). A host's Help menu has one item, Show Balloons (Hide Balloons
+/// while they are on), which the runner answers by turning balloons on or
+/// off rather than passing the choice to the game, as MenuSelect keeps it
+/// from the application on a Mac.
+pub const HELP_MENU_ID: i16 = -16490;

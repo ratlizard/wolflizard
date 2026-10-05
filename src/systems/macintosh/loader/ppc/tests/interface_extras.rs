@@ -164,12 +164,18 @@ fn color_picker_service_window_and_balloon_calls_report_absent_ui() {
     assert_eq!(loaded.cpu.gpr[3], 0);
     assert_eq!(loaded.memory.read_u32_be(SCRATCH + 0x20), Some(0));
 
-    loaded.toolbox_startup.help_balloons_enabled = false;
+    // The Help Manager keeps its own switch, which HMSetBalloons sets, and
+    // shows a balloon whose message it can read: a nil message is
+    // resNotFound once balloons are on.
+    loaded.cpu.gpr[3] = 0;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::HMSetBalloons);
     run_test_import(&mut loaded, PpcImportDispatcherTarget::HMShowBalloon);
     assert_eq!(loaded.cpu.gpr[3], ppc_i16_result(-850));
-    loaded.toolbox_startup.help_balloons_enabled = true;
+    loaded.cpu.gpr[3] = 1;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::HMSetBalloons);
+    loaded.cpu.gpr[3] = 0;
     run_test_import(&mut loaded, PpcImportDispatcherTarget::HMShowBalloon);
-    assert_eq!(loaded.cpu.gpr[3], ppc_i16_result(-853));
+    assert_eq!(loaded.cpu.gpr[3], ppc_i16_result(-192));
 
     run_test_import(&mut loaded, PpcImportDispatcherTarget::IsOutline);
     assert_eq!(loaded.cpu.gpr[3], 0);

@@ -1,7 +1,7 @@
 //! Complete presentation data owned independently of the Macintosh runner.
 
 use std::sync::Arc;
-use systemless::display::{CursorImage, PackedScreenFrame};
+use systemless::display::{CursorImage, HelpBalloon, PackedScreenFrame};
 use systemless::memory::CompactPresentation;
 #[cfg(target_os = "macos")]
 use systemless::trap::dispatch::ScreenCopyBitsRect;
@@ -15,6 +15,7 @@ pub(super) struct GuiFrame {
     pub screen: PackedScreenFrame,
     pub retained: Option<Arc<CompactPresentation>>,
     pub cursor: Option<CursorImage>,
+    pub help_balloon: Option<HelpBalloon>,
     pub mouse_position: (i16, i16),
     pub debug_lines: Vec<String>,
     #[cfg(target_os = "macos")]

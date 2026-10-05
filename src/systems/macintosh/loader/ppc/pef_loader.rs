@@ -1267,6 +1267,7 @@ fn load_pef_application_with_optional_disk_fragment(
         quickdraw_text_mode: PPC_QD_TEXT_MODE_SRC_OR,
         quickdraw_text_size: PPC_QD_TEXT_SIZE_SYSTEM,
         cursor_state: SharedProcessCursorState::default(),
+        help_balloons: SharedProcessHelpBalloons::default(),
         param_text: SharedProcessDialogText::default(),
         scrap: PpcScrapState::default(),
         list_manager: PpcListManagerState::default(),

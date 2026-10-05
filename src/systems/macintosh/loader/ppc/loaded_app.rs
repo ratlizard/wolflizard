@@ -103,6 +103,7 @@ pub struct PpcLoadedApp {
     pub quickdraw_text_mode: i16,
     pub quickdraw_text_size: i16,
     pub(crate) cursor_state: SharedProcessCursorState,
+    pub(crate) help_balloons: SharedProcessHelpBalloons,
     pub(crate) param_text: SharedProcessDialogText,
     pub scrap: PpcScrapState,
     pub(crate) list_manager: PpcListManagerState,

@@ -13,6 +13,7 @@ pub(super) struct PpcCursorDispatchContext<'a> {
     pub(super) current_resource_refnum: i16,
     pub(super) last_resource_error: &'a mut i16,
     pub(super) cursor_state: &'a SharedProcessCursorState,
+    pub(super) help_balloons: &'a SharedProcessHelpBalloons,
     pub(super) gworlds: &'a [PpcGWorldRecord],
     pub(super) current_gworld: u32,
     pub(super) screen_clut: &'a [[u16; 3]; 256],
@@ -34,6 +35,7 @@ pub(super) fn dispatch_cursor_import(
         current_resource_refnum,
         last_resource_error,
         cursor_state,
+        help_balloons,
         gworlds,
         current_gworld,
         screen_clut,
@@ -153,6 +155,71 @@ pub(super) fn dispatch_cursor_import(
             Some(PpcImportAction::ReturnPreserve)
         }
         PpcImportDispatcherTarget::DisposeCCursor => Some(PpcImportAction::ReturnPreserve),
+        // The Help Manager's balloons, as the 68K Pack14 keeps them: the
+        // balloon up is kept for the host to draw over the screen, as the
+        // cursor is (systemless/balloons-aobtjf). More Macintosh Toolbox
+        // (1993), pp. 3-98 to 3-107.
+        PpcImportDispatcherTarget::HMGetBalloons => {
+            Some(PpcImportAction::Return(u32::from(help_balloons.enabled())))
+        }
+        PpcImportDispatcherTarget::HMIsBalloon => {
+            Some(PpcImportAction::Return(u32::from(help_balloons.is_up())))
+        }
+        PpcImportDispatcherTarget::HMSetBalloons => {
+            help_balloons.set_enabled(cpu.gpr[3] as u8 != 0);
+            Some(PpcImportAction::Return(0))
+        }
+        PpcImportDispatcherTarget::HMRemoveBalloon => {
+            if std::env::var_os("SYSTEMLESS_TRACE_BALLOONS").is_some() {
+                eprintln!("[BALLOON] HMRemoveBalloon");
+            }
+            help_balloons.remove();
+            Some(PpcImportAction::Return(0))
+        }
+        // HMShowBalloon(aHelpMsg, tip, alternateRect, tipProc, theProc,
+        // variant, method): r3 the message, r4 the tip as one word (v in
+        // the high half), r5 the rectangle or nil. Placement and the rest
+        // are the host's, which draws one balloon shape.
+        PpcImportDispatcherTarget::HMShowBalloon => {
+            if !help_balloons.enabled() {
+                if std::env::var_os("SYSTEMLESS_TRACE_BALLOONS").is_some() {
+                    eprintln!("[BALLOON] HMShowBalloon while balloons are off");
+                }
+                return Some(PpcImportAction::Return(ppc_i16_result(-850)));
+            }
+            let (msg, tip_word, rect) = (cpu.gpr[3], cpu.gpr[4], cpu.gpr[5]);
+            let tip = ((tip_word >> 16) as u16 as i16, tip_word as u16 as i16);
+            let hot_rect = (rect != 0).then(|| {
+                let mut word = |at: u32| memory.read_u16_be(rect + at).unwrap_or(0) as i16;
+                (word(0), word(2), word(4), word(6))
+            });
+            let text = ppc_help_message_text(
+                cpu,
+                process_memory_manager,
+                memory,
+                heap_cursor,
+                heap_limit,
+                last_mem_error,
+                handles,
+                vfs_resources,
+                current_resource_refnum,
+                last_resource_error,
+                msg,
+            );
+            if std::env::var_os("SYSTEMLESS_TRACE_BALLOONS").is_some() {
+                eprintln!(
+                    "[BALLOON] HMShowBalloon msg=${msg:08X} tip={tip:?} rect={hot_rect:?} -> {:?}",
+                    text.as_deref().map(String::from_utf8_lossy)
+                );
+            }
+            match text {
+                Some(text) => {
+                    help_balloons.show(crate::display::HelpBalloon { text, tip, hot_rect });
+                    Some(PpcImportAction::Return(0))
+                }
+                None => Some(PpcImportAction::Return(ppc_i16_result(-192))),
+            }
+        }
         _ => None,
     }
 }
@@ -910,4 +977,76 @@ fn ppc_get_cursor(
         true,
         last_resource_error,
     )
+}
+
+/// The text an HMMessageRecord names, as the 68K Help Manager reads it
+/// (TrapDispatcher::help_message_text): an inline Pascal string (1), a
+/// 'STR#' entry (3: resource ID, index) or a whole 'STR ' (7). The resource
+/// is got as GetResource gets it, so it stays loaded as the game's own
+/// GetIndString would leave it.
+#[allow(clippy::too_many_arguments)]
+fn ppc_help_message_text(
+    cpu: &mut PpcCpu,
+    process_memory_manager: &mut ProcessNativeMemoryManager,
+    memory: &mut PpcSectionMem,
+    heap_cursor: &mut u32,
+    heap_limit: u32,
+    last_mem_error: &mut i16,
+    handles: &mut Vec<PpcHandleRecord>,
+    vfs_resources: &mut Vec<PpcVfsResourceRecord>,
+    current_resource_refnum: i16,
+    last_resource_error: &mut i16,
+    msg: u32,
+) -> Option<Vec<u8>> {
+    if msg == 0 {
+        return None;
+    }
+    let pstring = |memory: &mut PpcSectionMem, at: u32| -> Option<Vec<u8>> {
+        let len = memory.read_u8(at)? as u32;
+        (1..=len).map(|k| memory.read_u8(at + k)).collect()
+    };
+    let mut resource = |memory: &mut PpcSectionMem, res_type: &[u8; 4], id: i16| -> Option<u32> {
+        let saved = (cpu.gpr[3], cpu.gpr[4]);
+        cpu.gpr[3] = u32::from_be_bytes(*res_type);
+        cpu.gpr[4] = id as u16 as u32;
+        let handle = ppc_get_resource(
+            cpu,
+            process_memory_manager,
+            memory,
+            heap_cursor,
+            heap_limit,
+            last_mem_error,
+            handles,
+            vfs_resources,
+            current_resource_refnum,
+            false,
+            true,
+            last_resource_error,
+        );
+        (cpu.gpr[3], cpu.gpr[4]) = saved;
+        (handle != 0).then(|| memory.read_u32_be(handle)).flatten().filter(|p| *p != 0)
+    };
+    match memory.read_u16_be(msg)? {
+        1 => pstring(memory, msg + 2),
+        3 => {
+            let id = memory.read_u16_be(msg + 2)? as i16;
+            let index = u32::from(memory.read_u16_be(msg + 4)?);
+            let data = resource(memory, b"STR#", id)?;
+            let count = u32::from(memory.read_u16_be(data)?);
+            if index == 0 || index > count {
+                return None;
+            }
+            let mut at = data + 2;
+            for _ in 1..index {
+                at += 1 + u32::from(memory.read_u8(at)?);
+            }
+            pstring(memory, at)
+        }
+        7 => {
+            let id = memory.read_u16_be(msg + 2)? as i16;
+            let data = resource(memory, b"STR ", id)?;
+            pstring(memory, data)
+        }
+        _ => None,
+    }
 }

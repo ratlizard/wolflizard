@@ -229,6 +229,14 @@ impl GuiDriver {
             }
             GuiCommand::KeyDown { key, character } => runner.push_key_down(key, character),
             GuiCommand::KeyUp { key, character } => runner.push_key_up(key, character),
+            // The Help menu's Show Balloons and Hide Balloons are the
+            // system's, not the application's: MenuSelect handles them
+            // itself and the application never sees the choice. More
+            // Macintosh Toolbox (1993), p. 3-15 (kHMHelpMenuID, -16490).
+            GuiCommand::Menu { menu: systemless::menu_model::HELP_MENU_ID, item: 1 } => {
+                let on = runner.dispatcher().help_balloons_enabled();
+                runner.dispatcher_mut().set_help_balloons_enabled(!on);
+            }
             GuiCommand::Menu { menu, item } => {
                 runner.select_guest_menu_item(menu, item);
             }
@@ -354,6 +362,7 @@ impl GuiDriver {
             &runner.dispatcher().device_gamma(),
         );
         output.cursor = runner.dispatcher().cursor().cloned();
+        output.help_balloon = runner.dispatcher().help_balloon();
         output.mouse_position = runner.dispatcher().mouse_position();
         output.debug_lines = debug
             .map(|stats| runner.debug_overlay_snapshot(stats).lines())

@@ -273,6 +273,7 @@ pub(super) fn halted_ppc_app_with_sound(sound: PpcSoundState) -> LoadedApp {
         quickdraw_text_mode: PPC_QD_TEXT_MODE_SRC_OR,
         quickdraw_text_size: PPC_QD_TEXT_SIZE_SYSTEM,
         cursor_state: crate::process_context::SharedProcessCursorState::default(),
+        help_balloons: crate::process_context::SharedProcessHelpBalloons::default(),
         param_text: Default::default(),
         scrap: Default::default(),
         list_manager: Default::default(),

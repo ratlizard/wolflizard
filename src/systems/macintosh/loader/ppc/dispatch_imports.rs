@@ -101,6 +101,7 @@ pub(crate) struct PpcDispatchContext<'a> {
     pub(crate) quickdraw_text_mode: &'a mut i16,
     pub(crate) quickdraw_text_size: &'a mut i16,
     pub(crate) cursor_state: &'a SharedProcessCursorState,
+    pub(crate) help_balloons: &'a SharedProcessHelpBalloons,
     pub(crate) vfs_volumes: &'a [PpcVfsVolumeRecord],
     pub(crate) vfs_directories: &'a mut Vec<PpcVfsDirectory>,
     pub(crate) next_vfs_dir_id: &'a mut u32,
@@ -216,6 +217,7 @@ pub(crate) fn dispatch_supported_import(
         quickdraw_text_mode,
         quickdraw_text_size,
         cursor_state,
+        help_balloons,
         vfs_volumes,
         vfs_directories,
         next_vfs_dir_id,
@@ -1227,6 +1229,7 @@ pub(crate) fn dispatch_supported_import(
             current_resource_refnum: *current_resource_refnum,
             last_resource_error,
             cursor_state,
+            help_balloons,
             gworlds,
             current_gworld: *current_gworld,
             screen_clut,
@@ -1405,7 +1408,6 @@ pub(crate) fn dispatch_supported_import(
         | PpcImportDispatcherTarget::InvalMenuBar
         | PpcImportDispatcherTarget::FlashMenuBar
         | PpcImportDispatcherTarget::HMGetHelpMenuHandle
-        | PpcImportDispatcherTarget::HMGetBalloons
         | PpcImportDispatcherTarget::HiliteMenu
         | PpcImportDispatcherTarget::MenuNoop
         | PpcImportDispatcherTarget::MenuKey
@@ -1608,8 +1610,13 @@ pub(crate) fn dispatch_supported_import(
         | PpcImportDispatcherTarget::DisposeCCursor
         | PpcImportDispatcherTarget::GetCIcon
         | PpcImportDispatcherTarget::PlotCIcon
-        | PpcImportDispatcherTarget::DisposeCIcon => {
-            unreachable!("cursor and cicon imports return through dispatch_cursor_import")
+        | PpcImportDispatcherTarget::DisposeCIcon
+        | PpcImportDispatcherTarget::HMGetBalloons
+        | PpcImportDispatcherTarget::HMShowBalloon
+        | PpcImportDispatcherTarget::HMRemoveBalloon
+        | PpcImportDispatcherTarget::HMIsBalloon
+        | PpcImportDispatcherTarget::HMSetBalloons => {
+            unreachable!("cursor, cicon and balloon imports return through dispatch_cursor_import")
         }
         PpcImportDispatcherTarget::FSClose
         | PpcImportDispatcherTarget::PBClose

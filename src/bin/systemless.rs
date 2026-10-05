@@ -2330,6 +2330,7 @@ impl App {
         let compact_ready = self.gpu.is_some()
             && retained.is_some()
             && cursor.is_none()
+            && frame.help_balloon.is_none()
             && !self.debug_overlay_visible;
         // Metal resolves retained text coverage on the GPU, like D3D11 above.
         // Host cursors and debug text still patch a CPU image first.
@@ -2342,6 +2343,7 @@ impl App {
             .is_some_and(|surface| surface.supports_compact() && !surface.undither())
             && retained.is_some()
             && cursor.is_none()
+            && frame.help_balloon.is_none()
             && !self.debug_overlay_visible;
         #[cfg(not(any(target_os = "windows", target_os = "macos")))]
         let compact_ready = false;
@@ -2350,10 +2352,13 @@ impl App {
             frame.screen.render_argb(&mut frame_argb);
             let guest = retained
                 .as_ref()
-                .filter(|_| cursor.is_some() || self.debug_overlay_visible)
+                .filter(|_| cursor.is_some() || frame.help_balloon.is_some() || self.debug_overlay_visible)
                 .map(|_| refresh_guest_frame(&mut self.guest_frame_argb, &frame_argb));
             if let Some(cursor) = cursor.as_ref() {
                 display::render_cursor_argb(&mut frame_argb, game_w, game_h, cursor, mouse_pos);
+            }
+            if let Some(balloon) = frame.help_balloon.as_ref() {
+                display::render_help_balloon_argb(&mut frame_argb, game_w, game_h, balloon);
             }
             if self.debug_overlay_visible {
                 display::render_debug_overlay_argb(
@@ -2487,6 +2492,7 @@ impl App {
         let output_scale = display::outline_output_scale(logical_size, (buf_w, buf_h));
         #[cfg(target_os = "macos")]
         let borrowed_size = if cursor.is_none()
+            && frame.help_balloon.is_none()
             && !self.debug_overlay_visible
             && presentation_rect.left == 0
             && presentation_rect.top == 0
@@ -3928,6 +3934,16 @@ fn save_frame(frame: &VideoFrame, ticks: u32, num: usize) {
     );
 }
 
+/// A help balloon drawn over a headless frame as the window draws it, so a
+/// headless run shows what Balloon Help shows (systemless/balloons-aobtjf).
+fn draw_help_balloon(runner: &FixtureRunner, frame: &mut VideoFrame) {
+    if let Some(balloon) = runner.dispatcher().help_balloon() {
+        if frame.format == systemless::api::PixelFormat::Rgba8 {
+            display::render_help_balloon(&mut frame.pixels, frame.width, frame.height, &balloon);
+        }
+    }
+}
+
 fn save_screenshot(runner: &FixtureRunner, num: usize) {
     let mode = runner.dispatcher().screen_mode;
     if mode.2 == 0 || mode.3 == 0 {
@@ -3938,17 +3954,19 @@ fn save_screenshot(runner: &FixtureRunner, num: usize) {
         return;
     }
     let gamma = runner.dispatcher().device_gamma();
-    let frame = VideoFrame {
+    let mut pixels = display::render_screen_with_gamma(
+        runner.bus(),
+        mode,
+        &runner.dispatcher().device_clut,
+        &gamma,
+    );
+    let mut frame = VideoFrame {
         width: u32::from(mode.2),
         height: u32::from(mode.3),
         format: systemless::api::PixelFormat::Rgba8,
-        pixels: display::render_screen_with_gamma(
-            runner.bus(),
-            mode,
-            &runner.dispatcher().device_clut,
-            &gamma,
-        ),
+        pixels,
     };
+    draw_help_balloon(runner, &mut frame);
     save_frame(&frame, runner.guest_tick(), num);
     save_presented_frame(runner, num);
 }
@@ -4208,7 +4226,8 @@ fn run_headless(
                 .map(|v| v != "0")
                 .unwrap_or(true)
             {
-                if let Some(frame) = session.video_frame() {
+                if let Some(mut frame) = session.video_frame() {
+                    draw_help_balloon(session.runner(), &mut frame);
                     save_frame(&frame, session.status().guest_tick, screenshot_num);
                     save_presented_frame(session.runner(), screenshot_num);
                 }
@@ -4228,7 +4247,8 @@ fn run_headless(
         }
     }
     save_store.sync_save_files_now(session.runner_mut());
-    if let Some(frame) = session.video_frame() {
+    if let Some(mut frame) = session.video_frame() {
+        draw_help_balloon(session.runner(), &mut frame);
         save_frame(&frame, session.status().guest_tick, 9999);
         save_presented_frame(session.runner(), 9999);
     }

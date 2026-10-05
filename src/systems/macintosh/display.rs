@@ -2482,3 +2482,235 @@ mod owned_frame_tests {
         assert_eq!(output, [0xff0000ff, 0xff00ff00]);
     }
 }
+
+/// One help balloon as the Help Manager was asked to show it: the text (Mac
+/// Roman), the tip and the hot rectangle (top, left, bottom, right), both in
+/// global coordinates. Inside Macintosh: More Macintosh Toolbox (1993),
+/// pp. 3-100--3-102 (HMShowBalloon).
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct HelpBalloon {
+    pub text: Vec<u8>,
+    pub tip: (i16, i16),
+    pub hot_rect: Option<(i16, i16, i16, i16)>,
+}
+
+// The balloon's measures. The Help Manager sets balloon text in Geneva 9
+// unless HMSetFont says otherwise (More Macintosh Toolbox, p. 3-112), wraps
+// it to a width of its own choosing, and hangs the balloon from a tail whose
+// point is the tip. The figures below are this painter's, to be judged
+// against Mac OS 8.5 on a screen (systemless/balloons-aobtjf).
+const BALLOON_FONT: i16 = 3; // Geneva
+const BALLOON_SIZE: i16 = 9;
+const BALLOON_WRAP: i32 = 200;
+const BALLOON_PAD_H: i32 = 7;
+const BALLOON_PAD_V: i32 = 5;
+const BALLOON_RADIUS: i32 = 8;
+const BALLOON_TAIL: i32 = 14; // from the balloon's edge to the tip
+const BALLOON_TAIL_BASE: i32 = 10;
+const BALLOON_TAIL_INSET: i32 = 14; // from the balloon's corner to the tail
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum BalloonInk {
+    Paper,
+    Ink,
+}
+
+fn balloon_glyph(byte: u8) -> Option<(&'static crate::quickdraw::fonts::Glyph, &'static [u8])> {
+    crate::quickdraw::text::get_glyph(BALLOON_FONT, BALLOON_SIZE, byte as char)
+}
+
+fn balloon_advance(byte: u8) -> i32 {
+    balloon_glyph(byte).map_or(0, |(glyph, _)| i32::from(glyph.advance))
+}
+
+/// The text broken into lines no wider than the wrap, at spaces where it
+/// can be and inside a word only where a word alone is too wide; a return
+/// ends a line. Each line with its width.
+fn balloon_lines(text: &[u8]) -> Vec<(Vec<u8>, i32)> {
+    let mut lines = Vec::new();
+    for paragraph in text.split(|&b| b == b'\r' || b == b'\n') {
+        let mut line: Vec<u8> = Vec::new();
+        let mut line_w = 0;
+        for word in paragraph.split(|&b| b == b' ').filter(|w| !w.is_empty()) {
+            let word_w: i32 = word.iter().map(|&b| balloon_advance(b)).sum();
+            let space_w = if line.is_empty() { 0 } else { balloon_advance(b' ') };
+            if !line.is_empty() && line_w + space_w + word_w > BALLOON_WRAP {
+                lines.push((std::mem::take(&mut line), line_w));
+                line_w = 0;
+            }
+            if !line.is_empty() {
+                line.push(b' ');
+                line_w += balloon_advance(b' ');
+            }
+            for &b in word {
+                let w = balloon_advance(b);
+                if line_w + w > BALLOON_WRAP && !line.is_empty() && word_w > BALLOON_WRAP {
+                    lines.push((std::mem::take(&mut line), line_w));
+                    line_w = 0;
+                }
+                line.push(b);
+                line_w += w;
+            }
+        }
+        lines.push((line, line_w));
+    }
+    while lines.last().is_some_and(|(l, _)| l.is_empty()) && lines.len() > 1 {
+        lines.pop();
+    }
+    lines
+}
+
+/// Paint a help balloon through `put(x, y, ink)`, clipped by the caller.
+///
+/// Placement follows the Help Manager's first choice for a balloon with no
+/// variant: above the tip and to its right, the tail running down to the
+/// tip from near the balloon's lower left corner. Where that would leave
+/// the screen the balloon flips to the tip's other side, left or below, as
+/// the Help Manager tries its other positions.
+fn paint_help_balloon(
+    width: i32,
+    height: i32,
+    balloon: &HelpBalloon,
+    mut put: impl FnMut(i32, i32, BalloonInk),
+) {
+    use crate::quickdraw::text::get_font_metrics;
+    let metrics = get_font_metrics(BALLOON_FONT, BALLOON_SIZE);
+    let line_h = i32::from(metrics.ascent + metrics.descent + metrics.leading).max(1);
+    let lines = balloon_lines(&balloon.text);
+    let text_w = lines.iter().map(|(_, w)| *w).max().unwrap_or(0);
+    let box_w = text_w + 2 * BALLOON_PAD_H;
+    let box_h = line_h * lines.len() as i32 + 2 * BALLOON_PAD_V;
+    let (tip_v, tip_h) = (i32::from(balloon.tip.0), i32::from(balloon.tip.1));
+
+    // Right of the tip unless that leaves the screen; above unless that does.
+    let right = tip_h - BALLOON_TAIL_INSET + box_w + 2 <= width || tip_h + BALLOON_TAIL_INSET - box_w < 0;
+    let above = tip_v - BALLOON_TAIL - box_h - 2 >= 0 || tip_v + BALLOON_TAIL + box_h + 2 > height;
+    let left = if right {
+        tip_h - BALLOON_TAIL_INSET
+    } else {
+        tip_h + BALLOON_TAIL_INSET - box_w
+    }
+    .clamp(0, (width - box_w - 2).max(0));
+    let top = if above {
+        tip_v - BALLOON_TAIL - box_h
+    } else {
+        tip_v + BALLOON_TAIL
+    }
+    .clamp(0, (height - box_h - 2).max(0));
+    let (right_edge, bottom) = (left + box_w - 1, top + box_h - 1);
+
+    // The tail's base on the balloon's edge facing the tip.
+    let edge_v = if above { bottom } else { top };
+    let base_a = if right {
+        left + BALLOON_TAIL_INSET - BALLOON_TAIL_BASE / 2
+    } else {
+        right_edge - BALLOON_TAIL_INSET - BALLOON_TAIL_BASE / 2
+    };
+    let base_b = base_a + BALLOON_TAIL_BASE;
+
+    let inside_round = |x: i32, y: i32, l: i32, t: i32, r: i32, b: i32| -> bool {
+        if x < l || x > r || y < t || y > b {
+            return false;
+        }
+        let rad = BALLOON_RADIUS;
+        let cx = if x < l + rad { l + rad } else if x > r - rad { r - rad } else { x };
+        let cy = if y < t + rad { t + rad } else if y > b - rad { b - rad } else { y };
+        let (dx, dy) = (x - cx, y - cy);
+        dx * dx + dy * dy <= rad * rad
+    };
+    // The tail as a triangle from the base to the tip, by the sign of the
+    // two edges at each scanline.
+    let in_tail = |x: i32, y: i32| -> bool {
+        let (y0, y1) = if above { (edge_v, tip_v) } else { (tip_v, edge_v) };
+        if y < y0.min(y1) || y > y0.max(y1) || edge_v == tip_v {
+            return false;
+        }
+        let t = f64::from(y - edge_v) / f64::from(tip_v - edge_v);
+        let a = f64::from(base_a) + (f64::from(tip_h) - f64::from(base_a)) * t;
+        let b = f64::from(base_b) + (f64::from(tip_h) - f64::from(base_b)) * t;
+        let (lo, hi) = (a.min(b), a.max(b));
+        f64::from(x) >= lo.floor() && f64::from(x) <= hi.ceil()
+    };
+    let in_shape = |x: i32, y: i32| inside_round(x, y, left, top, right_edge, bottom) || in_tail(x, y);
+
+    let x0 = left.min(tip_h) - 2;
+    let x1 = right_edge.max(tip_h) + 2;
+    let y0 = top.min(tip_v) - 2;
+    let y1 = bottom.max(tip_v) + 2;
+    // The shadow: the shape moved one pixel right and down, under it.
+    for y in y0..=y1 {
+        for x in x0..=x1 {
+            if !in_shape(x, y) && in_shape(x - 1, y - 1) {
+                put(x, y, BalloonInk::Ink);
+            }
+        }
+    }
+    // The shape, its outline where a neighbour is outside it.
+    for y in y0..=y1 {
+        for x in x0..=x1 {
+            if !in_shape(x, y) {
+                continue;
+            }
+            let edge = !in_shape(x - 1, y) || !in_shape(x + 1, y) || !in_shape(x, y - 1) || !in_shape(x, y + 1);
+            put(x, y, if edge { BalloonInk::Ink } else { BalloonInk::Paper });
+        }
+    }
+    // The text.
+    let mut baseline = top + BALLOON_PAD_V + i32::from(metrics.ascent);
+    for (line, _) in &lines {
+        let mut pen = left + BALLOON_PAD_H;
+        for &b in line {
+            if let Some((glyph, data)) = balloon_glyph(b) {
+                for row in 0..i32::from(glyph.height) {
+                    for col in 0..i32::from(glyph.width) {
+                        let at = glyph.data_offset + (row * i32::from(glyph.width) + col) as usize;
+                        if data.get(at).copied().unwrap_or(0) >= 0x80 {
+                            put(
+                                pen + col + i32::from(glyph.origin_x),
+                                baseline + row + i32::from(glyph.origin_y),
+                                BalloonInk::Ink,
+                            );
+                        }
+                    }
+                }
+                pen += i32::from(glyph.advance);
+            }
+        }
+        baseline += line_h;
+    }
+}
+
+/// Overlay a help balloon onto an ARGB framebuffer.
+pub fn render_help_balloon_argb(pixels: &mut [u32], width: u32, height: u32, balloon: &HelpBalloon) {
+    let (w, h) = (width as i32, height as i32);
+    if pixels.len() < (width as usize).saturating_mul(height as usize) {
+        return;
+    }
+    paint_help_balloon(w, h, balloon, |x, y, ink| {
+        if x >= 0 && y >= 0 && x < w && y < h {
+            pixels[(y * w + x) as usize] = match ink {
+                BalloonInk::Paper => 0xFFFFFFFF,
+                BalloonInk::Ink => 0xFF000000,
+            };
+        }
+    });
+}
+
+/// Overlay a help balloon onto an RGBA framebuffer.
+pub fn render_help_balloon(pixels: &mut [u8], width: u32, height: u32, balloon: &HelpBalloon) {
+    let (w, h) = (width as i32, height as i32);
+    if pixels.len() < (width as usize).saturating_mul(height as usize).saturating_mul(4) {
+        return;
+    }
+    paint_help_balloon(w, h, balloon, |x, y, ink| {
+        if x >= 0 && y >= 0 && x < w && y < h {
+            let at = (y * w + x) as usize * 4;
+            let v = match ink {
+                BalloonInk::Paper => 0xFF,
+                BalloonInk::Ink => 0x00,
+            };
+            pixels[at..at + 3].fill(v);
+            pixels[at + 3] = 0xFF;
+        }
+    });
+}

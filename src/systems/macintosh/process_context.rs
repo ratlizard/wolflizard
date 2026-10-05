@@ -1785,6 +1785,9 @@ impl std::ops::Deref for SharedProcessCollectionManager {
 }
 #[derive(Clone, Default, Eq, PartialEq)]
 pub(crate) struct SharedProcessCursorState(SharedProcessValue<ProcessCursorState>);
+/// Detached-by-default attachment handle for the process's Balloon Help.
+#[derive(Clone, Default, Eq, PartialEq)]
+pub(crate) struct SharedProcessHelpBalloons(SharedProcessValue<ProcessHelpBalloons>);
 /// Host pacing snapshot for the wrapping Macintosh clock.
 ///
 /// Guest-visible time lives in the low-memory `Ticks` bytes. This process
@@ -2757,6 +2760,84 @@ impl ProcessInputState {
         } else {
             self.key_map[byte_index] &= !mask;
         }
+    }
+}
+
+/// Balloon Help for one Macintosh process, whichever ISA asks: whether it
+/// is on (the Help menu's Show Balloons, HMSetBalloons) and the balloon up,
+/// which the host draws over the screen as it draws the cursor. The Help
+/// Manager draws a balloon in a window of its own above every other, so
+/// the game drawing beneath it never shows through and never needs bits
+/// saved; a host overlay gives the same result without a guest window.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct ProcessHelpBalloons {
+    enabled: bool,
+    balloon: Option<crate::display::HelpBalloon>,
+}
+
+/// Balloons start off, as on a Mac, unless SYSTEMLESS_BALLOONS=1, which
+/// turns them on from the start for a run with no menu to choose them from.
+impl Default for ProcessHelpBalloons {
+    fn default() -> Self {
+        Self {
+            enabled: std::env::var("SYSTEMLESS_BALLOONS").is_ok_and(|v| v == "1"),
+            balloon: None,
+        }
+    }
+}
+
+impl ProcessHelpBalloons {
+    // No balloon up. Whether balloons are on is the same in every fresh
+    // value (the environment's), so it does not make one populated.
+    fn is_pristine(&self) -> bool {
+        self.balloon.is_none()
+    }
+}
+
+impl SharedProcessHelpBalloons {
+    fn attach_to(&mut self, process_state: &Self) {
+        self.0
+            .attach_to(&process_state.0, ProcessHelpBalloons::is_pristine);
+    }
+
+    pub(crate) fn enabled(&self) -> bool {
+        self.0.with_ref(|state| state.enabled)
+    }
+
+    /// Turning balloons off takes down the one up, as the Help menu does.
+    pub(crate) fn set_enabled(&self, enabled: bool) {
+        self.0.with_mut(|state| {
+            state.enabled = enabled;
+            if !enabled {
+                state.balloon = None;
+            }
+        });
+    }
+
+    pub(crate) fn balloon(&self) -> Option<crate::display::HelpBalloon> {
+        self.0.with_ref(|state| state.balloon.clone())
+    }
+
+    pub(crate) fn is_up(&self) -> bool {
+        self.0.with_ref(|state| state.balloon.is_some())
+    }
+
+    pub(crate) fn show(&self, balloon: crate::display::HelpBalloon) {
+        self.0.with_mut(|state| state.balloon = Some(balloon));
+    }
+
+    pub(crate) fn remove(&self) {
+        self.0.with_mut(|state| state.balloon = None);
+    }
+}
+
+impl std::fmt::Debug for SharedProcessHelpBalloons {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let snapshot = self.0.with_ref(Clone::clone);
+        formatter
+            .debug_tuple("SharedProcessHelpBalloons")
+            .field(&snapshot)
+            .finish()
     }
 }
 
@@ -9785,6 +9866,7 @@ pub(crate) struct ProcessContext {
     text_edit_manager: SharedProcessTextEditManager,
     dialog_text: SharedProcessDialogText,
     cursor_state: SharedProcessCursorState,
+    help_balloons: SharedProcessHelpBalloons,
     quickdraw_op_colors: SharedProcessQuickDrawOpColors,
     quickdraw_hilite_colors: SharedProcessQuickDrawHiliteColors,
     quickdraw_pixel_states: SharedProcessQuickDrawPixelStates,
@@ -9957,6 +10039,7 @@ impl Default for ProcessContext {
             text_edit_manager: SharedProcessTextEditManager::default(),
             dialog_text: SharedProcessDialogText::default(),
             cursor_state: SharedProcessCursorState::default(),
+            help_balloons: SharedProcessHelpBalloons::default(),
             quickdraw_op_colors: SharedProcessQuickDrawOpColors::default(),
             quickdraw_hilite_colors: SharedProcessQuickDrawHiliteColors::default(),
             quickdraw_pixel_states: SharedProcessQuickDrawPixelStates::default(),
@@ -10234,6 +10317,10 @@ impl ProcessContext {
 
     pub(crate) fn attach_cursor_state(&self, adapter: &mut SharedProcessCursorState) {
         adapter.attach_to(&self.cursor_state);
+    }
+
+    pub(crate) fn attach_help_balloons(&self, adapter: &mut SharedProcessHelpBalloons) {
+        adapter.attach_to(&self.help_balloons);
     }
 
     /// Attach Color QuickDraw's per-port `GrafVars.rgbOpColor` index. The

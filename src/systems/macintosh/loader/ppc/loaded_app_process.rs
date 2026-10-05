@@ -100,6 +100,7 @@ impl PpcLoadedApp {
         context.attach_collection_manager(&mut self.collections);
         context.attach_dialog_text(&mut self.param_text);
         context.attach_cursor_state(&mut self.cursor_state);
+        context.attach_help_balloons(&mut self.help_balloons);
         context.activate_quickdraw_selection(&mut self.current_gworld, &mut self.current_gdevice);
         context.attach_quickdraw_op_colors(&mut self.quickdraw_op_colors);
         context.attach_quickdraw_hilite_colors(&mut self.quickdraw_hilite_colors);

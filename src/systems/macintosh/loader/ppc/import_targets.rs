@@ -348,6 +348,10 @@ pub enum PpcImportDispatcherTarget {
     FlashMenuBar,
     HMGetHelpMenuHandle,
     HMGetBalloons,
+    HMShowBalloon,
+    HMRemoveBalloon,
+    HMIsBalloon,
+    HMSetBalloons,
     HiliteMenu,
     DrawGrowIcon,
     MenuNoop,
@@ -2899,11 +2903,13 @@ pub(crate) fn dispatcher_target_for_import(
             "InterfaceLib" | "AppearanceLib" | "CarbonLib",
             "HMGetBalloons" | "hmgetballoons",
         ) => PpcImportDispatcherTarget::HMGetBalloons,
-        // As the 68K Pack14 does: no balloons, so showing one reports
-        // hmHelpDisabled and removing one has nothing to remove
-        // (More Macintosh Toolbox (1993), pp. 3-100 and 3-105).
-        ("InterfaceLib", "HMShowBalloon") => PpcImportDispatcherTarget::ReturnError(-850),
-        ("InterfaceLib", "HMRemoveBalloon") => PpcImportDispatcherTarget::ReturnNoErr,
+        // As the 68K Pack14 does: the balloon is kept for the host to
+        // draw while balloons are on, and hmHelpDisabled answers while they
+        // are off (More Macintosh Toolbox (1993), pp. 3-100 to 3-107).
+        ("InterfaceLib", "HMShowBalloon") => PpcImportDispatcherTarget::HMShowBalloon,
+        ("InterfaceLib", "HMRemoveBalloon") => PpcImportDispatcherTarget::HMRemoveBalloon,
+        ("InterfaceLib", "HMIsBalloon") => PpcImportDispatcherTarget::HMIsBalloon,
+        ("InterfaceLib", "HMSetBalloons") => PpcImportDispatcherTarget::HMSetBalloons,
         (
             "InterfaceLib" | "AppearanceLib" | "CarbonLib",
             "HiliteMenu" | "hilitemenu",

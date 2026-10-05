@@ -17574,22 +17574,35 @@ impl super::TrapDispatcher {
                     // No balloon ever up in HLE → noErr per the IM
                     // result table ("No error or the help balloon
                     // was removed").
-                    0x0002 => finish(bus, cpu, 0, 0),
+                    // The fork keeps the balloon up (help_balloons) for the
+                    // host to draw; removing it takes it down.
+                    0x0002 => {
+                        self.help_balloons.remove();
+                        finish(bus, cpu, 0, 0)
+                    }
 
                     // FUNCTION HMGetBalloons: Boolean;
-                    // IM:MMTb 3-98. No parameters.
-                    // Help disabled in HLE → FALSE (0).
-                    0x0003 => finish(bus, cpu, 0, 0),
+                    // IM:MMTb 3-98. No parameters. Whether balloons are on
+                    // (the Help menu, HMSetBalloons, SYSTEMLESS_BALLOONS).
+                    0x0003 => {
+                        let on = self.help_balloons.enabled();
+                        finish(bus, cpu, 0, if on { 0x0100 } else { 0 })
+                    }
 
                     // FUNCTION HMIsBalloon: Boolean;
                     // IM:MMTb 3-99. No parameters.
-                    // No balloon up in HLE → FALSE (0).
-                    0x0007 => finish(bus, cpu, 0, 0),
+                    0x0007 => {
+                        let up = self.help_balloons.is_up();
+                        finish(bus, cpu, 0, if up { 0x0100 } else { 0 })
+                    }
 
                     // FUNCTION HMSetBalloons(flag: Boolean): OSErr;
-                    // IM:MMTb 3-107. Pop = 2 (flag).
-                    // Accept and ignore — no help to enable/disable.
-                    0x0104 => finish(bus, cpu, 2, 0),
+                    // IM:MMTb 3-107. Pop = 2 (flag, in the word's high byte).
+                    0x0104 => {
+                        let on = bus.read_byte(sp) != 0;
+                        self.help_balloons.set_enabled(on);
+                        finish(bus, cpu, 2, 0)
+                    }
 
                     // FUNCTION HMSetFont(font: Integer): OSErr;
                     // IM:MMTb 3-112. Pop = 2. Accept and ignore.
@@ -17727,9 +17740,37 @@ impl super::TrapDispatcher {
                     //                        tipProc: Ptr;
                     //                        theProc, variant,
                     //                        method: Integer): OSErr;
-                    // IM:MMTb 3-100. Pop = 22. Help disabled →
-                    // hmHelpDisabled.
-                    0x0B01 => finish(bus, cpu, 22, HM_HELP_DISABLED),
+                    // IM:MMTb 3-100. Pop = 22: method at SP+0, variant +2,
+                    // theProc +4, tipProc +6, alternateRect +10, tip +14
+                    // (v, then h), aHelpMsg +18. With balloons off,
+                    // hmHelpDisabled, as before; on, the balloon is kept
+                    // for the host to draw (systemless/balloons-aobtjf).
+                    // Placement, theProc, variant and method are the
+                    // host's: it draws one balloon shape.
+                    0x0B01 => {
+                        if !self.help_balloons.enabled() {
+                            finish(bus, cpu, 22, HM_HELP_DISABLED);
+                        } else {
+                            let msg = bus.read_long(sp + 18);
+                            let tip = (bus.read_word(sp + 14) as i16, bus.read_word(sp + 16) as i16);
+                            let rect_ptr = bus.read_long(sp + 10);
+                            let hot_rect = (rect_ptr != 0).then(|| {
+                                (
+                                    bus.read_word(rect_ptr) as i16,
+                                    bus.read_word(rect_ptr + 2) as i16,
+                                    bus.read_word(rect_ptr + 4) as i16,
+                                    bus.read_word(rect_ptr + 6) as i16,
+                                )
+                            });
+                            match self.help_message_text(bus, msg) {
+                                Some(text) => {
+                                    self.help_balloons.show(crate::display::HelpBalloon { text, tip, hot_rect });
+                                    finish(bus, cpu, 22, 0);
+                                }
+                                None => finish(bus, cpu, 22, RES_NOT_FOUND),
+                            }
+                        }
+                    }
 
                     // FUNCTION HMShowMenuBalloon(itemNum,
                     //                            itemMenuID: Integer;

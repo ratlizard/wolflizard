@@ -1177,6 +1177,45 @@ impl super::TrapDispatcher {
         Some((refnum, res_id, ptr))
     }
 
+    /// The text an HMMessageRecord names, for the help balloon the host
+    /// draws: an inline Pascal string (khmmString, 1), an entry of a 'STR#'
+    /// (khmmStringRes, 3: resource ID, then index) or a whole 'STR '
+    /// (khmmSTRRes, 7). Pictures and styled text are not drawn and answer
+    /// None. Inside Macintosh: More Macintosh Toolbox (1993), pp. 3-82--3-84.
+    pub(crate) fn help_message_text(&mut self, bus: &mut MacMemoryBus, msg: u32) -> Option<Vec<u8>> {
+        if msg == 0 {
+            return None;
+        }
+        match bus.read_word(msg) {
+            1 => {
+                let len = bus.read_byte(msg + 2) as usize;
+                Some(bus.read_bytes(msg + 3, len))
+            }
+            3 => {
+                let id = bus.read_word(msg + 2) as i16;
+                let index = bus.read_word(msg + 4) as usize;
+                let (_, data) = self.find_or_load_resource_any(bus, *b"STR#", id)?;
+                let count = bus.read_word(data) as usize;
+                if index == 0 || index > count {
+                    return None;
+                }
+                let mut at = data + 2;
+                for _ in 1..index {
+                    at += 1 + u32::from(bus.read_byte(at));
+                }
+                let len = bus.read_byte(at) as usize;
+                Some(bus.read_bytes(at + 1, len))
+            }
+            7 => {
+                let id = bus.read_word(msg + 2) as i16;
+                let (_, data) = self.find_or_load_resource_any(bus, *b"STR ", id)?;
+                let len = bus.read_byte(data) as usize;
+                Some(bus.read_bytes(data + 1, len))
+            }
+            _ => None,
+        }
+    }
+
     pub(crate) fn find_or_load_resource_any(
         &mut self,
         bus: &mut MacMemoryBus,

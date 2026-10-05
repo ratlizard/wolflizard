@@ -358,6 +358,7 @@ impl PpcLoadedApp {
         let mut quickdraw_text_size = self.quickdraw_text_size;
         let process_quickdraw_port_state_attached = self.process_quickdraw_port_state_attached;
         let cursor_state = std::mem::take(&mut self.cursor_state);
+        let help_balloons = std::mem::take(&mut self.help_balloons);
         let vfs_volumes = self.vfs_volumes.shared_handle();
         let vfs_directories = self.vfs_directories.shared_handle();
         let next_vfs_dir_id = self.next_vfs_dir_id.shared_handle();
@@ -1888,6 +1889,7 @@ impl PpcLoadedApp {
                                             quickdraw_text_mode: &mut quickdraw_text_mode,
                                             quickdraw_text_size: &mut quickdraw_text_size,
                                             cursor_state: &cursor_state,
+                                            help_balloons: &help_balloons,
                                             vfs_volumes: &vfs_volumes,
                                             vfs_directories,
                                             next_vfs_dir_id,
@@ -2362,6 +2364,7 @@ impl PpcLoadedApp {
         self.quickdraw_text_mode = quickdraw_text_mode;
         self.quickdraw_text_size = quickdraw_text_size;
         self.cursor_state = cursor_state;
+        self.help_balloons = help_balloons;
         process_file_system.with_mut(ProcessFileSystemState::publish_native_vfs_catalogue);
         self.scrap = scrap;
         self.list_manager = list_manager;

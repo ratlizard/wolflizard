@@ -169,6 +169,7 @@ fn ppc_getkeys_reads_runner_key_map_with_classic_packed_bit_order() {
         quickdraw_text_mode: PPC_QD_TEXT_MODE_SRC_OR,
         quickdraw_text_size: PPC_QD_TEXT_SIZE_SYSTEM,
         cursor_state: crate::process_context::SharedProcessCursorState::default(),
+        help_balloons: crate::process_context::SharedProcessHelpBalloons::default(),
         param_text: Default::default(),
         scrap: Default::default(),
         list_manager: Default::default(),

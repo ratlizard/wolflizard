@@ -32,7 +32,7 @@ use crate::process_context::{
     ProcessVfsDirectory, ProcessVfsMetadata, ProcessVfsVolumeRecord, ProcessWorkingDirectory,
     SharedProcessAppleEventDescriptors, SharedProcessAppleEventHandlers,
     SharedProcessAppleEventLaunchState,
-    SharedProcessCollectionManager, SharedProcessControlManager, SharedProcessCursorState,
+    SharedProcessCollectionManager, SharedProcessControlManager, SharedProcessCursorState, SharedProcessHelpBalloons,
     SharedProcessDialogText, SharedProcessDisplayClut,
     SharedProcessEventQueue, SharedProcessFileSystem, SharedProcessGraphicsDevice,
     SharedProcessGraphicsPort, SharedProcessInputState,
@@ -2224,6 +2224,7 @@ pub struct TrapDispatcher {
     pub pending_delay_ticks: u32,
     /// Process-owned cursor image and signed visibility level.
     pub(crate) cursor_state: SharedProcessCursorState,
+    pub(crate) help_balloons: SharedProcessHelpBalloons,
     /// Total number of A-line trap dispatches since emulator start.
     pub trap_count: u64,
     /// A-line traps dispatched from game code only (PC < 0x800000).
@@ -2934,6 +2935,7 @@ impl TrapDispatcher {
         context.attach_text_edit_manager(&mut self.textedit_states);
         context.attach_dialog_text(&mut self.param_text);
         context.attach_cursor_state(&mut self.cursor_state);
+        context.attach_help_balloons(&mut self.help_balloons);
         context.attach_quickdraw_selection(&mut self.current_port, &mut self.current_gdevice);
         context.attach_quickdraw_error(&mut self.quickdraw_error);
         context.attach_quickdraw_op_colors(&mut self.quickdraw_op_colors);
@@ -3286,6 +3288,9 @@ impl TrapDispatcher {
                 cursor,
                 self.mouse_position(),
             );
+        }
+        if let Some(balloon) = self.help_balloon() {
+            crate::display::render_help_balloon(&mut rgba, width as u32, height as u32, &balloon);
         }
         let img = image::RgbImage::from_fn(width as u32, height as u32, |x, y| {
             let idx = ((y * width as u32 + x) * 4) as usize;
@@ -4177,6 +4182,7 @@ impl TrapDispatcher {
             yield_for_ui: false,
             pending_delay_ticks: 0,
             cursor_state: SharedProcessCursorState::default(),
+            help_balloons: SharedProcessHelpBalloons::default(),
             trap_count: 0,
             game_trap_count: 0,
             trap_histogram: Box::new([0u64; 4096]),
@@ -6141,6 +6147,23 @@ impl TrapDispatcher {
     /// Get the current cursor data for rendering overlay.
     pub fn cursor(&self) -> Option<&CursorImage> {
         self.cursor_state.visible_image()
+    }
+
+    /// The help balloon up, for the host to draw over the screen as it draws
+    /// the cursor; None when Balloon Help is off or nothing is pointed at.
+    pub fn help_balloon(&self) -> Option<crate::display::HelpBalloon> {
+        self.help_balloons.balloon()
+    }
+
+    /// Whether Balloon Help is on, as the Help menu's Show Balloons sets it.
+    pub fn help_balloons_enabled(&self) -> bool {
+        self.help_balloons.enabled()
+    }
+
+    /// Turn Balloon Help on or off, as the Help menu's Show Balloons and
+    /// Hide Balloons do (and HMSetBalloons).
+    pub fn set_help_balloons_enabled(&mut self, enabled: bool) {
+        self.help_balloons.set_enabled(enabled);
     }
 
     /// Show the cursor (called by GUI on mouse move to undo ObscureCursor).

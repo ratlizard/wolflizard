@@ -284,7 +284,18 @@ impl GuiDriver {
                         game::loaded_application_identity(runner).map(std::sync::Arc::new);
                 }
                 output.identity = self.identity.clone();
-                let menus = runner.guest_menu_snapshot();
+                let mut menus = runner.guest_menu_snapshot();
+                // The Help menu's item follows the balloons at once, where
+                // the guest record is brought up to date only at the next
+                // DrawMenuBar or MenuSelect (systemless/balloons-aobtjf).
+                let on = runner.dispatcher().help_balloons_enabled();
+                for menu in &mut menus.menus {
+                    if menu.id == systemless::menu_model::HELP_MENU_ID {
+                        if let Some(item) = menu.items.first_mut() {
+                            item.text = if on { "Hide Balloons" } else { "Show Balloons" }.into();
+                        }
+                    }
+                }
                 if output.menus.as_ref().is_none_or(|old| **old != menus) {
                     output.menus = Some(std::sync::Arc::new(menus));
                 }

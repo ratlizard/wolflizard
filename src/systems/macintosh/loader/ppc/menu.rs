@@ -1208,6 +1208,28 @@ pub(crate) fn ppc_step_menu_tracking(
         vfs_resources,
         current_resource_refnum,
     )?;
+    // The Help menu's choice is the system's: its title is put back and the
+    // application is told nothing was chosen, as MenuSelect keeps a system
+    // menu's choice from it on a Mac; the dispatcher turns the balloons on
+    // or off (help_menu_chosen). systemless/balloons-aobtjf.
+    if let PpcImportAction::Return(result) = action {
+        if (result >> 16) as u16 as i16 == crate::menu_model::HELP_MENU_ID {
+            toolbox_startup.help_menu_chosen = true;
+            let handles = process_memory_manager.native_handle_records().to_vec();
+            let menu_color_bytes = ppc_menu_color_table_bytes(memory, &handles);
+            let list = ppc_current_menu_list(memory);
+            ppc_set_menu_title_highlight_with_colors(
+                memory,
+                gworlds,
+                list,
+                0,
+                screen_clut,
+                MenuColorTable::new(&menu_color_bytes),
+                toolbox_startup.host_menu_bar_hidden,
+            );
+            return Some(PpcImportAction::Return(0));
+        }
+    }
     if matches!(action, PpcImportAction::Yield(_)) {
         let Some(key) = toolbox_startup
             .execution
@@ -5831,3 +5853,105 @@ pub(crate) fn ppc_menu_item(memory: &mut PpcSectionMem, menu_handle: u32, item: 
     None
 }
 
+
+/// The system Help menu, as Mac OS 8 shows it after an application's own
+/// menus: titled "Help", ID kHMHelpMenuID, here with one item, Show Balloons
+/// (Hide Balloons while they are on). The fork has no system menus of its
+/// own, so the record is put into the application's current menu list the
+/// first time the bar is drawn or tracked, and its item's text is kept to
+/// the balloons' state; a list the application installs afresh gets it
+/// again. Its menuProc is the application's first menu's, the standard MDEF
+/// the others use. More Macintosh Toolbox (1993), pp. 3-15 and 3-107;
+/// systemless/balloons-aobtjf.
+pub(crate) fn ppc_ensure_help_menu(
+    mut allocator: Option<&mut PpcProcessAllocatorView<'_>>,
+    memory: &mut PpcSectionMem,
+    heap_cursor: &mut u32,
+    heap_limit: u32,
+    last_mem_error: &mut i16,
+    handles: &mut Vec<PpcHandleRecord>,
+    balloons_on: bool,
+) {
+    let help_id = crate::menu_model::HELP_MENU_ID;
+    let item_text: &[u8] = if balloons_on { b"Hide Balloons" } else { b"Show Balloons" };
+    let list_handle = ppc_current_menu_list(memory);
+    if list_handle == 0 {
+        return;
+    }
+    let Some(list) = ppc_menu_list_definition(memory, list_handle) else {
+        return;
+    };
+    let menu_id_of = |memory: &mut PpcSectionMem, handle: u32| {
+        memory
+            .read_u32_be(handle)
+            .filter(|ptr| *ptr != 0)
+            .and_then(|menu| memory.read_u16_be(menu))
+            .map(|id| id as i16)
+    };
+    let regular: Vec<u32> = list.regular_handles().collect();
+    if regular.is_empty() {
+        return;
+    }
+    if let Some(&help) = regular.iter().find(|&&h| menu_id_of(memory, h) == Some(help_id)) {
+        let Some(original) = ppc_menu_handle_bytes(memory, handles, help) else {
+            return;
+        };
+        let Some(mut items) = MenuItems::decode(&original) else {
+            return;
+        };
+        if items.set_text(1, item_text) {
+            if let Some(bytes) = items.rebuild(&original) {
+                if bytes != original {
+                    let _ = ppc_replace_menu_bytes_with_allocator(
+                        allocator,
+                        memory,
+                        heap_cursor,
+                        heap_limit,
+                        last_mem_error,
+                        handles,
+                        help,
+                        &bytes,
+                    );
+                }
+            }
+        }
+        return;
+    }
+    let Some(menu_proc) = memory
+        .read_u32_be(regular[0])
+        .filter(|ptr| *ptr != 0)
+        .and_then(|menu| memory.read_u32_be(menu + 6))
+    else {
+        return;
+    };
+    let record = new_standard_menu_record(help_id, menu_proc, b"Help");
+    let Some(mut items) = MenuItems::decode(&record) else {
+        return;
+    };
+    items.append_specs(item_text);
+    let Some(bytes) = items.rebuild(&record) else {
+        return;
+    };
+    let handle = ppc_allocator_view_allocate_handle_with_bytes(
+        allocator.as_deref_mut(),
+        memory,
+        heap_cursor,
+        heap_limit,
+        last_mem_error,
+        handles,
+        &bytes,
+    );
+    if handle != 0 {
+        let _ = ppc_insert_menu_with_allocator(
+            allocator,
+            None,
+            memory,
+            heap_cursor,
+            heap_limit,
+            last_mem_error,
+            handles,
+            handle,
+            0,
+        );
+    }
+}

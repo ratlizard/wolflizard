@@ -246,6 +246,11 @@ pub(crate) fn dispatch_supported_import(
         }
         drag_manager.with_mut(|manager| manager.remove_window(cpu.gpr[3]));
     }
+    // The Help menu's Show Balloons or Hide Balloons, chosen in the
+    // MenuSelect that last returned (ppc_step_menu_tracking).
+    if std::mem::take(&mut toolbox_startup.help_menu_chosen) {
+        help_balloons.set_enabled(!help_balloons.enabled());
+    }
     // Trial trace: every import from a given tick on.
     if let Some(from) = ppc_trace_imports_from_tick() {
         if *tick_count >= from {
@@ -895,6 +900,7 @@ pub(crate) fn dispatch_supported_import(
             current_gdevice,
             event_queue,
             input,
+            help_balloons,
         })
     {
         return Some(action);

@@ -138,6 +138,40 @@ fn find_window_distinguishes_the_menu_bar_from_the_desktop() {
 }
 
 #[test]
+fn find_window_takes_a_native_menu_command_for_the_menu_bar_when_the_bar_is_hidden() {
+    let pef = synthetic_pef_with_import(b"FindWindow");
+    let mut loaded = load_pef_application(&pef).unwrap();
+    let window_out = PPC_DATA_BASE + 0x1000;
+    loaded.memory.add_region(window_out, vec![0xff; 4]);
+    loaded
+        .current_gworld
+        .with_mut(|current_gworld| *current_gworld = PPC_MAIN_GWORLD);
+    // The application has hidden its menu bar.
+    loaded.memory.write_u16_be(PPC_MBAR_HEIGHT_ADDR, 0).unwrap();
+    loaded.cpu.gpr[3] = (10 << 16) | 15;
+    loaded.cpu.gpr[4] = window_out;
+
+    let probe = loaded.run_with_hle_imports(64);
+
+    assert_eq!(probe.handled_import_count, 1);
+    assert_eq!(loaded.cpu.gpr[3], 0);
+
+    assert!(loaded
+        .toolbox_startup
+        .pending_native_menu_selection
+        .stage((129, 1)));
+    loaded.cpu.pc = loaded.entry_pc;
+    loaded.cpu.lr = PPC_HALT_PC;
+    loaded.cpu.gpr[3] = (10 << 16) | 15;
+    loaded.cpu.gpr[4] = window_out;
+    let probe = loaded.run_with_hle_imports(64);
+
+    assert_eq!(probe.handled_import_count, 1);
+    assert_eq!(loaded.cpu.gpr[3], 1);
+    assert_eq!(loaded.memory.read_u32_be(window_out), Some(0));
+}
+
+#[test]
 fn find_window_routes_active_draw_sprocket_display_clicks_to_content() {
     let pef = synthetic_pef_with_import(b"FindWindow");
     let mut loaded = load_pef_application(&pef).unwrap();

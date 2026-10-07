@@ -911,7 +911,14 @@ pub(super) fn dispatch_window_import(
             let in_menu_bar = !fullscreen_context_active
                 && in_screen
                 && v < menu_bar_height.max(0).min(screen_height);
-            let (part, window) = if in_menu_bar {
+            // A command chosen from the host's menu bar arrives as a click the
+            // application must take for one in its menu bar, whatever
+            // MBarHeight says: an application that hides its bar (Cythera
+            // does, with MBarHeight 0) would otherwise find a window under
+            // the click and never call MenuSelect. The 68K FindWindow does
+            // the same.
+            let native_menu_click = toolbox_startup.pending_native_menu_selection.is_some();
+            let (part, window) = if in_menu_bar || native_menu_click {
                 (1, 0)
             } else if in_screen {
                 ppc_find_window_at_point(memory, gworlds, window_list, v, h, menu_bar_height)

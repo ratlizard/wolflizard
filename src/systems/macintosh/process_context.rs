@@ -1383,6 +1383,15 @@ impl ProcessFileSystemState {
                 file.creator = metadata.creator;
                 file.file_type = metadata.file_type;
                 file.finder_flags = metadata.finder_flags;
+                // A file put on the disk over one already there
+                // (`FixtureRunner::import_vfs_file`) has a new fork, and the
+                // record kept the old one: the 68K slice, which reads the
+                // forks by path, saw the new file and a PowerPC application,
+                // which reads the records, the old. The browser player's
+                // patched Cythera Data never reached the PowerPC game.
+                if !file.dirty {
+                    file.data = data;
+                }
             } else {
                 self.vfs_files.push(ProcessVfsFileRecord {
                     path: path.to_string(),
@@ -1409,6 +1418,10 @@ impl ProcessFileSystemState {
                     file.creator = metadata.creator;
                     file.file_type = metadata.file_type;
                     file.finder_flags = metadata.finder_flags;
+                    if !file.dirty {
+                        file.resource_len = data.len() as u32;
+                        file.raw_data = Some(data);
+                    }
                 } else {
                     resource_manager.vfs_resource_files.push(
                         ProcessVfsResourceFileRecord {

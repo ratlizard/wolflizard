@@ -3610,6 +3610,7 @@ pub(super) fn ppc_dispatch_legacy_window(
         PpcLegacyWindowOperation::DisposeWindow => {
             let window = cpu.gpr[3];
             toolbox_startup.windows_without_updates.remove(&window);
+            ppc_forget_closed_window_events(memory, event_queue, window);
             let previous_front = ppc_front_visible_process_window(memory, window_list);
             let was_visible = ppc_window_is_visible(memory, window);
             let exposed = was_visible
@@ -4850,6 +4851,7 @@ pub(super) fn ppc_close_window(
     quickdraw_back_color: &mut PpcRgbColor,
     quickdraw_fore_indices: &mut HashMap<u32, u8>,
 ) {
+    ppc_forget_closed_window_events(memory, event_queue, window);
     let previous_front = ppc_front_visible_process_window(memory, window_list);
     let was_visible = ppc_window_is_visible(memory, window);
     let exposed = was_visible

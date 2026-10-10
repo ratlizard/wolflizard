@@ -2064,6 +2064,58 @@ fn disposing_hidden_ppc_window_does_not_repaint_exposed_pixels() {
 }
 
 #[test]
+fn disposing_ppc_window_drops_its_pending_update_and_activate_events() {
+    // Cythera hides a character's window when its close box is clicked and
+    // disposes of it some ticks later. An update event queued for it in
+    // between was still delivered, and the game's handler called through the
+    // freed object the window's refCon named.
+    let pef = synthetic_pef_with_import(b"DisposeWindow");
+    let mut loaded = load_pef_application(&pef).unwrap();
+    let bounds_ptr = PPC_DATA_BASE + 0x1000;
+    loaded.memory.add_region(bounds_ptr, vec![0; 32]);
+    let kept = create_test_cwindow(
+        &mut loaded,
+        bounds_ptr,
+        (100, 100, 260, 300),
+        0,
+        true,
+        u32::MAX,
+    );
+    let closed = create_test_cwindow(
+        &mut loaded,
+        bounds_ptr,
+        (120, 120, 220, 220),
+        0,
+        false,
+        u32::MAX,
+    );
+    let event = |what, message| PpcQueuedEvent {
+        what,
+        message,
+        when: 0,
+        where_v: 0,
+        where_h: 0,
+        modifiers: 0,
+    };
+    loaded.set_event_queue([event(6, closed), event(8, closed), event(6, kept)].into_iter());
+
+    loaded.cpu.gpr[3] = closed;
+    run_test_import(
+        &mut loaded,
+        PpcImportDispatcherTarget::LegacyWindow(PpcLegacyWindowOperation::DisposeWindow),
+    );
+
+    assert!(!loaded
+        .event_queue()
+        .iter()
+        .any(|event| event.message == closed));
+    assert!(loaded
+        .event_queue()
+        .iter()
+        .any(|event| event.what == 6 && event.message == kept));
+}
+
+#[test]
 fn ppc_move_window_front_true_reorders_and_activates_window() {
     let pef = synthetic_pef_with_import(b"MoveWindow");
     let mut loaded = load_pef_application(&pef).unwrap();

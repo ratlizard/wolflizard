@@ -259,6 +259,34 @@ pub(crate) fn ppc_enqueue_window_update_event(
     });
 }
 
+/// Drop what is pending for a window that is going away.
+///
+/// The Window Manager makes an update event by finding a window in its list
+/// whose update region is not empty, and keeps the windows awaiting an
+/// activate or deactivate event in CurActivate and CurDeactive, which
+/// CloseWindow clears when they name the window closed (Macintosh Toolbox
+/// Essentials (1992), pp. 2-18--2-19 and 4-93), so an application is never
+/// handed an event for a window it has disposed of. Here both are queued, and
+/// one queued before the window closed has to leave with it: Cythera's
+/// handler finds its object through the window's refCon, which by then is
+/// freed, and calls through it. Closing a character's window by its close box
+/// stopped the PowerPC slice that way.
+pub(crate) fn ppc_forget_closed_window_events(
+    memory: &mut PpcSectionMem,
+    event_queue: &mut VecDeque<PpcQueuedEvent>,
+    window: u32,
+) {
+    if window == 0 {
+        return;
+    }
+    event_queue.retain(|event| !(matches!(event.what, 6 | 8) && event.message == window));
+    for pending in [0x0A64, 0x0A68] {
+        if memory.read_u32_be(pending) == Some(window) {
+            let _ = memory.write_u32_be(pending, 0);
+        }
+    }
+}
+
 pub(crate) fn ppc_enqueue_window_activation_event(
     memory: &mut PpcSectionMem,
     event_queue: &mut VecDeque<PpcQueuedEvent>,

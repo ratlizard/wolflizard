@@ -773,7 +773,7 @@ pub(super) fn dispatch_quickdraw_import(
                     new_v,
                 );
             } else {
-                let _ = ppc_line_to(
+                let _ = ppc_line_to_with_pen(
                     memory,
                     gworlds,
                     current_gworld,
@@ -781,6 +781,7 @@ pub(super) fn dispatch_quickdraw_import(
                     (new_h, new_v),
                     *quickdraw_fore_color,
                     quickdraw_fore_indices.get(&current_gworld).copied(),
+                    Some((*quickdraw_back_color, &toolbox_startup.quickdraw_pen_pattern)),
                 );
             }
             *quickdraw_pen_h = new_h;

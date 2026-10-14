@@ -3412,8 +3412,8 @@ pub(super) fn ppc_paint_one(
                 if visible.as_deref().is_some_and(|region| {
                     !ppc_point_in_region_storage(
                         region,
-                        (h + port_left) as i16,
                         (v + port_top) as i16,
+                        (h + port_left) as i16,
                     )
                 }) {
                     continue;

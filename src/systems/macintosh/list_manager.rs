@@ -163,8 +163,8 @@ impl ProcessListRecord {
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct ProcessListManagerState {
     records: HashMap<u32, ProcessListRecord>,
-    /// What the 68K dispatcher last wrote into each list's `cellArray` and
-    /// `cells`, so a copy that differs is known to be the application's own
+    /// What each list's `cellArray` and `cells` held when the List Manager
+    /// last left them (the 68K dispatcher's write, the PowerPC one's note), so a copy that differs is known to be the application's own
     /// edit, and one that does not leaves the record, which may be newer,
     /// alone.
     guest_images: HashMap<u32, ListGuestImage>,
@@ -190,6 +190,17 @@ impl ProcessListManagerState {
 
     pub(crate) fn set_guest_image(&mut self, handle: u32, image: ListGuestImage) {
         self.guest_images.insert(handle, image);
+    }
+
+    pub(crate) fn forget_guest_image(&mut self, handle: u32) {
+        self.guest_images.remove(&handle);
+    }
+
+    /// Every list's handle, in a fixed order.
+    pub(crate) fn handles(&self) -> Vec<u32> {
+        let mut handles: Vec<u32> = self.records.keys().copied().collect();
+        handles.sort_unstable();
+        handles
     }
 
     pub(crate) fn with_record_mut<R>(

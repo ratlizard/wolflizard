@@ -7180,3 +7180,15 @@ fn a_line_drawn_twice_in_pat_xor_leaves_nothing_behind() {
     assert_eq!(row(&mut loaded), [0x55, 0x55]);
 }
 
+
+#[test]
+fn cyan_matches_the_palette_entry_mac_os_8_5_draws() {
+    // Two entries of Cythera's own colour table, and cyanColor. Rounded to
+    // its nearest 5-bit cell, cyan is one step nearer entry 3; truncated, it
+    // is nearer entry 118, which the game's sky never shows on Mac OS 8.5.
+    let mut clut = [[0xffff; 3]; 256];
+    clut[3] = [0x0000, 0xa800, 0xa800];
+    clut[118] = [0x2000, 0x8400, 0xfc00];
+    let cyan = ppc_legacy_qd_color_to_rgb(273);
+    assert_eq!(ppc_rgb_color_to_index_in_clut(cyan, &clut, 256), 3);
+}

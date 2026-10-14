@@ -25,6 +25,37 @@ fn select_window_preserves_classic_visible_region() {
     );
 }
 
+#[test]
+fn visible_region_follows_a_shaped_content_region() {
+    // Cythera's strange device: its WDEF makes contRgn round, and the
+    // corners of its port rectangle are not the window's to draw on.
+    let mut loaded = load_pef_application(&synthetic_pef_with_import(b"ShowWindow")).unwrap();
+    let scratch = PPC_DATA_BASE + 0x1400;
+    loaded.memory.add_region(scratch, vec![0; 0x1000]);
+    let window = create_test_cwindow(&mut loaded, scratch, (40, 50, 140, 250), 0, false, u32::MAX);
+    // Global rows 40..140; the 10 by 10 square at the top left cut away.
+    let rows: Vec<Vec<i16>> = (40..140)
+        .map(|v| if v < 50 { vec![60, 250] } else { vec![50, 250] })
+        .collect();
+    let storage = ppc_region_storage_from_rows(40, &rows).unwrap();
+    let (handle, ptr) = (scratch + 0x100, scratch + 0x110);
+    loaded.memory.write_u32_be(handle, ptr).unwrap();
+    loaded.memory.write_bytes(ptr, &storage).unwrap();
+    loaded
+        .memory
+        .write_u32_be(window + PPC_CWINDOW_CONTENT_RGN_OFFSET, handle)
+        .unwrap();
+
+    loaded.cpu.gpr[3] = window;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::ShowWindow);
+
+    let vis_rgn = loaded.memory.read_u32_be(window + PPC_CGRAF_PORT_VIS_RGN_OFFSET).unwrap();
+    let vis = ppc_region_storage(&mut loaded.memory, vis_rgn).unwrap();
+    assert!(!ppc_point_in_region_storage(&vis, 5, 5), "the cut corner is in visRgn");
+    assert!(ppc_point_in_region_storage(&vis, 5, 15));
+    assert!(ppc_point_in_region_storage(&vis, 15, 5));
+}
+
 pub(crate) fn create_test_cwindow(
     loaded: &mut PpcLoadedApp,
     bounds_ptr: u32,

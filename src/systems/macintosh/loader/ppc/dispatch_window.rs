@@ -7609,6 +7609,22 @@ pub(super) fn ppc_maintain_window_vis_regions(
         let right = port.3.saturating_sub(dh);
         if top < bottom && left < right {
             let mut rows = vec![vec![left, right]; (bottom as i32 - top as i32) as usize];
+            // The visRgn starts from contRgn, not the port rectangle (p. 4-9):
+            // Cythera's strange device has a WDEF whose content region is
+            // round, and CopyBits of its offscreen picture to the port must
+            // leave the corners to what is behind, as Mac OS 8.5 does.
+            if let Some(content_rows) = memory
+                .read_u32_be(window.wrapping_add(PPC_CWINDOW_CONTENT_RGN_OFFSET))
+                .and_then(|rgn| ppc_region_storage(memory, rgn))
+                .filter(|storage| {
+                    ppc_region_storage_bbox(storage).is_some_and(|b| b.0 < b.2 && b.1 < b.3)
+                })
+                .and_then(|storage| ppc_region_rows_for_band(&storage, top, bottom))
+            {
+                for (row, content) in rows.iter_mut().zip(content_rows) {
+                    *row = ppc_region_intersect_rows(row, &content);
+                }
+            }
             for storage in &covering {
                 if let Some(cover) = ppc_region_rows_for_band(storage, top, bottom) {
                     for (row, cover) in rows.iter_mut().zip(cover) {

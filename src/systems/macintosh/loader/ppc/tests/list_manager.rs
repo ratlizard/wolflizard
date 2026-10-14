@@ -541,3 +541,68 @@ fn cloned_native_adapter_detaches_list_manager_state() {
         .contains(&(0, 0)));
     assert!(!original.list_manager.contains_handle(0x0032_3000));
 }
+
+#[test]
+fn a_list_takes_back_cells_the_application_sorted_where_they_lie() {
+    let pef = synthetic_pef_with_import(b"LNew");
+    let mut loaded = load_pef_application(&pef).unwrap();
+    let scratch = PPC_DATA_BASE + 0x1000;
+    let view_ptr = scratch;
+    let bounds_ptr = scratch + 8;
+    let text_ptr = scratch + 20;
+    let output_ptr = scratch + 32;
+    let length_ptr = scratch + 48;
+    loaded.memory.add_region(scratch, vec![0; 64]);
+    ppc_write_rect(&mut loaded.memory, view_ptr, 10, 20, 90, 220).unwrap();
+    ppc_write_rect(&mut loaded.memory, bounds_ptr, 0, 0, 2, 1).unwrap();
+    loaded.cpu.gpr[3] = view_ptr;
+    loaded.cpu.gpr[4] = bounds_ptr;
+    loaded.cpu.gpr[5] = (20u32 << 16) | 100;
+    loaded.cpu.gpr[6] = 0;
+    loaded.cpu.gpr[7] = PPC_MAIN_GWORLD;
+    loaded.cpu.gpr[8] = 0;
+    loaded.cpu.gpr[9] = 0;
+    loaded.cpu.gpr[10] = 0;
+    let probe = loaded.run_with_hle_imports(128);
+    assert_eq!(probe.unsupported_import_index, None);
+    let list = loaded.cpu.gpr[3];
+    assert_ne!(list, 0);
+
+    let set_cell = |loaded: &mut PpcLoadedApp, row: u32, text: &[u8]| {
+        loaded.memory.write_bytes(text_ptr, text).unwrap();
+        loaded.cpu.gpr[3] = text_ptr;
+        loaded.cpu.gpr[4] = text.len() as u32;
+        loaded.cpu.gpr[5] = row << 16;
+        loaded.cpu.gpr[6] = list;
+        run_test_import(loaded, PpcImportDispatcherTarget::LSetCell);
+    };
+    let get_cell = |loaded: &mut PpcLoadedApp, row: u32| {
+        loaded.memory.write_u16_be(length_ptr, 16).unwrap();
+        loaded.cpu.gpr[3] = output_ptr;
+        loaded.cpu.gpr[4] = length_ptr;
+        loaded.cpu.gpr[5] = row << 16;
+        loaded.cpu.gpr[6] = list;
+        run_test_import(loaded, PpcImportDispatcherTarget::LGetCell);
+        let length = usize::from(loaded.memory.read_u16_be(length_ptr).unwrap());
+        let mut text = vec![0u8; length];
+        loaded.memory.read_bytes_into(output_ptr, &mut text).unwrap();
+        text
+    };
+    set_cell(&mut loaded, 0, b"zz");
+    set_cell(&mut loaded, 1, b"aa");
+    assert_eq!(get_cell(&mut loaded, 0), b"zz");
+
+    // The application sorts the data where it lies, as Cythera does.
+    let list_ptr = loaded.memory.read_u32_be(list).unwrap();
+    let cells = loaded.memory.read_u32_be(list_ptr + PPC_LIST_CELLS_OFFSET).unwrap();
+    let data_ptr = loaded.memory.read_u32_be(cells).unwrap();
+    loaded.memory.write_bytes(data_ptr, b"aazz").unwrap();
+
+    assert_eq!(get_cell(&mut loaded, 0), b"aa");
+    assert_eq!(get_cell(&mut loaded, 1), b"zz");
+    // A later change keeps the order the application left.
+    set_cell(&mut loaded, 1, b"zy");
+    assert_eq!(get_cell(&mut loaded, 0), b"aa");
+    assert_eq!(get_cell(&mut loaded, 1), b"zy");
+}
+

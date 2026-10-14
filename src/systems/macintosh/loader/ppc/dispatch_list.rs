@@ -39,7 +39,122 @@ pub(super) struct PpcListDispatchContext<'a> {
     pub(super) tick_count: u32,
 }
 
+/// A list's `cellArray` and `cells` as guest memory holds them now, when
+/// they have the shape of this record's: a word a cell and one more, and the
+/// data the last word says there is.
+fn ppc_list_read_guest_image(
+    memory: &mut PpcSectionMem,
+    record: &PpcListRecord,
+) -> Option<crate::list_manager::ListGuestImage> {
+    let count = record.cell_count();
+    let list_ptr = memory.read_u32_be(record.handle).filter(|ptr| *ptr != 0)?;
+    if usize::from(memory.read_u16_be(list_ptr + PPC_LIST_MAX_INDEX_OFFSET)?) != count * 2 {
+        return None;
+    }
+    let offsets = (0..=count as u32)
+        .map(|index| memory.read_u16_be(list_ptr + PPC_LIST_CELL_ARRAY_OFFSET + index * 2))
+        .collect::<Option<Vec<u16>>>()?;
+    let mut data = vec![0u8; usize::from(offsets[count] & 0x7FFF)];
+    if !data.is_empty() {
+        let data_ptr = memory
+            .read_u32_be(record.cells_handle)
+            .filter(|ptr| *ptr != 0)?;
+        memory.read_bytes_into(data_ptr, &mut data)?;
+    }
+    Some((offsets, data))
+}
+
+/// Take back what the application wrote into each list's `cellArray` and
+/// `cells` since the last List Manager call returned. Cythera fills the
+/// character window's list with drawing off and sorts `**cells` where it
+/// lies, as a Mac lets it (More Macintosh Toolbox, pp. 4-72--4-73); a list
+/// that never read the sort back drew the cells in the order they were set.
+/// A copy that is still the one noted at the last return leaves the record
+/// alone, as on 68K (`read_list_guest_image`).
+fn ppc_lists_take_guest_edits(
+    memory: &mut PpcSectionMem,
+    list_manager: &mut ProcessListManagerState,
+) {
+    for handle in list_manager.handles() {
+        let Some(noted) = list_manager.guest_image(handle).cloned() else {
+            continue;
+        };
+        let Some(image) = list_manager
+            .with_record_ref(handle, |record| ppc_list_read_guest_image(memory, record))
+            .flatten()
+        else {
+            continue;
+        };
+        if image == noted {
+            continue;
+        }
+        if list_manager
+            .with_record_mut(handle, |record| {
+                record.absorb_guest_image(&image.0, &image.1)
+            })
+            .unwrap_or(false)
+        {
+            list_manager.set_guest_image(handle, image);
+        }
+    }
+}
+
+/// Note each list's guest copy as a List Manager call leaves it, for
+/// `ppc_lists_take_guest_edits` to tell the application's edit from it.
+fn ppc_lists_note_guest_images(
+    memory: &mut PpcSectionMem,
+    list_manager: &mut ProcessListManagerState,
+) {
+    for handle in list_manager.handles() {
+        match list_manager
+            .with_record_ref(handle, |record| ppc_list_read_guest_image(memory, record))
+            .flatten()
+        {
+            Some(image) => list_manager.set_guest_image(handle, image),
+            None => list_manager.forget_guest_image(handle),
+        }
+    }
+}
+
 pub(super) fn dispatch_list_import(context: PpcListDispatchContext<'_>) -> Option<PpcImportAction> {
+    let PpcListDispatchContext {
+        binding,
+        cpu,
+        memory,
+        process_memory_manager,
+        heap_cursor,
+        heap_limit,
+        last_mem_error,
+        handles,
+        controls,
+        list_manager,
+        gworlds,
+        vfs_resources,
+        current_resource_refnum,
+        tick_count,
+    } = context;
+    ppc_lists_take_guest_edits(memory, list_manager);
+    let action = dispatch_list_import_inner(PpcListDispatchContext {
+        binding,
+        cpu: &mut *cpu,
+        memory: &mut *memory,
+        process_memory_manager: &mut *process_memory_manager,
+        heap_cursor: &mut *heap_cursor,
+        heap_limit,
+        last_mem_error: &mut *last_mem_error,
+        handles: &mut *handles,
+        controls: &mut *controls,
+        list_manager: &mut *list_manager,
+        gworlds,
+        vfs_resources,
+        current_resource_refnum,
+        tick_count,
+    });
+    ppc_lists_note_guest_images(memory, list_manager);
+    action
+}
+
+fn dispatch_list_import_inner(context: PpcListDispatchContext<'_>) -> Option<PpcImportAction> {
     let PpcListDispatchContext {
         binding,
         cpu,

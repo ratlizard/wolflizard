@@ -100,10 +100,17 @@ pub(crate) fn ppc_rgb_color_to_valid_index_in_clut(
     {
         return Some(index);
     }
-    let target = ppc_rgb_color_to_rgb555(color);
-    let target_r = i64::from((target >> 10) & 0x1f);
-    let target_g = i64::from((target >> 5) & 0x1f);
-    let target_b = i64::from(target & 0x1f);
+    // The target's nearest 5-bit cell, rounded. ppc_rgb_color_to_rgb555
+    // truncates, which is right for a direct pixel (Imaging With QuickDraw,
+    // p. 4-16), but here it moves a colour into the neighbouring cell:
+    // Cythera's cyanColor (0241/AB54/EAFF) then matches entry 118
+    // (2000/8400/FC00) of its own table instead of entry 3 (0000/A800/A800),
+    // and its sky and a conversation's keywords turn blue where Mac OS 8.5
+    // draws them (0,191,191).
+    let cell = |value: u16| i64::from(((u32::from(value) * 31) + 32_767) / 65_535);
+    let target_r = cell(color.red);
+    let target_g = cell(color.green);
+    let target_b = cell(color.blue);
     clut.iter()
         .take(entry_count.min(clut.len()))
         .enumerate()

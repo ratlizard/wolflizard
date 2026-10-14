@@ -123,6 +123,35 @@ pub(crate) fn ppc_line_to(
     color: PpcRgbColor,
     explicit_index: Option<u8>,
 ) -> bool {
+    ppc_line_to_with_pen(
+        memory,
+        gworlds,
+        current_gworld,
+        from,
+        to,
+        color,
+        explicit_index,
+        None,
+    )
+}
+
+/// A line drawn with the port's pen. With `pen` (the background colour and
+/// the pen pattern) the port's pen mode combines each pattern bit with the
+/// destination, as FrameRect does (Imaging With QuickDraw (1994), pp.
+/// 3-6--3-8); without it the line is solid foreground. Cythera draws the
+/// outline of a drawer being dragged with FrameRect and LineTo in patXor and
+/// draws it again to take it away.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn ppc_line_to_with_pen(
+    memory: &mut PpcSectionMem,
+    gworlds: &[PpcGWorldRecord],
+    current_gworld: u32,
+    from: (i16, i16),
+    to: (i16, i16),
+    color: PpcRgbColor,
+    explicit_index: Option<u8>,
+    pen: Option<(PpcRgbColor, &[u8; 8])>,
+) -> bool {
     let Some(surface) = ppc_live_quickdraw_surface(memory, gworlds, current_gworld) else {
         return false;
     };
@@ -160,23 +189,13 @@ pub(crate) fn ppc_line_to(
             .read_u16_be(current_gworld.wrapping_add(PPC_CGRAF_PORT_PN_SIZE_OFFSET + 2))
             .unwrap_or(1),
     );
-    let mut wrote = false;
+    // A pixel is written once however the pen's squares overlap along the
+    // line, so an XOR line drawn twice leaves nothing behind.
+    let mut points = std::collections::BTreeSet::new();
     let mut paint_pen = |x: i32, y: i32| {
         for py in y..y.saturating_add(pen_height) {
             for px in x..x.saturating_add(pen_width) {
-                if ppc_local_point_in_port_regions(
-                    surface,
-                    (px, py),
-                    vis_storage.as_deref(),
-                    clip_storage.as_deref(),
-                ) {
-                    wrote |= ppc_quickdraw_write_raw_pixel(
-                        memory,
-                        front_buffer,
-                        (px, py),
-                        color_pixel,
-                    );
-                }
+                points.insert((px, py));
             }
         }
     };
@@ -223,6 +242,47 @@ pub(crate) fn ppc_line_to(
         }
     }
 
+    let pen = pen.map(|(back_color, pattern)| {
+        let back_pixel =
+            ppc_quickdraw_surface_fore_pixel(memory, surface, back_color, None).unwrap_or(0);
+        let pen_mode = memory
+            .read_u16_be(current_gworld.wrapping_add(PPC_CGRAF_PORT_PN_MODE_OFFSET))
+            .map_or(PPC_QD_PEN_MODE_PAT_COPY, |mode| mode as i16);
+        (back_pixel, *pattern, pen_mode)
+    });
+    let mut wrote = false;
+    for point in points {
+        if !ppc_local_point_in_port_regions(
+            surface,
+            point,
+            vis_storage.as_deref(),
+            clip_storage.as_deref(),
+        ) {
+            continue;
+        }
+        let pixel = match pen {
+            None => Some(color_pixel),
+            Some((back_pixel, pattern, pen_mode)) => {
+                let port_x = point.0 + i32::from(surface.left);
+                let port_y = point.1 + i32::from(surface.top);
+                let mut bit = pattern[(port_y & 7) as usize] & (0x80 >> (port_x & 7)) != 0;
+                if pen_mode & 0x04 != 0 {
+                    bit = !bit;
+                }
+                match pen_mode & 0x03 {
+                    1 => bit.then_some(color_pixel),
+                    2 if bit => ppc_quickdraw_read_pixel(memory, front_buffer, point)
+                        .map(|destination| destination ^ color_pixel),
+                    2 => None,
+                    3 => bit.then_some(back_pixel),
+                    _ => Some(if bit { color_pixel } else { back_pixel }),
+                }
+            }
+        };
+        if let Some(pixel) = pixel {
+            wrote |= ppc_quickdraw_write_raw_pixel(memory, front_buffer, point, pixel);
+        }
+    }
     wrote
 }
 

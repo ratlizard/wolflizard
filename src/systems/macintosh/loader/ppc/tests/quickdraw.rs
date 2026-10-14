@@ -7111,3 +7111,69 @@ fn copied_color_port_bitmap_proxy_resolves_pixels_and_colour_table() {
         assert!(table.handle.is_none());
     }
 }
+
+#[test]
+fn a_line_drawn_twice_in_pat_xor_leaves_nothing_behind() {
+    const ROW_BYTES: u32 = 4;
+
+    let pef = synthetic_pef_with_import(b"PaintRect");
+    let mut loaded = load_pef_application(&pef).unwrap();
+    let scratch = PPC_DATA_BASE + 0x1800;
+    let port = scratch;
+    let pixels = scratch + 0x200;
+    loaded.memory.add_region(scratch, vec![0; 0x400]);
+    loaded
+        .memory
+        .write_bytes(pixels, &vec![0x55; (ROW_BYTES * 32) as usize])
+        .unwrap();
+    loaded.gworlds.push(PpcGWorldRecord {
+        ui_theme: crate::ui_theme::UiThemeId::ClassicSystem7,
+        port,
+        pixmap_handle: 0,
+        pixmap: 0,
+        base_addr: pixels,
+        gdevice: PPC_MAIN_GDEVICE,
+        width: 9,
+        height: 32,
+        depth: 2,
+        row_bytes: ROW_BYTES,
+        pixels_locked: false,
+        pixels_no_purge: false,
+    });
+    loaded
+        .current_gworld
+        .with_mut(|current_gworld| *current_gworld = port);
+    for offset in [0, 2] {
+        loaded
+            .memory
+            .write_u16_be(port + PPC_CGRAF_PORT_PN_SIZE_OFFSET + offset, 1)
+            .unwrap();
+    }
+    loaded.quickdraw_fore_indices.insert(port, 3);
+    // The grey pattern, and patXor (Imaging With QuickDraw, p. 3-8).
+    loaded.toolbox_startup.quickdraw_pen_pattern = [0xAA, 0x55, 0xAA, 0x55, 0xAA, 0x55, 0xAA, 0x55];
+    loaded.cpu.gpr[3] = 10;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::PenMode);
+
+    let row = |loaded: &mut PpcLoadedApp| {
+        [
+            loaded.memory.read_u8(pixels + 3 * ROW_BYTES).unwrap(),
+            loaded.memory.read_u8(pixels + 3 * ROW_BYTES + 1).unwrap(),
+        ]
+    };
+    let draw = |loaded: &mut PpcLoadedApp| {
+        loaded.cpu.gpr[3] = 0;
+        loaded.cpu.gpr[4] = 3;
+        run_test_import(loaded, PpcImportDispatcherTarget::MoveTo);
+        loaded.cpu.gpr[3] = 7;
+        loaded.cpu.gpr[4] = 3;
+        run_test_import(loaded, PpcImportDispatcherTarget::LineTo);
+    };
+    draw(&mut loaded);
+    // Row 3 of the pattern is 0x55: the odd pixels are inverted against
+    // index 3 (1 ^ 3 = 2) and the even ones left.
+    assert_eq!(row(&mut loaded), [0x66, 0x66]);
+    draw(&mut loaded);
+    assert_eq!(row(&mut loaded), [0x55, 0x55]);
+}
+

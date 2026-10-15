@@ -185,6 +185,10 @@ fn trace_trap_pcs_sink() -> Option<&'static Mutex<std::io::BufWriter<std::fs::Fi
             );
             let _ = writeln!(
                 writer,
+                "# format: R <segment_id> <base_addr_hex>  (CODE resource read into the heap)"
+            );
+            let _ = writeln!(
+                writer,
                 "# format: T <pc_hex> <trap_word_hex>      (trap dispatch)"
             );
             Some(Mutex::new(writer))
@@ -200,6 +204,24 @@ pub fn record_segment_base(segment_id: i16, base_addr: u32) {
         use std::io::Write;
         if let Ok(mut w) = sink.lock() {
             let _ = writeln!(w, "B {} {:08X}", segment_id, base_addr);
+        }
+    }
+}
+
+/// Append an `R` line when one of the application's CODE resources is read
+/// into a heap block of its own (`reload_resource_data_from_file`), as a
+/// `GetResource('CODE', n)` does. The image the loader placed at startup
+/// (the `B` line) is a separate copy, and code that reached its segment
+/// through the Resource Manager runs from this one: on Cythera's 68K slice
+/// CODE 6 ran at the `R` address while its `B` line named the startup image
+/// (15 October 2026, where a probe in CODE 6 read as never reached). A
+/// segment can have both lines; which copy a trap came from is the one whose
+/// range holds its PC.
+pub fn record_resource_code_copy(segment_id: i16, base_addr: u32) {
+    if let Some(sink) = trace_trap_pcs_sink() {
+        use std::io::Write;
+        if let Ok(mut w) = sink.lock() {
+            let _ = writeln!(w, "R {} {:08X}", segment_id, base_addr);
         }
     }
 }

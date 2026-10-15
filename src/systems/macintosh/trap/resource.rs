@@ -1120,6 +1120,7 @@ impl super::TrapDispatcher {
 
         if refnum == 0 && res_type == *b"CODE" {
             self.mirror_application_code_resource_relocations(bus, res_id, ptr);
+            super::dispatch::record_resource_code_copy(res_id, ptr);
         }
 
         Some(ptr)

@@ -15940,20 +15940,31 @@ impl super::TrapDispatcher {
             //   sp+12..15 srcPtr     (first pushed → deepest)
             // 16-byte total pop, no result slot (PROCEDURE).
             //
-            // BII-vs-Systemless divergence: BII System 7.5.3 ROM walks the src
-            // bit image and writes the lasso-style mask into dst per IM:IV
-            // IV-22.  Systemless HLE is a no-op stub because masks are not
-            // modeled at the QuickDraw bottleneck-proc layer (high-level
-            // CopyMask reads/writes the bitmap directly via Rust code).
-            // The only shared, verifiable behaviour is the 16-byte pop
-            // discipline; IM:IV IV-22 explicitly disclaims clipping, so
-            // the src/dst mask contents are not comparable.
+            // This was a stub that only popped its arguments, and Cythera's
+            // 68K slice builds the shape of every picture-framed window from
+            // it: TPixsWDEF's wCalcRgns runs CalcMask over the frame
+            // picture and BitMapToRegion over the result. With the mask left
+            // blank the structure region came out empty but for the close
+            // box, the content region empty, and the game, which anchors the
+            // frame picture at the structure's bottom-right corner, drew a
+            // crate's or a dresser's frame into the content shifted by the
+            // close box's position and showed none of it around the window.
+            // The PowerPC import (`ppc_calc_mask`) already computes the mask;
+            // this is the same walk over the guest's memory.
             //
             // Contract-test coverage in this file (mod tests):
             //   src/trap/quickdraw.rs::tests::calcmask_consumes_16_byte_argument_frame
             //   src/trap/quickdraw.rs::tests::calcmask_five_call_composition_pops_eighty_bytes_total
+            //   src/trap/quickdraw.rs::tests::calcmask_masks_what_paint_cannot_reach_from_the_edges
             (true, 0x038) => {
                 let sp = cpu.read_reg(Register::A7);
+                let words = bus.read_word(sp) as i16;
+                let height = bus.read_word(sp + 2) as i16;
+                let dst_row = bus.read_word(sp + 4) as i16;
+                let src_row = bus.read_word(sp + 6) as i16;
+                let dst_ptr = bus.read_long(sp + 8);
+                let src_ptr = bus.read_long(sp + 12);
+                Self::calc_mask_1bpp(bus, src_ptr, dst_ptr, src_row, dst_row, height, words);
                 cpu.write_reg(Register::A7, sp + 16);
                 Ok(())
             }
@@ -22780,6 +22791,101 @@ impl super::TrapDispatcher {
             }
         }
 
+        true
+    }
+
+    /// CalcMask(srcPtr, dstPtr, srcRow, dstRow, height, words). Inside
+    /// Macintosh Volume IV (1986), p. IV-22: the destination gets 1s only
+    /// where paint could not leak in from any of the outer edges, like the
+    /// MacPaint lasso. Paint runs through the source's 0 bits from every
+    /// edge pixel that is 0; everything it does not reach, the 1 bits
+    /// included, is in the mask. The PowerPC import's `ppc_calc_mask` is the
+    /// same walk; a bad frame writes nothing, as SeedFill's does.
+    fn calc_mask_1bpp(
+        bus: &mut MacMemoryBus,
+        src_ptr: u32,
+        dst_ptr: u32,
+        src_row: i16,
+        dst_row: i16,
+        height: i16,
+        words: i16,
+    ) -> bool {
+        if src_ptr == 0 || dst_ptr == 0 || src_row <= 0 || dst_row <= 0 || height <= 0 || words <= 0
+        {
+            return false;
+        }
+        let width = (words as usize).saturating_mul(16);
+        let width_bytes = (words as usize).saturating_mul(2);
+        let height = height as usize;
+        let src_row = src_row as usize;
+        let dst_row = dst_row as usize;
+        if src_row < width_bytes || dst_row < width_bytes {
+            return false;
+        }
+        let Some(pixel_count) = width.checked_mul(height) else {
+            return false;
+        };
+        if pixel_count > SEEDFILL_MAX_PIXELS {
+            return false;
+        }
+        let (Some(src_len), Some(dst_len)) = (
+            Self::raw_1bpp_image_len(src_row, height, width_bytes),
+            Self::raw_1bpp_image_len(dst_row, height, width_bytes),
+        ) else {
+            return false;
+        };
+        if !Self::guest_range_in_ram(bus, src_ptr, src_len)
+            || !Self::guest_range_in_ram(bus, dst_ptr, dst_len)
+        {
+            return false;
+        }
+
+        let mut ink = Vec::with_capacity(pixel_count);
+        for y in 0..height {
+            for x in 0..width {
+                ink.push(Self::raw_1bpp_bit(bus, src_ptr, src_row, y, x));
+            }
+        }
+        let mut leaked = vec![false; pixel_count];
+        let mut stack = Vec::new();
+        for x in 0..width {
+            stack.push((x, 0));
+            stack.push((x, height - 1));
+        }
+        for y in 0..height {
+            stack.push((0, y));
+            stack.push((width - 1, y));
+        }
+        while let Some((x, y)) = stack.pop() {
+            let index = y * width + x;
+            if leaked[index] || ink[index] {
+                continue;
+            }
+            leaked[index] = true;
+            if x > 0 {
+                stack.push((x - 1, y));
+            }
+            if x + 1 < width {
+                stack.push((x + 1, y));
+            }
+            if y > 0 {
+                stack.push((x, y - 1));
+            }
+            if y + 1 < height {
+                stack.push((x, y + 1));
+            }
+        }
+        for y in 0..height {
+            for byte in 0..width_bytes {
+                let mut value = 0u8;
+                for bit in 0..8 {
+                    if !leaked[y * width + byte * 8 + bit] {
+                        value |= 0x80 >> bit;
+                    }
+                }
+                bus.write_byte(dst_ptr + (y * dst_row + byte) as u32, value);
+            }
+        }
         true
     }
 

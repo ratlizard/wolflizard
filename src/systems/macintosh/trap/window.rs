@@ -878,7 +878,8 @@ impl super::TrapDispatcher {
         restore_cgraf_fields: Option<(u32, u32)>,
         restore_port: u32,
         restore_clip: Option<(u32, u32)>,
-    ) {
+        recalc_vis: bool,
+    ) -> Option<u32> {
         bus.write_word(tramp, 0x48E7);
         bus.write_word(tramp + 2, 0xF0F0);
         bus.write_word(tramp + 4, 0x2F3C);
@@ -901,6 +902,7 @@ impl super::TrapDispatcher {
             Some(next) => {
                 bus.write_word(tramp + 46, 0x4EF9); // JMP abs.L
                 bus.write_long(tramp + 48, next);
+                None
             }
             None => {
                 let mut at = tramp + 46;
@@ -936,7 +938,25 @@ impl super::TrapDispatcher {
                     bus.write_word(at + 6, 0xA873); // _SetPort
                     at += 8;
                 }
+                // After a wCalcRgns the window's structure region is the
+                // WDEF's, and the windows behind it were clipped by the
+                // rectangle systemless wrote before the call. The Window
+                // Manager recalculates their visRgns once the definition
+                // function has answered (CalcVisBehind, Inside Macintosh
+                // Volume I, I-297); PEA theWindow; _CalcVis, recognised by
+                // its return address, does that here. Without it Cythera's
+                // map window, behind a crate's picture frame on the 68K
+                // slice, repainted over the frame every tick.
+                let mut calcvis_site = None;
+                if recalc_vis {
+                    bus.write_word(at, 0x4879); // PEA abs.L
+                    bus.write_long(at + 2, window_ptr);
+                    bus.write_word(at + 6, 0xA909); // _CalcVis
+                    at += 8;
+                    calcvis_site = Some(at);
+                }
                 bus.write_word(at, 0x4E75); // RTS
+                calcvis_site
             }
         }
     }
@@ -956,11 +976,26 @@ impl super::TrapDispatcher {
         let def_handle = bus.read_long(window_ptr + Self::WINDOW_DEF_PROC_OFFSET);
         let proc_addr = Self::window_def_proc_addr(bus, def_handle);
         if std::env::var_os("SYSTEMLESS_TRACE_WDEF").is_some() {
+            let rgn_box = |bus: &MacMemoryBus, offset: u32| {
+                let handle = bus.read_long(window_ptr + offset);
+                Self::region_handle_rect(bus, handle)
+            };
+            let pixmap = bus.read_long(bus.read_long(window_ptr + 2));
             eprintln!(
-                "[WDEF] window=${window_ptr:08X} def_handle=${def_handle:08X} proc=${proc_addr:08X} first=${:04X} target=${:08X} messages={:?}",
+                "[WDEF] window=${window_ptr:08X} def_handle=${def_handle:08X} proc=${proc_addr:08X} first=${:04X} target=${:08X} messages={:?} visible={} portRect={:?} pixmapBounds={:?} struc={:?} cont={:?}",
                 bus.read_word(proc_addr),
                 bus.read_long(proc_addr + 2),
-                messages
+                messages,
+                self.window_visible(bus, window_ptr),
+                self.window_port_rect(bus, window_ptr),
+                (
+                    bus.read_word(pixmap + 6) as i16,
+                    bus.read_word(pixmap + 8) as i16,
+                    bus.read_word(pixmap + 10) as i16,
+                    bus.read_word(pixmap + 12) as i16,
+                ),
+                rgn_box(bus, Self::WINDOW_STRUC_RGN_OFFSET),
+                rgn_box(bus, Self::WINDOW_CONT_RGN_OFFSET),
             );
         }
         if !Self::window_def_entry_looks_callable(bus, proc_addr) {
@@ -1061,6 +1096,9 @@ impl super::TrapDispatcher {
             })
             .collect();
 
+        let recalc_vis = messages
+            .iter()
+            .any(|&(message, _)| message == Self::WDEF_WCALC_RGNS_MSG);
         for (idx, &(message, param)) in messages.iter().enumerate() {
             let next = trampolines.get(idx + 1).copied();
             let final_restore = if next.is_none() {
@@ -1068,7 +1106,7 @@ impl super::TrapDispatcher {
             } else {
                 None
             };
-            Self::write_window_def_trampoline(
+            let calcvis_site = Self::write_window_def_trampoline(
                 bus,
                 trampolines[idx],
                 variant,
@@ -1085,7 +1123,11 @@ impl super::TrapDispatcher {
                 } else {
                     None
                 },
+                next.is_none() && recalc_vis,
             );
+            if let Some(site) = calcvis_site {
+                self.window_def_calcvis_sites.insert(site);
+            }
         }
 
         bus.write_long(return_slot, return_pc);
@@ -3957,6 +3999,26 @@ impl super::TrapDispatcher {
     ///
     /// Full-screen windows are initialized separately above because kiosk
     /// mode deliberately uses a black stage instead of the classic desktop.
+    /// A revealed window's content is erased by PaintOne, which erases the
+    /// content region (Inside Macintosh Volume I, I-296). For a window whose
+    /// application WDEF has yet to run its wCalcRgns that region is still
+    /// systemless's rectangle, and erasing it left white corners outside a
+    /// shaped window -- the strange device's round window on Cythera's 68K
+    /// slice. Such a window is erased after the WDEF chain instead, at the
+    /// CalcVis its last trampoline calls.
+    fn paint_or_defer_new_window_content<C: CpuOps>(
+        &mut self,
+        bus: &mut MacMemoryBus,
+        cpu: &mut C,
+        window_ptr: u32,
+    ) {
+        if self.window_uses_custom_def_proc(bus, window_ptr) {
+            self.window_def_pending_erase.insert(window_ptr);
+        } else {
+            self.paint_new_window_content(bus, cpu, window_ptr, true);
+        }
+    }
+
     fn paint_new_window_content<C: CpuOps>(
         &mut self,
         bus: &mut MacMemoryBus,
@@ -4655,7 +4717,7 @@ impl super::TrapDispatcher {
                     self.set_window_vis_from_content(bus, the_window, true);
                     if !was_visible {
                         self.save_window_under_pixels(bus, the_window);
-                        self.paint_new_window_content(bus, cpu, the_window, true);
+                        self.paint_or_defer_new_window_content(bus, cpu, the_window);
                     }
                     if !was_visible {
                         if was_front {
@@ -4700,8 +4762,11 @@ impl super::TrapDispatcher {
                     self.capture_gui_frame(bus, &format!("show_window_{:08X}", the_window));
                 }
                 cpu.write_reg(Register::A7, sp + 4);
-                if arm_custom_wdef_draw {
-                    self.arm_window_def_draw(cpu, bus, the_window);
+                // A window whose erase waits on its WDEF is erased now if the
+                // WDEF cannot be called.
+                let armed = arm_custom_wdef_draw && self.arm_window_def_draw(cpu, bus, the_window);
+                if !armed && self.window_def_pending_erase.remove(&the_window) {
+                    self.paint_new_window_content(bus, cpu, the_window, true);
                 }
                 Ok(())
             }
@@ -5685,7 +5750,7 @@ impl super::TrapDispatcher {
                     if show_flag {
                         if !was_visible {
                             self.save_window_under_pixels(bus, the_window);
-                            self.paint_new_window_content(bus, cpu, the_window, true);
+                            self.paint_or_defer_new_window_content(bus, cpu, the_window);
                         }
                         if self.front_window == 0 || !self.window_visible(bus, self.front_window) {
                             // ShowHide deliberately leaves z-order and
@@ -5711,8 +5776,11 @@ impl super::TrapDispatcher {
                     }
                 }
                 cpu.write_reg(Register::A7, sp + 6);
-                if arm_custom_wdef_draw {
-                    self.arm_window_def_draw(cpu, bus, the_window);
+                // A window whose erase waits on its WDEF is erased now if the
+                // WDEF cannot be called.
+                let armed = arm_custom_wdef_draw && self.arm_window_def_draw(cpu, bus, the_window);
+                if !armed && self.window_def_pending_erase.remove(&the_window) {
+                    self.paint_new_window_content(bus, cpu, the_window, true);
                 }
                 Ok(())
             }
@@ -5724,11 +5792,27 @@ impl super::TrapDispatcher {
             // BasiliskII leaves CalcVis itself as a stack-only no-op;
             // CalcVisBehind handles the recompute path for windows
             // behind a clobbered region.
+            //
+            // Called from the end of a WDEF chain that ran wCalcRgns (see
+            // write_window_def_trampoline), it recalculates every window's
+            // visRgn from the structure regions now in place.
             (true, 0x109) => {
                 let sp = cpu.read_reg(Register::A7);
                 let _the_window = bus.read_long(sp);
 
                 cpu.write_reg(Register::A7, sp + 4);
+                if self
+                    .window_def_calcvis_sites
+                    .contains(&cpu.read_reg(Register::PC))
+                {
+                    self.recalculate_window_vis_regions(bus);
+                    let pending: Vec<u32> = self.window_def_pending_erase.drain().collect();
+                    for window in pending {
+                        if self.window_visible(bus, window) {
+                            self.paint_new_window_content(bus, cpu, window, true);
+                        }
+                    }
+                }
                 Ok(())
             }
 

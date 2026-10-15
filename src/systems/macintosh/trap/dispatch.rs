@@ -1696,6 +1696,17 @@ pub struct TrapDispatcher {
     /// Address of the lazily-allocated trampoline template used by the
     /// Window Manager to call a guest WDEF procedure.
     pub(crate) window_def_trampoline: u32,
+    /// The return addresses of the `_CalcVis` a WDEF chain's last trampoline
+    /// calls after a wCalcRgns. The CalcVis handler recomputes every window's
+    /// visRgn when it is called from one of them, because an application WDEF
+    /// has just replaced a structure region the windows behind are clipped
+    /// by (Inside Macintosh Volume I, I-297).
+    pub(crate) window_def_calcvis_sites: HashSet<u32>,
+    /// Windows with an application WDEF revealed by ShowWindow or ShowHide
+    /// whose content is erased only once that WDEF's wCalcRgns has given
+    /// them their shape (PaintOne erases the content region, not the port
+    /// rectangle; Inside Macintosh Volume I, I-296).
+    pub(crate) window_def_pending_erase: HashSet<u32>,
     /// Address of the lazily-allocated trampoline template used by the
     /// Control Manager to call a guest CDEF procedure.
     pub(crate) control_def_trampoline: u32,
@@ -4108,6 +4119,8 @@ impl TrapDispatcher {
             device_loop_trampoline: 0,
             list_def_trampoline: 0,
             window_def_trampoline: 0,
+            window_def_calcvis_sites: HashSet::new(),
+            window_def_pending_erase: HashSet::new(),
             control_def_trampoline: 0,
             control_def_trampoline_chain: Vec::new(),
             control_callback_stack: Vec::new(),

@@ -1188,7 +1188,14 @@ fn getnewcwindow_visible_custom_wdef_arms_wnew_wcalcrgns_then_wdraw_trampoline()
         "the restored port is the application's, not the WMgrPort"
     );
     assert_eq!(bus.read_word(draw_tramp + 82), 0xA873, "_SetPort");
-    assert_eq!(bus.read_word(draw_tramp + 84), 0x4E75, "RTS");
+    // The chain ran wCalcRgns, so the windows behind are clipped again by
+    // the structure region the WDEF wrote: PEA theWindow; _CalcVis, whose
+    // return address the CalcVis handler knows; then RTS.
+    assert_eq!(bus.read_word(draw_tramp + 84), 0x4879, "PEA the window");
+    assert_eq!(bus.read_long(draw_tramp + 86), window_ptr);
+    assert_eq!(bus.read_word(draw_tramp + 90), 0xA909, "_CalcVis");
+    assert!(disp.window_def_calcvis_sites.contains(&(draw_tramp + 92)));
+    assert_eq!(bus.read_word(draw_tramp + 92), 0x4E75, "RTS");
     assert_eq!(
         *disp.current_port, disp.window_manager_cport,
         "wDraw should run in the color Window Manager port"

@@ -1047,6 +1047,54 @@
     }
 
     #[test]
+    fn calcmask_masks_what_paint_cannot_reach_from_the_edges() {
+        // Inside Macintosh Volume IV (1986), p. IV-22: CalcMask's
+        // destination has 1s only where paint could not leak in from the
+        // outer edges. A ring of ink with a hole in it: the ring and the
+        // hole are masked, the white outside it is not. The stub this
+        // replaced left the destination as it found it, and Cythera's 68K
+        // picture-framed windows came out with empty regions.
+        let (mut d, mut cpu, mut bus) = setup();
+        let src = bus.alloc(10);
+        let dst = bus.alloc(10);
+        let source_rows = [
+            [0x00, 0x00],
+            [0x3C, 0x00],
+            [0x24, 0x00],
+            [0x3C, 0x00],
+            [0x00, 0x00],
+        ];
+        for (row, bytes) in source_rows.iter().enumerate() {
+            bus.write_byte(src + row as u32 * 2, bytes[0]);
+            bus.write_byte(src + row as u32 * 2 + 1, bytes[1]);
+            bus.write_byte(dst + row as u32 * 2, 0xAA);
+            bus.write_byte(dst + row as u32 * 2 + 1, 0x55);
+        }
+        bus.write_word(TEST_SP, 1); // words = 16 pixels
+        bus.write_word(TEST_SP + 2, 5); // height
+        bus.write_word(TEST_SP + 4, 2); // dstRow
+        bus.write_word(TEST_SP + 6, 2); // srcRow
+        bus.write_long(TEST_SP + 8, dst);
+        bus.write_long(TEST_SP + 12, src);
+
+        let result = d.dispatch_quickdraw(true, 0x038, &mut cpu, &mut bus);
+        assert!(result.unwrap().is_ok());
+        assert_eq!(cpu.read_reg(Register::A7), TEST_SP + 16);
+
+        let expected_rows = [
+            [0x00, 0x00],
+            [0x3C, 0x00],
+            [0x3C, 0x00],
+            [0x3C, 0x00],
+            [0x00, 0x00],
+        ];
+        for (row, bytes) in expected_rows.iter().enumerate() {
+            assert_eq!(bus.read_byte(dst + row as u32 * 2), bytes[0], "row {row}");
+            assert_eq!(bus.read_byte(dst + row as u32 * 2 + 1), bytes[1], "row {row}");
+        }
+    }
+
+    #[test]
     fn calcmask_five_call_composition_pops_eighty_bytes_total() {
         // 5 successive CalcMask dispatches with varying metric args
         // (height, words) each advance A7 by 16 bytes, total 80 bytes.

@@ -5,6 +5,7 @@ pub(crate) mod controller;
 pub(crate) mod decompression;
 pub(crate) mod described_video;
 mod toolbox;
+pub(crate) mod cdtoons;
 
 pub(crate) use toolbox::{
     ppc_qt_display_clip_contains, ppc_qt_mark_drawing_complete, ppc_qt_reset_movie_toolbox_state,
@@ -355,6 +356,7 @@ pub struct PpcQuickTimeState {
     pub movie_video_samples: Option<PpcQuickTimeVideoSampleTableRecord>,
     pub movie_video_decode_cache: Option<PpcQuickTimeVideoDecodeCacheRecord>,
     pub(crate) movie_last_idle_draw: Option<PpcQuickTimeMovieDrawKey>,
+    pub(crate) movie_cdtoons_decoder: Option<Box<cdtoons::PpcCdToonsDecoder>>,
     pub movie_audio_track: Option<PpcQuickTimeAudioTrackRecord>,
     pub movie_tracks: Vec<PpcQuickTimeTrackRecord>,
     pub movie_controllers: Vec<PpcQuickTimeControllerRecord>,
@@ -444,6 +446,7 @@ impl Default for PpcQuickTimeState {
             movie_video_samples: None,
             movie_video_decode_cache: None,
             movie_last_idle_draw: None,
+            movie_cdtoons_decoder: None,
             movie_audio_track: None,
             movie_tracks: Vec::new(),
             movie_controllers: Vec::new(),
@@ -885,6 +888,12 @@ pub(super) fn dispatch_quicktime_compatibility(
             else {
                 return PpcImportAction::Return(ppc_i16_result(PPC_INVALID_COMPONENT_ID));
             };
+            if qt_trace_enabled() && cpu.gpr[4] as i16 != 1 {
+                eprintln!(
+                    "[QT-TRACE] MCDoAction controller=${:08X} action={} params=${:08X} lr=${:08X}",
+                    cpu.gpr[3], cpu.gpr[4] as i16, cpu.gpr[5], cpu.lr
+                );
+            }
             match cpu.gpr[4] as i16 {
                 1 => {
                     // mcActionIdle gives the assigned movie processing time.
@@ -892,12 +901,64 @@ pub(super) fn dispatch_quicktime_compatibility(
                         return PpcImportAction::Return(0);
                     }
                     let controller = cpu.gpr[3];
+                    let was_playing = quicktime.movie_started;
                     cpu.gpr[3] = movie;
                     let (error, drew) =
                         ppc_qt_movies_task(cpu, memory, gworlds, current_gworld, quicktime, sound);
                     cpu.gpr[3] = controller;
                     if error == PPC_NO_ERR {
                         ppc_qt_mark_drawing_complete(quicktime, drew);
+                    }
+                    // A movie controller that reaches the end of its movie
+                    // stops it with mcActionPlay at a rate of 0, which goes
+                    // through the application's action filter like any
+                    // action the controller performs (Inside Macintosh:
+                    // QuickTime Components (1993), pp. 2-47–2-48). Where in
+                    // Time is Carmen Sandiego? learns that its movie has
+                    // finished only from that call: its filter compares the
+                    // controller's current time with the movie's end.
+                    if error == PPC_NO_ERR && was_playing && !quicktime.movie_started {
+                        let filter = quicktime
+                            .movie_controllers
+                            .iter()
+                            .find(|record| record.handle == controller)
+                            .map(|record| (record.action_filter, record.action_ref_con));
+                        if let Some((filter, ref_con)) = filter.filter(|(filter, _)| *filter != 0) {
+                            if qt_trace_enabled() {
+                                eprintln!(
+                                    "[QT-TRACE] movie finished: calling action filter ${filter:08X} with mcActionPlay rate 0"
+                                );
+                            }
+                            if let Some(target) =
+                                super::ppc_resolve_callback_target(memory, filter, cpu.gpr[2], None)
+                            {
+                                let return_to = cpu.lr;
+                                let rtoc = cpu.gpr[2];
+                                if super::install_powerpc_call_arguments(
+                                    cpu,
+                                    memory,
+                                    &[controller, 8, 0, ref_con],
+                                )
+                                .is_some()
+                                {
+                                    return super::GuestCallEffect::call_guest(
+                                        super::GuestCallRequest::new(super::GuestCallTarget {
+                                            isa: super::GuestIsa::PowerPc,
+                                            entry: target.entry,
+                                            rtoc: target.rtoc,
+                                        }),
+                                        super::GuestCallContinuation::to_powerpc(
+                                            super::PPC_GUEST_CALL_RETURN_PC,
+                                            return_to,
+                                            rtoc,
+                                            super::PpcNativeReturnGpr3::Set(0),
+                                        ),
+                                    )
+                                    .into_ppc_import_action()
+                                    .unwrap_or(PpcImportAction::Return(0));
+                                }
+                            }
+                        }
                     }
                     PpcImportAction::Return(ppc_i16_result(error))
                 }
@@ -1213,6 +1274,12 @@ pub(super) fn dispatch_quicktime_compatibility(
             controller.action_filter = cpu.gpr[4];
             controller.action_filter_rtoc = if cpu.gpr[4] == 0 { 0 } else { cpu.gpr[2] };
             controller.action_ref_con = if cpu.gpr[4] == 0 { 0 } else { cpu.gpr[5] };
+            if qt_trace_enabled() {
+                eprintln!(
+                    "[QT-TRACE] MCSetActionFilterWithRefCon controller=${:08X} filter=${:08X} refcon=${:08X} (tvector code ${:08X})",
+                    cpu.gpr[3], cpu.gpr[4], cpu.gpr[5], memory.read_u32_be(cpu.gpr[4]).unwrap_or(0)
+                );
+            }
             PpcImportAction::Return(ppc_i16_result(PPC_NO_ERR))
         }
         PpcQuickTimeCompatibilityOperation::MCSetControllerBoundsRect => {
@@ -4777,6 +4844,7 @@ pub(crate) fn ppc_qt_dispose_movie(
 pub(crate) fn ppc_qt_reset_movie_video_decode_cache(quicktime: &mut PpcQuickTimeState) {
     quicktime.movie_video_decode_cache = None;
     quicktime.movie_last_idle_draw = None;
+    quicktime.movie_cdtoons_decoder = None;
 }
 
 pub(crate) fn ppc_qt_start_movie_audio(
@@ -5712,6 +5780,9 @@ pub(crate) fn ppc_qt_decode_current_movie_video_frame(
     quicktime: &mut PpcQuickTimeState,
 ) -> Option<PpcQuickTimeDecodedVideoFrame> {
     let samples = quicktime.movie_video_samples.clone()?;
+    if samples.codec == u32::from_be_bytes(*b"QkBk") && !samples.samples.is_empty() {
+        return ppc_qt_decode_cdtoons_frame(quicktime, &samples);
+    }
     if samples.samples.is_empty() {
         return None;
     }
@@ -5758,6 +5829,56 @@ pub(crate) fn ppc_qt_decode_current_movie_video_frame(
     }
     let frame = decoder.decoded_frame();
     quicktime.movie_video_decode_cache = Some(decoder.cache_record(samples.codec, sample_index));
+    Some(frame)
+}
+
+fn ppc_qt_decode_cdtoons_frame(
+    quicktime: &mut PpcQuickTimeState,
+    samples: &PpcQuickTimeVideoSampleTableRecord,
+) -> Option<PpcQuickTimeDecodedVideoFrame> {
+    let sample_index = ppc_qt_movie_timed_sample_index(quicktime, samples)?;
+    // CDToons samples carry no dimensions; the movie's own bounds give them.
+    let (top, left, bottom, right) = quicktime.movie_file_bounds?;
+    let width = usize::try_from(i32::from(right) - i32::from(left)).ok()?;
+    let height = usize::try_from(i32::from(bottom) - i32::from(top)).ok()?;
+    let mut start_index = 0usize;
+    let mut decoder = match quicktime.movie_cdtoons_decoder.take() {
+        Some(decoder)
+            if decoder.width == width
+                && decoder.height == height
+                && decoder.sample_index <= sample_index =>
+        {
+            start_index = decoder.sample_index + 1;
+            decoder
+        }
+        _ => Box::new(cdtoons::PpcCdToonsDecoder::new(width, height)?),
+    };
+    let sample_data = quicktime
+        .movie_file_sample_fork
+        .as_ref()
+        .map(|fork| fork.as_slice())
+        .unwrap_or(&quicktime.movie_file_data);
+    for index in start_index..=sample_index {
+        let sample = ppc_qt_movie_video_sample_bytes(sample_data, samples, index)?;
+        // A damaged sample is skipped, as FFmpeg does, rather than ending playback.
+        let decoded = decoder.decode_sample(sample);
+        decoder.sample_index = index;
+        if qt_trace_enabled() {
+            eprintln!(
+                "[QT-TRACE] CDToons sample={} len={} ok={} {}",
+                index,
+                sample.len(),
+                decoded.is_some(),
+                decoder.summary()
+            );
+        }
+    }
+    let frame = PpcQuickTimeDecodedVideoFrame {
+        width,
+        height,
+        rgb: decoder.rgb(),
+    };
+    quicktime.movie_cdtoons_decoder = Some(decoder);
     Some(frame)
 }
 
@@ -6274,14 +6395,17 @@ pub(crate) fn ppc_qt_movie_timed_sample_index(
     let media_duration = samples.media_duration.max(1);
     let movie_time = ppc_qt_movie_position_in_scale(quicktime, media_duration)
         .min(media_duration.saturating_sub(1));
-    samples
+    // Samples are in media-time order (the sample table's time-to-sample
+    // entries run forward), so the one covering movie_time is found by
+    // binary search rather than a scan on every MoviesTask.
+    let after = samples
         .samples
-        .iter()
-        .position(|sample| {
-            let sample_end = sample
-                .media_start_time
-                .saturating_add(u64::from(sample.duration));
-            movie_time >= sample.media_start_time && movie_time < sample_end
+        .partition_point(|sample| sample.media_start_time <= movie_time);
+    after
+        .checked_sub(1)
+        .filter(|&index| {
+            let sample = &samples.samples[index];
+            movie_time < sample.media_start_time.saturating_add(u64::from(sample.duration))
         })
         .or_else(|| samples.samples.len().checked_sub(1))
 }

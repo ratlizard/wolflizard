@@ -34,6 +34,8 @@ pub enum PpcSystemCompatibilityOperation {
     GetComponentRefcon,
     GetComponentVersion,
     SetComponentRefcon,
+    RegisterComponentResource,
+    UnregisterComponent,
     FindScriptRun,
     FindWord,
     FindWordBreaks,
@@ -961,6 +963,21 @@ pub(crate) fn ppc_dispatch_system_compatibility(
             // void SetComponentRefcon(Component aComponent, long theRefcon):
             // an invalid component reference changes nothing.
             PpcImportAction::ReturnPreserve
+        }
+        PpcSystemCompatibilityOperation::UnregisterComponent => {
+            // FUNCTION UnregisterComponent(aComponent: Component): OSErr;
+            // Inside Macintosh: More Macintosh Toolbox (1993), p. 6-54. The
+            // placeholder RegisterComponentResource handed out goes away.
+            PpcImportAction::Return(ppc_i16_result(0))
+        }
+        PpcSystemCompatibilityOperation::RegisterComponentResource => {
+            // FUNCTION RegisterComponentResource(tr: ComponentResourceHandle;
+            //   global: Integer): Component;
+            // Inside Macintosh: More Macintosh Toolbox (1993), p. 6-51.
+            // HLE does not run guest components: decompressors such as
+            // CDToons are decoded natively. Report a registered component
+            // so the caller carries on.
+            PpcImportAction::Return(u32::from_be_bytes(*b"cmpR"))
         }
         PpcSystemCompatibilityOperation::CtbGetCtbVersion => PpcImportAction::Return(0x0200),
         PpcSystemCompatibilityOperation::IntlScript

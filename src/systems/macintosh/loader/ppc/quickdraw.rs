@@ -4747,9 +4747,11 @@ pub(crate) fn ppc_copy_bits(
     let mut trace_details = None;
     let copied = (|| {
         let mode = transfer_mode & 0x3f;
-        // 0 srcCopy, 32 blend, 33 addPin, 34 addOver, 35 subPin,
-        // 36 transparent, 37 addMax, 38 subOver, 39 adMin.
-        if !matches!(mode, 0 | 32..=39) {
+        // 0 srcCopy, 1..=7 the other Boolean modes (srcOr, srcXor, srcBic,
+        // notSrcCopy, notSrcOr, notSrcXor, notSrcBic), 32 blend, 33 addPin,
+        // 34 addOver, 35 subPin, 36 transparent, 37 addMax, 38 subOver,
+        // 39 adMin.
+        if !matches!(mode, 0..=7 | 32..=39) {
             reason = "unsupported-mode";
             return None;
         }
@@ -4776,6 +4778,11 @@ pub(crate) fn ppc_copy_bits(
             // pixel format, and expands a BitMap through the foreground and
             // background colors. Source and destination depths need not match.
             supported_source && supported_destination
+        } else if matches!(mode, 1..=7) {
+            // The Boolean modes are applied here only between indexed
+            // PixMaps of one depth.
+            src_bits.depth == dst_bits.depth
+                && ppc_indexed_depth_entry_count(src_bits.depth).is_some()
         } else {
             src_bits.depth == dst_bits.depth && supported_source
         };
@@ -5416,6 +5423,31 @@ pub(crate) fn ppc_copy_bits(
                         ppc_rgb_to_pixmap_pixel(dst_bits, rgb, dst_clut.as_ref())?
                     } else {
                         src_pixel
+                    };
+                    // Imaging With QuickDraw (1994), "Boolean Transfer Modes
+                    // With Color Pixels" (pp. 4-35--4-36): with indexed pixels
+                    // the Boolean modes combine the pixel values, bit by bit,
+                    // the foreground being black (all ones) and the
+                    // background white (zero). Colorizing by other foreground
+                    // and background colours is not done here. Where in Time
+                    // is Carmen Sandiego? lights its torch with notSrcBic, the
+                    // lit scene ANDed into a black oval on white.
+                    let pixel = if matches!(mode, 1..=7) {
+                        let bits = (1u32 << dst_bits.depth) - 1;
+                        let destination =
+                            ppc_read_pixmap_raw_pixel(memory, dst_bits, dst_x, dst_y)?;
+                        let source = pixel & bits;
+                        (match mode {
+                            1 => destination | source,
+                            2 => destination ^ source,
+                            3 => destination & !source,
+                            4 => !source,
+                            5 => destination | !source,
+                            6 => destination ^ !source,
+                            _ => destination & source,
+                        }) & bits
+                    } else {
+                        pixel
                     };
                     if matches!(mode, 0 | 36)
                         && src_bits.depth == dst_bits.depth

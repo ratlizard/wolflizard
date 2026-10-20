@@ -193,6 +193,7 @@ pub enum PpcImportDispatcherTarget {
     ForeColor,
     BackColor,
     RGBForeColor,
+    PortChanged,
     SetThemePen,
     RGBBackColor,
     OpColor,
@@ -3668,7 +3669,7 @@ pub(crate) fn dispatcher_target_for_import(
         // Imaging With QuickDraw (1994), p. 3-97: PortChanged tells QuickDraw
         // a port's fields were changed directly. Drawing here reads the port's
         // fields at each call, so there is nothing to refresh.
-        ("InterfaceLib", "PortChanged") => PpcImportDispatcherTarget::NoOpPreserve,
+        ("InterfaceLib", "PortChanged") => PpcImportDispatcherTarget::PortChanged,
         // Nothing here reads the system font globals, and LastSPExtra only
         // invalidates the Font Manager's width cache; Cythera sets all three
         // around PopUpMenuSelect to draw a pop-up in the current font.
@@ -6995,6 +6996,14 @@ pub(crate) fn dispatcher_target_for_import(
         ("InterfaceLib", "SetComponentRefcon") => PpcImportDispatcherTarget::SystemCompatibility(
             PpcSystemCompatibilityOperation::SetComponentRefcon,
         ),
+        ("InterfaceLib", "UnregisterComponent") => PpcImportDispatcherTarget::SystemCompatibility(
+            PpcSystemCompatibilityOperation::UnregisterComponent,
+        ),
+        ("InterfaceLib", "RegisterComponentResource") => {
+            PpcImportDispatcherTarget::SystemCompatibility(
+                PpcSystemCompatibilityOperation::RegisterComponentResource,
+            )
+        }
         ("InterfaceLib" | "CarbonLib", "FindScriptRun") => {
             PpcImportDispatcherTarget::SystemCompatibility(
                 PpcSystemCompatibilityOperation::FindScriptRun,

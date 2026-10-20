@@ -2114,6 +2114,7 @@ pub(crate) fn dispatch_supported_import(
         | PpcImportDispatcherTarget::SaveBack
         | PpcImportDispatcherTarget::RestoreFore
         | PpcImportDispatcherTarget::RestoreBack
+        | PpcImportDispatcherTarget::PortChanged
         | PpcImportDispatcherTarget::RGBBackColor
         | PpcImportDispatcherTarget::OpColor
         | PpcImportDispatcherTarget::HiliteColor

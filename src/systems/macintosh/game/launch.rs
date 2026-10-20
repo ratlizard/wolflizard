@@ -151,6 +151,7 @@ pub fn pack_game_sources_for_web(
         volumes: Vec::new(),
         installer_roots: Vec::new(),
         skipped_disk_image_errors: Vec::new(),
+        lazy_host_files: Vec::new(),
     };
     for source in sources {
         let source_payload = if is_stuffit_archive(source) {
@@ -507,6 +508,7 @@ pub fn mount_locked_volume_from_path(
         volumes: Vec::new(),
         installer_roots: Vec::new(),
         skipped_disk_image_errors: Vec::new(),
+        lazy_host_files: Vec::new(),
     };
     collect_host_directory(path, path, &mut payload, HostContainers::Preserve)?;
     let bytes: u64 = payload
@@ -797,6 +799,7 @@ fn load_stuffit(runner: &mut FixtureRunner, file_data: &[u8]) -> Result<LoadedAp
         volumes: Vec::new(),
         installer_roots: Vec::new(),
         skipped_disk_image_errors: Vec::new(),
+        lazy_host_files: Vec::new(),
     };
 
     for entry in &archive.entries {
@@ -1555,13 +1558,48 @@ fn load_exported_host_tree(
     load_host_payload(runner, payload, "exported host tree")
 }
 
+fn lazy_host_files_min() -> Option<usize> {
+    std::env::var("SYSTEMLESS_LAZY_HOST_FILES_MIN")
+        .ok()
+        .and_then(|value| value.trim().parse().ok())
+}
+
+/// Mount host files as lazy forks, keyed by their place in a list the loader
+/// reads them back from.
+fn mount_lazy_host_files(
+    runner: &mut FixtureRunner,
+    files: Vec<(String, std::path::PathBuf, usize)>,
+) {
+    if files.is_empty() {
+        return;
+    }
+    let paths: Vec<std::path::PathBuf> = files.iter().map(|(_, path, _)| path.clone()).collect();
+    crate::process_context::set_lazy_fork_loader(Box::new(move |key, len, bytes| {
+        let Some(path) = paths.get(key as usize) else {
+            return false;
+        };
+        match std::fs::read(path) {
+            Ok(data) if data.len() == len => {
+                *bytes = data;
+                true
+            }
+            _ => false,
+        }
+    }));
+    for (key, (guest_path, _, len)) in files.into_iter().enumerate() {
+        runner.import_lazy_vfs_file(&guest_path, len, key as u32, 0x3F3F3F3F, 0x3F3F3F3F, 0);
+    }
+}
+
 fn load_host_payload(
     runner: &mut FixtureRunner,
     payload: Payload,
     source: &str,
 ) -> Result<LoadedApp, String> {
     let mut executable_entry: Option<ExecutableCandidate> = None;
+    let lazy_host_files = payload.lazy_host_files.clone();
     insert_payload_into_vfs(runner, payload, &mut executable_entry);
+    mount_lazy_host_files(runner, lazy_host_files);
     log_vfs(runner);
 
     let executable = executable_entry.ok_or_else(|| format!("No executable found in {source}"))?;
@@ -1578,6 +1616,7 @@ fn payload_from_host_directory(root: &std::path::Path) -> Result<Payload, String
         volumes: Vec::new(),
         installer_roots: Vec::new(),
         skipped_disk_image_errors: Vec::new(),
+        lazy_host_files: Vec::new(),
     };
     collect_host_directory(root, root, &mut payload, HostContainers::Expand)?;
     Ok(payload)
@@ -1634,6 +1673,24 @@ fn collect_host_directory(
         }
         if !file_type.is_file() || exported_host_file_is_harness_artifact(&rel_name) {
             continue;
+        }
+
+        // SYSTEMLESS_LAZY_HOST_FILES_MIN=<bytes>: a plain file at least that
+        // large stays on disk and is mounted as a lazy fork, read when the
+        // guest first touches it. This is how a host short of memory (the
+        // browser build) is meant to serve a CD; natively it lets that path
+        // be tested.
+        if let Some(min) = lazy_host_files_min() {
+            let len = entry
+                .metadata()
+                .map(|metadata| metadata.len() as usize)
+                .unwrap_or(0);
+            let has_rsrc =
+                read_host_resource_fork(root, rel, &path).is_some_and(|rsrc| !rsrc.is_empty());
+            if len >= min && !has_rsrc {
+                payload.lazy_host_files.push((rel_name.clone(), path.clone(), len));
+                continue;
+            }
         }
 
         let data = std::fs::read(&path)
@@ -1791,9 +1848,13 @@ struct Payload {
     /// Directories produced by expanding installers, rather than source media.
     installer_roots: Vec<String>,
     skipped_disk_image_errors: Vec<String>,
+    /// Host files left on disk and mounted as lazy forks
+    /// (`SYSTEMLESS_LAZY_HOST_FILES_MIN`): guest path, host path, length.
+    lazy_host_files: Vec<(String, std::path::PathBuf, usize)>,
 }
 
 fn merge_payload(target: &mut Payload, source: Payload) {
+    target.lazy_host_files.extend(source.lazy_host_files);
     target.installer_roots.extend(source.installer_roots);
     target.dirs.extend(source.dirs);
     target.files.extend(source.files);
@@ -2107,6 +2168,7 @@ fn collect_zip_payload(file_data: &[u8]) -> Result<Payload, String> {
         volumes: Vec::new(),
         installer_roots: Vec::new(),
         skipped_disk_image_errors: Vec::new(),
+        lazy_host_files: Vec::new(),
     };
     for (index, path, directory) in members {
         if consumed.contains(&index) {
@@ -2303,6 +2365,7 @@ fn payload_from_stuffit_archive(
         volumes: Vec::new(),
         installer_roots: Vec::new(),
         skipped_disk_image_errors: Vec::new(),
+        lazy_host_files: Vec::new(),
     };
     for entry in archive.entries.iter().filter(|entry| !entry.is_folder) {
         let (data, rsrc) = entry
@@ -2695,6 +2758,7 @@ fn payload_from_forks(
             volumes: Vec::new(),
             installer_roots: Vec::new(),
             skipped_disk_image_errors: Vec::new(),
+            lazy_host_files: Vec::new(),
         };
         for file in files {
             let embedded = payload_from_forks(
@@ -2728,6 +2792,7 @@ fn payload_from_forks(
                 volumes: Vec::new(),
                 installer_roots: vec![name.to_string()],
                 skipped_disk_image_errors: Vec::new(),
+                lazy_host_files: Vec::new(),
             };
             for file in files {
                 let embedded_name = format!("{name}/{}", file.name);
@@ -2785,6 +2850,7 @@ fn payload_from_forks(
             volumes: Vec::new(),
             installer_roots: Vec::new(),
             skipped_disk_image_errors: Vec::new(),
+            lazy_host_files: Vec::new(),
         });
     }
 
@@ -2846,6 +2912,7 @@ fn payload_from_forks(
         volumes: Vec::new(),
         installer_roots: Vec::new(),
         skipped_disk_image_errors,
+        lazy_host_files: Vec::new(),
     })
 }
 
@@ -2872,6 +2939,7 @@ fn expand_installer_maker_payload(
         volumes: Vec::new(),
         installer_roots: vec![name.to_string()],
         skipped_disk_image_errors: Vec::new(),
+        lazy_host_files: Vec::new(),
     };
     // Installer component variants can have the same HFS path. Retain each
     // original fork under a separate parent instead of overwriting one in VFS.
@@ -2971,6 +3039,7 @@ fn expand_installer_maker_payload(
                     volumes: Vec::new(),
                     installer_roots: Vec::new(),
                     skipped_disk_image_errors: Vec::new(),
+                    lazy_host_files: Vec::new(),
                 }
             }
             Err(error) => return Err(error),
@@ -3099,6 +3168,7 @@ fn expand_vise_payload(
         volumes: Vec::new(),
         installer_roots: vec![name.to_string()],
         skipped_disk_image_errors: Vec::new(),
+        lazy_host_files: Vec::new(),
     };
     let mut entries = archive.entries;
     apply_vise_locale_overlay(&mut entries);
@@ -3361,6 +3431,7 @@ fn payload_from_disk_image_with_shared_data(
         volumes: vec![(volume_name, volume_info)],
         installer_roots: Vec::new(),
         skipped_disk_image_errors: Vec::new(),
+        lazy_host_files: Vec::new(),
     };
     for (file, shared) in files.into_iter().zip(shared_data) {
         let data = shared.map_or_else(
@@ -4933,8 +5004,7 @@ fn log_vfs(runner: &FixtureRunner) {
         let size = runner
             .dispatcher()
             .vfs
-            .get(key)
-            .map(|v| v.len())
+            .len_of(key)
             .unwrap_or(0);
         eprintln!("  \"{}\" ({} bytes)", key, size);
     }
@@ -5275,6 +5345,7 @@ mod tests {
             )],
             installer_roots: vec!["Disk 1/Install".into()],
             skipped_disk_image_errors: Vec::new(),
+            lazy_host_files: Vec::new(),
         }
     }
 
@@ -5321,6 +5392,7 @@ mod tests {
                 .collect(),
             installer_roots: Vec::new(),
             skipped_disk_image_errors: Vec::new(),
+            lazy_host_files: Vec::new(),
         };
         let web_payload = payload.clone();
         stage_bbkr_installer_files(&mut payload);
@@ -5927,6 +5999,7 @@ mod tests {
             volumes: vec![("Bolo™ CD".to_string(), info)],
             installer_roots: Vec::new(),
             skipped_disk_image_errors: Vec::new(),
+            lazy_host_files: Vec::new(),
         })
         .unwrap();
         let mut runner = new_runner();
@@ -6137,6 +6210,7 @@ mod tests {
             volumes: Vec::new(),
             installer_roots: Vec::new(),
             skipped_disk_image_errors: Vec::new(),
+            lazy_host_files: Vec::new(),
         };
         for name in ["Suite/Filter One", "Suite/Filter Two"] {
             payload.files.push(PayloadFile {

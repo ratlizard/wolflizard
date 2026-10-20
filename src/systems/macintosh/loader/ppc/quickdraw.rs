@@ -2764,7 +2764,12 @@ pub(crate) fn ppc_paint_rect(
     let top = top.max(0).min(front_buffer.height as i32);
     let right = right.max(0).min(front_buffer.width as i32);
     let bottom = bottom.max(0).min(front_buffer.height as i32);
-    if memory.quickdraw_gpu_renderer().prefers_precomputed_raster() {
+    // The GPU path paints in patCopy only, so any other pen mode is drawn
+    // by the loop below.
+    if operation == 0
+        && !inverted
+        && memory.quickdraw_gpu_renderer().prefers_precomputed_raster()
+    {
         let area = (|| {
             Some(crate::trap::types::Rect {
                 top: i16::try_from(top + i32::from(surface.top)).ok()?,
@@ -2780,7 +2785,10 @@ pub(crate) fn ppc_paint_rect(
                     bg: u32::from(back_pixel),
                     pattern: *pattern,
                     mode: crate::quickdraw::raster::paint::TransferMode::PatCopy,
-                    pat_origin: (surface.left, surface.top),
+                    // The loop below aligns the pattern to the port's
+                    // coordinates, not the pixel image's; `area` is in port
+                    // coordinates, so the origin is the port's.
+                    pat_origin: (0, 0),
                 };
                 if let Some(wrote) = ppc_gpu_pattern_rect(memory, surface, area, &clip, &ink) {
                     return wrote;

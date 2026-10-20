@@ -40,7 +40,172 @@ struct ProcessMemoryRegion {
 /// `shared_handle` is reserved for
 /// installing another index over the same process fork, such as the native
 /// File Manager record and the classic VFS path map.
-pub struct ProcessForkBytes(Rc<UnsafeCell<Rc<Vec<u8>>>>);
+///
+/// A fork can also be lazy: registered with a host key and a length, its
+/// bytes fetched through the host's loader the first time anything reads
+/// them, and dropped again by [`evict_lazy_forks`] when they have not been
+/// used recently. Its length is known without loading it. Writing to a lazy
+/// fork loads it and makes it an ordinary one, which is never evicted. Hosts
+/// that cannot hold a whole CD in memory (a browser on a 32-bit device) use
+/// this; nothing else changes for ordinary forks.
+pub struct ProcessForkBytes(Rc<UnsafeCell<ForkStore>>);
+
+/// The bytes are shared with clones and resource snapshots until a write,
+/// which copies them (`Rc::make_mut` in `with_mut`).
+#[derive(Default)]
+struct ForkStore {
+    bytes: Rc<Vec<u8>>,
+    lazy: Option<LazyFork>,
+}
+
+#[derive(Clone, Copy)]
+struct LazyFork {
+    key: u32,
+    len: usize,
+    loaded: bool,
+    last_use: u64,
+}
+
+/// Fetches lazy fork `key` (`len` bytes) into the buffer; false on failure.
+pub type LazyForkLoader = Box<dyn Fn(u32, usize, &mut Vec<u8>) -> bool>;
+
+#[derive(Default)]
+struct LazyForkRegistry {
+    loader: Option<LazyForkLoader>,
+    clock: u64,
+    forks: Vec<std::rc::Weak<UnsafeCell<ForkStore>>>,
+    loads: u64,
+    loaded_bytes: u64,
+}
+
+thread_local! {
+    static LAZY_FORKS: RefCell<LazyForkRegistry> = RefCell::new(LazyForkRegistry::default());
+}
+
+fn lazy_trace_enabled() -> bool {
+    static ENABLED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ENABLED.get_or_init(|| std::env::var_os("SYSTEMLESS_TRACE_LAZY_FORKS").is_some())
+}
+
+/// Install the host's loader for lazy forks.
+pub fn set_lazy_fork_loader(loader: LazyForkLoader) {
+    LAZY_FORKS.with(|registry| registry.borrow_mut().loader = Some(loader));
+}
+
+/// Bytes of lazy forks now held in memory, and how many forks that is.
+pub fn lazy_fork_resident() -> (usize, usize) {
+    LAZY_FORKS.with(|registry| {
+        let mut registry = registry.borrow_mut();
+        registry.forks.retain(|weak| weak.strong_count() > 0);
+        let mut bytes = 0;
+        let mut count = 0;
+        for weak in &registry.forks {
+            if let Some(store) = weak.upgrade() {
+                // SAFETY: called by the host between guest slices, when no
+                // reference into a fork is live.
+                let store = unsafe { &*store.get() };
+                if store.lazy.is_some_and(|lazy| lazy.loaded) {
+                    bytes += store.bytes.len();
+                    count += 1;
+                }
+            }
+        }
+        (bytes, count)
+    })
+}
+
+/// Loads so far and the bytes they fetched.
+pub fn lazy_fork_load_stats() -> (u64, u64) {
+    LAZY_FORKS.with(|registry| {
+        let registry = registry.borrow();
+        (registry.loads, registry.loaded_bytes)
+    })
+}
+
+/// Drop the least recently used lazy forks until at most `budget` bytes of
+/// them stay in memory. Only the host calls this, between guest slices: a
+/// reference handed out while the guest ran must not outlive the bytes.
+pub fn evict_lazy_forks(budget: usize) -> usize {
+    LAZY_FORKS.with(|registry| {
+        let mut registry = registry.borrow_mut();
+        registry.forks.retain(|weak| weak.strong_count() > 0);
+        let mut loaded: Vec<(u64, Rc<UnsafeCell<ForkStore>>)> = registry
+            .forks
+            .iter()
+            .filter_map(std::rc::Weak::upgrade)
+            .filter_map(|store| {
+                // SAFETY: as in lazy_fork_resident.
+                let lazy = unsafe { (*store.get()).lazy }?;
+                lazy.loaded.then_some((lazy.last_use, store))
+            })
+            .collect();
+        // SAFETY: as in lazy_fork_resident.
+        let mut resident: usize = loaded
+            .iter()
+            .map(|(_, store)| unsafe { (*store.get()).bytes.len() })
+            .sum();
+        loaded.sort_by_key(|(last_use, _)| *last_use);
+        let mut evicted = 0;
+        for (_, store) in loaded {
+            if resident <= budget {
+                break;
+            }
+            // SAFETY: as in lazy_fork_resident.
+            let store = unsafe { &mut *store.get() };
+            resident -= store.bytes.len();
+            store.bytes = Rc::default();
+            if let Some(lazy) = store.lazy.as_mut() {
+                lazy.loaded = false;
+            }
+            evicted += 1;
+            if lazy_trace_enabled() {
+                eprintln!("[LAZY] evicted key {}", store.lazy.map_or(0, |lazy| lazy.key));
+            }
+        }
+        evicted
+    })
+}
+
+impl ForkStore {
+    /// Fetch a lazy fork's bytes if they are not in memory, and note the use.
+    fn materialize(&mut self) {
+        let Some(lazy) = self.lazy.as_mut() else {
+            return;
+        };
+        LAZY_FORKS.with(|registry| {
+            let mut registry = registry.borrow_mut();
+            registry.clock += 1;
+            lazy.last_use = registry.clock;
+            if lazy.loaded {
+                return;
+            }
+            let mut bytes = Vec::with_capacity(lazy.len);
+            let ok = registry
+                .loader
+                .as_ref()
+                .is_some_and(|loader| loader(lazy.key, lazy.len, &mut bytes));
+            if !ok || bytes.len() != lazy.len {
+                eprintln!(
+                    "[LAZY] key {} did not load ({} of {} bytes); zero-filled",
+                    lazy.key,
+                    bytes.len(),
+                    lazy.len
+                );
+                bytes.resize(lazy.len, 0);
+            }
+            registry.loads += 1;
+            registry.loaded_bytes += lazy.len as u64;
+            if lazy_trace_enabled() {
+                eprintln!("[LAZY] loaded key {} ({} bytes)", lazy.key, lazy.len);
+                if std::env::var_os("SYSTEMLESS_TRACE_LAZY_FORKS_BACKTRACE").is_some() {
+                    eprintln!("{}", std::backtrace::Backtrace::force_capture());
+                }
+            }
+            self.bytes = Rc::new(bytes);
+            lazy.loaded = true;
+        });
+    }
+}
 
 impl Default for ProcessForkBytes {
     fn default() -> Self {
@@ -50,20 +215,38 @@ impl Default for ProcessForkBytes {
 
 impl Clone for ProcessForkBytes {
     fn clone(&self) -> Self {
-        // A new view cell keeps snapshots detached from live file indexes.
-        // with_mut copies the backing bytes only if either snapshot is edited.
-        // SAFETY: access is serialized by the runner, as for resource_snapshot.
-        let backing = unsafe { Rc::clone(&*self.0.get()) };
-        Self(Rc::new(UnsafeCell::new(backing)))
+        // SAFETY: the process runner serializes attached adapter access.
+        let store = unsafe { &*self.0.get() };
+        match store.lazy {
+            // A copy of a lazy fork is another lazy fork over the same host
+            // file, not a second copy of its bytes.
+            Some(lazy) => Self::lazy(lazy.key, lazy.len),
+            // A new view cell keeps snapshots detached from live file
+            // indexes. with_mut copies the backing bytes only if either
+            // snapshot is edited.
+            None => Self(Rc::new(UnsafeCell::new(ForkStore {
+                bytes: Rc::clone(&store.bytes),
+                lazy: None,
+            }))),
+        }
     }
 }
 
 impl fmt::Debug for ProcessForkBytes {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter
-            .debug_tuple("ProcessForkBytes")
-            .field(&**self)
-            .finish()
+        // SAFETY: the process runner serializes attached adapter access.
+        let store = unsafe { &*self.0.get() };
+        match store.lazy {
+            Some(lazy) => formatter
+                .debug_struct("ProcessForkBytes")
+                .field("lazy_key", &lazy.key)
+                .field("len", &lazy.len)
+                .finish(),
+            None => formatter
+                .debug_tuple("ProcessForkBytes")
+                .field(&store.bytes)
+                .finish(),
+        }
     }
 }
 
@@ -95,7 +278,10 @@ impl Eq for ProcessForkBytes {}
 
 impl From<Vec<u8>> for ProcessForkBytes {
     fn from(bytes: Vec<u8>) -> Self {
-        Self(Rc::new(UnsafeCell::new(Rc::new(bytes))))
+        Self(Rc::new(UnsafeCell::new(ForkStore {
+            bytes: Rc::new(bytes),
+            lazy: None,
+        })))
     }
 }
 
@@ -110,12 +296,51 @@ impl std::ops::Deref for ProcessForkBytes {
 
     fn deref(&self) -> &Self::Target {
         // SAFETY: process adapters are serialized by the runner, and normal
-        // clones detach instead of creating an alias.
-        unsafe { &*self.0.get() }
+        // clones detach instead of creating an alias. A lazy fork's bytes
+        // are filled before the first reference to them is handed out and
+        // are only dropped by evict_lazy_forks between guest slices.
+        unsafe {
+            let store = &mut *self.0.get();
+            store.materialize();
+            store.bytes.as_ref()
+        }
     }
 }
 
 impl ProcessForkBytes {
+    /// A fork of `len` bytes that the host's lazy fork loader supplies, as
+    /// `key`, when it is first read.
+    pub fn lazy(key: u32, len: usize) -> Self {
+        let store = Rc::new(UnsafeCell::new(ForkStore {
+            bytes: Rc::default(),
+            lazy: Some(LazyFork {
+                key,
+                len,
+                loaded: false,
+                last_use: 0,
+            }),
+        }));
+        LAZY_FORKS.with(|registry| registry.borrow_mut().forks.push(Rc::downgrade(&store)));
+        Self(store)
+    }
+
+    /// The fork's length, without loading a lazy fork.
+    pub fn len(&self) -> usize {
+        // SAFETY: the process runner serializes attached adapter access.
+        let store = unsafe { &*self.0.get() };
+        store.lazy.map_or(store.bytes.len(), |lazy| lazy.len)
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+
+    /// Whether this fork's bytes come from the host's lazy fork loader.
+    pub fn is_lazy(&self) -> bool {
+        // SAFETY: the process runner serializes attached adapter access.
+        unsafe { (*self.0.get()).lazy.is_some() }
+    }
+
     pub(crate) fn shared_handle(&self) -> Self {
         Self(Rc::clone(&self.0))
     }
@@ -124,17 +349,28 @@ impl ProcessForkBytes {
     /// detaches the backing buffer while all attached file views stay linked.
     pub(crate) fn resource_snapshot(&self) -> crate::managers::resource::ResourceBytes {
         // SAFETY: the runner serializes access, as for Deref and with_mut.
-        // Resource snapshots never mutate the shared backing buffer.
-        let backing = unsafe { Rc::clone(&*self.0.get()) };
+        // Resource snapshots never mutate the shared backing buffer, and a
+        // lazy fork's eviction drops only the store's reference to it.
+        let backing = unsafe {
+            let store = &mut *self.0.get();
+            store.materialize();
+            Rc::clone(&store.bytes)
+        };
         crate::managers::resource::ResourceBytes::from_shared(backing)
     }
 
     /// Mutate this process-owned fork for one serialized operation without
-    /// allowing the mutable byte reference to escape.
+    /// allowing the mutable byte reference to escape. A lazy fork is loaded
+    /// first and stays in memory from then on.
     pub fn with_mut<R>(&mut self, operation: impl FnOnce(&mut Vec<u8>) -> R) -> R {
         // SAFETY: the process runner serializes attached adapter access. The
         // closure keeps the mutable reference scoped to this operation.
-        unsafe { operation(Rc::make_mut(&mut *self.0.get())) }
+        unsafe {
+            let store = &mut *self.0.get();
+            store.materialize();
+            store.lazy = None;
+            operation(Rc::make_mut(&mut store.bytes))
+        }
     }
 
     #[cfg(test)]
@@ -194,6 +430,15 @@ impl ProcessForkMap {
         self.0
             .get_mut(path)
             .map(|bytes| bytes.with_mut(operation))
+    }
+
+    /// The length of the fork at `path`, without loading a lazy fork.
+    pub fn len_of<Q>(&self, path: &Q) -> Option<usize>
+    where
+        String: std::borrow::Borrow<Q>,
+        Q: Eq + Hash + ?Sized,
+    {
+        self.0.get(path).map(ProcessForkBytes::len)
     }
 
     pub(crate) fn get_shared<Q>(&self, path: &Q) -> Option<&ProcessForkBytes>

@@ -3087,6 +3087,80 @@ impl FixtureRunner {
     /// Dump tracked PPC GWorld fingerprints. No-op unless
     /// `SYSTEMLESS_PPC_GWORLD_DUMP=1` is set.
     pub fn print_ppc_gworld_dump(&mut self, top_n: usize) {
+        // Diagnostic: SYSTEMLESS_DUMP_GUEST_FILE=<guest path>=<host file>
+        // writes a file's data fork as the guest left it.
+        if let Some(spec) = std::env::var("SYSTEMLESS_DUMP_GUEST_FILE").ok() {
+            if let Some((guest, host)) = spec.split_once('=') {
+                match self.vfs_file_snapshot(guest) {
+                    Some(snapshot) => {
+                        let _ = std::fs::write(host, &snapshot.data_fork);
+                        eprintln!("[DUMP] {} -> {} ({} bytes)", guest, host, snapshot.data_fork.len());
+                    }
+                    None => eprintln!("[DUMP] {} not found", guest),
+                }
+            }
+        }
+        // Diagnostic: SYSTEMLESS_PPC_GWORLD_PNG_DIR=<dir> writes every PPC
+        // GWorld's pixels (indices, as grey) at the end of the run.
+        if let Some(dir) = std::env::var_os("SYSTEMLESS_PPC_GWORLD_PNG_DIR") {
+            if let Some(ppc_app) = self.native.application_mut() {
+                let dir = std::path::PathBuf::from(dir);
+                let _ = std::fs::create_dir_all(&dir);
+                for record in ppc_app.gworlds.iter() {
+                    if record.depth != 8 || record.width == 0 || record.height == 0 {
+                        continue;
+                    }
+                    // The PixMap's pmTable: (**pixmap).pmTable at +42.
+                    let mem = &mut ppc_app.memory;
+                    let pixmap = mem
+                        .read_u32_be(record.pixmap_handle)
+                        .filter(|p| *p != 0)
+                        .unwrap_or(record.pixmap);
+                    let ctab = pixmap
+                        .checked_add(42)
+                        .and_then(|a| mem.read_u32_be(a))
+                        .and_then(|h| mem.read_u32_be(h));
+                    let mut entries = Vec::new();
+                    for i in [0u32, 1, 254, 255] {
+                        let value = ctab.and_then(|c| {
+                            let e = c + 8 + i * 8;
+                            Some((
+                                mem.read_u16_be(e)?,
+                                mem.read_u16_be(e + 2)?,
+                                mem.read_u16_be(e + 4)?,
+                                mem.read_u16_be(e + 6)?,
+                            ))
+                        });
+                        entries.push((i, value));
+                    }
+                    let seed = ctab.and_then(|c| mem.read_u32_be(c));
+                    let size = ctab.and_then(|c| mem.read_u16_be(c + 6));
+                    eprintln!(
+                        "[GWORLD-PNG] port ${:08X} ctab ${:08X} seed {:?} size {:?} entries {:?}",
+                        record.port,
+                        ctab.unwrap_or(0),
+                        seed,
+                        size,
+                        entries
+                    );
+                    let mut pixels = Vec::with_capacity((record.width * record.height) as usize);
+                    for y in 0..record.height {
+                        for x in 0..record.width {
+                            let addr = record.base_addr + y * record.row_bytes + x;
+                            pixels.push(ppc_app.memory.read_u8(addr).unwrap_or(0));
+                        }
+                    }
+                    if let Some(image) =
+                        image::GrayImage::from_raw(record.width, record.height, pixels)
+                    {
+                        let _ = image.save(dir.join(format!(
+                            "gworld_{:08x}_base_{:08x}_{}x{}_rb{}.png",
+                            record.port, record.base_addr, record.width, record.height, record.row_bytes
+                        )));
+                    }
+                }
+            }
+        }
         if !ppc_gworld_dump_enabled() {
             return;
         }
@@ -3979,6 +4053,35 @@ impl FixtureRunner {
         materialized_count
     }
 
+    /// Put a file on the disk whose data fork the host's lazy fork loader
+    /// supplies as `key` when the guest first reads it (see
+    /// `set_lazy_fork_loader`). Its length is `len` from the start; its
+    /// resource fork is empty. Call before launch, like `import_vfs_file`.
+    pub fn import_lazy_vfs_file(
+        &mut self,
+        path: &str,
+        len: usize,
+        key: u32,
+        file_type: u32,
+        creator: u32,
+        finder_flags: u16,
+    ) {
+        let normalized = TrapDispatcher::normalize_vfs_path(path);
+        if normalized.is_empty() {
+            return;
+        }
+        if let Some((parent, _)) = normalized.rsplit_once('/') {
+            self.dispatcher.ensure_vfs_directory(parent);
+        }
+        self.dispatcher.vfs.insert(
+            normalized.clone(),
+            crate::process_context::ProcessForkBytes::lazy(key, len),
+        );
+        self.dispatcher.vfs_rsrc.insert(normalized.clone(), Vec::new());
+        self.dispatcher
+            .set_vfs_entry_finfo(&normalized, file_type, creator, finder_flags);
+    }
+
     pub fn import_vfs_file(&mut self, file: &VfsFileSnapshot) {
         let normalized = TrapDispatcher::normalize_vfs_path(&file.path);
         if normalized.is_empty() || normalized.starts_with("__rsrc__") {
@@ -4116,8 +4219,7 @@ impl FixtureRunner {
         let data_len = self
             .dispatcher
             .vfs
-            .get(path)
-            .map(|bytes| bytes.len())
+            .len_of(path)
             .unwrap_or(0);
         let resource_len = self
             .dispatcher
@@ -5655,6 +5757,29 @@ impl FixtureRunner {
     }
 
     fn mix_host_audio(&mut self, mut remaining_samples: usize) {
+        // Diagnostic: SYSTEMLESS_TRACE_AUDIO_MIX=1 prints each mix's request
+        // and what reached the host buffer.
+        let trace_mix = std::env::var_os("SYSTEMLESS_TRACE_AUDIO_MIX").is_some();
+        let (asked, before) = (remaining_samples, self.audio_buffer.len());
+        self.mix_host_audio_inner(&mut remaining_samples);
+        if let Some(path) = std::env::var_os("SYSTEMLESS_DUMP_AUDIO") {
+            use std::io::Write as _;
+            if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(path) {
+                let _ = f.write_all(&self.audio_buffer[before..]);
+            }
+        }
+        if trace_mix {
+            eprintln!(
+                "[AUDIO-MIX] tick {} asked {} produced {}",
+                self.guest_tick(),
+                asked,
+                self.audio_buffer.len() - before
+            );
+        }
+    }
+
+    fn mix_host_audio_inner(&mut self, remaining_samples: &mut usize) {
+        let mut remaining_samples = *remaining_samples;
         self.service_ppc_double_buffer_playbacks();
         while remaining_samples > 0 {
             self.try_load_pending_double_buffers();

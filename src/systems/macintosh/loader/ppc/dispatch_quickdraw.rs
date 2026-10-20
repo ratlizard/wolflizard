@@ -218,6 +218,18 @@ pub(super) fn dispatch_quickdraw_import(
             };
             Some(PpcImportAction::Return(result as u32))
         }
+        PpcImportDispatcherTarget::PortChanged => {
+            // Apps may store a pixel value straight into a CGrafPort's
+            // fgColor/bkColor (+80/+84) and call PortChanged; QuickDraw then
+            // draws with those indices. Where in Time is Carmen Sandiego?
+            // clears its sprite sheets this way to index 0 (transparent).
+            let port = cpu.gpr[3];
+            if let Some((fore, back)) = ppc_port_8bit_index_fields(memory, port) {
+                quickdraw_fore_indices.insert(port, fore);
+                toolbox_startup.quickdraw_back_indices.insert(port, back);
+            }
+            Some(PpcImportAction::ReturnPreserve)
+        }
         PpcImportDispatcherTarget::RGBForeColor => {
             if let Some(color) = ppc_read_rgb_color(memory, cpu.gpr[3]) {
                 *quickdraw_fore_color = color;
@@ -228,11 +240,11 @@ pub(super) fn dispatch_quickdraw_import(
                         .and_then(|pixmap| memory.read_u16_be(pixmap.checked_add(32)?))
                         == Some(8);
                 if main_8bpp {
-                    quickdraw_fore_indices.insert(
-                        current_gworld,
+                    let index =
                         ppc_color_to_index(memory, current_gdevice, color_manager_clut, color)
-                            as u8,
-                    );
+                            as u8;
+                    quickdraw_fore_indices.insert(current_gworld, index);
+                    ppc_write_port_index_field(memory, current_gworld, 0x50, index);
                 } else {
                     quickdraw_fore_indices.remove(&current_gworld);
                 }
@@ -261,11 +273,11 @@ pub(super) fn dispatch_quickdraw_import(
                         .and_then(|pixmap| memory.read_u16_be(pixmap.checked_add(32)?))
                         == Some(8);
                 if main_8bpp {
-                    toolbox_startup.quickdraw_back_indices.insert(
-                        current_gworld,
+                    let index =
                         ppc_color_to_index(memory, current_gdevice, color_manager_clut, color)
-                            as u8,
-                    );
+                            as u8;
+                    toolbox_startup.quickdraw_back_indices.insert(current_gworld, index);
+                    ppc_write_port_index_field(memory, current_gworld, 0x54, index);
                 } else {
                     toolbox_startup
                         .quickdraw_back_indices
@@ -2908,6 +2920,31 @@ fn ppc_calc_mask(
                 }
             }
             let _ = memory.write_u8(dst_ptr.wrapping_add(y as u32 * dst_row + byte as u32), value);
+        }
+    }
+}
+
+/// The fgColor and bkColor pixel values of an 8-bit colour port.
+fn ppc_port_8bit_index_fields(memory: &mut PpcSectionMem, port: u32) -> Option<(u8, u8)> {
+    if port == 0 || memory.read_u16_be(port.checked_add(6)?)? & 0xc000 != 0xc000 {
+        return None;
+    }
+    let handle = memory.read_u32_be(port.checked_add(2)?)?;
+    let pixmap = memory.read_u32_be(handle)?;
+    if memory.read_u16_be(pixmap.checked_add(32)?)? != 8 {
+        return None;
+    }
+    let fore = memory.read_u32_be(port.checked_add(0x50)?)?;
+    let back = memory.read_u32_be(port.checked_add(0x54)?)?;
+    Some(((fore & 0xff) as u8, (back & 0xff) as u8))
+}
+
+/// Keeps a colour port's fgColor/bkColor pixel value in step with RGBForeColor
+/// and RGBBackColor, as QuickDraw does.
+fn ppc_write_port_index_field(memory: &mut PpcSectionMem, port: u32, offset: u32, index: u8) {
+    if ppc_port_8bit_index_fields(memory, port).is_some() {
+        if let Some(address) = port.checked_add(offset) {
+            let _ = memory.write_u32_be(address, u32::from(index));
         }
     }
 }

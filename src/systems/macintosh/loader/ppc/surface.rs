@@ -152,6 +152,17 @@ pub(crate) fn ppc_quickdraw_surface_color_pixel(
     }
 }
 
+/// The colour table an indexed surface matches RGB colours against, or
+/// `None` for a direct surface.
+pub(crate) fn ppc_quickdraw_surface_indexed_clut(
+    memory: &mut PpcSectionMem,
+    surface: PpcQuickDrawSurface,
+) -> Option<[[u16; 3]; 256]> {
+    let depth = surface.front_buffer.depth;
+    ppc_indexed_depth_entry_count(depth)?;
+    Some(ppc_quickdraw_surface_clut(memory, surface, depth))
+}
+
 /// The colour table RGB colours are matched against on an indexed surface:
 /// its own table, or the standard table for `depth`.
 #[inline(always)]

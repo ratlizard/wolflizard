@@ -257,8 +257,15 @@ fn foreground_cpu_batch_instructions(powerpc: bool, instructions_per_tick: u32) 
 /// default budget, which would put identical tick-script inputs at different
 /// points in application startup.
 fn configure_realtime_execution_rate(runner: &mut FixtureRunner) -> u32 {
-    let instructions =
-        systemless::runner::default_realtime_instructions_per_tick(runner.is_powerpc_app());
+    // SYSTEMLESS_REALTIME_INSTRUCTIONS_PER_TICK models a slower host, such as
+    // a web build's budget, in a tick-clock run.
+    let instructions = std::env::var("SYSTEMLESS_REALTIME_INSTRUCTIONS_PER_TICK")
+        .ok()
+        .and_then(|value| value.trim().parse::<u32>().ok())
+        .filter(|value| *value > 0)
+        .unwrap_or_else(|| {
+            systemless::runner::default_realtime_instructions_per_tick(runner.is_powerpc_app())
+        });
     runner.set_instructions_per_tick(instructions);
     instructions
 }

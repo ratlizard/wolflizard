@@ -1868,6 +1868,7 @@ pub(crate) fn dispatch_supported_import(
         | PpcImportDispatcherTarget::BackColor
         | PpcImportDispatcherTarget::SetThemePen
         | PpcImportDispatcherTarget::RGBForeColor
+        | PpcImportDispatcherTarget::PortChanged
         | PpcImportDispatcherTarget::RGBBackColor
         | PpcImportDispatcherTarget::OpColor
         | PpcImportDispatcherTarget::HiliteColor

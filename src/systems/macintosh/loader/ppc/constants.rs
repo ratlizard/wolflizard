@@ -359,6 +359,9 @@ pub(crate) const PPC_CONTROL_REF_CON_OFFSET: u32 = 36;
 pub(crate) const PPC_CONTROL_TITLE_OFFSET: u32 = 40;
 pub(crate) const PPC_KEY_MAP_SIZE: u32 = 16;
 pub(crate) const PPC_GETKEYS_IDLE_POLL_FAST_FORWARD_THRESHOLD: u32 = 4;
+/// Empty zero-sleep WaitNextEvent polls from one call site allowed in a tick
+/// before the rest of the tick is charged as idle.
+pub(crate) const PPC_WAIT_NEXT_EVENT_IDLE_POLLS_PER_TICK: u32 = 8;
 pub(crate) const PPC_GETKEYS_IDLE_POLL_EXTRA_CYCLES: u64 = 7_296;
 pub(crate) const PPC_MICROSECONDS_IDLE_POLL_FAST_FORWARD_THRESHOLD: u32 =
     PPC_GETKEYS_IDLE_POLL_FAST_FORWARD_THRESHOLD;

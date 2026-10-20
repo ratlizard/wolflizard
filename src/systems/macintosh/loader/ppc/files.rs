@@ -3579,7 +3579,13 @@ pub(super) fn ppc_pb_write(
         return ppc_complete_pb(memory, pb, PPC_PARAM_ERR);
     };
     let write_result = vfs_files[vfs_file_index].data.with_mut(|data| {
-        data.resize(end, 0);
+        // A write extends the file when it runs past the end and otherwise
+        // leaves its length alone: Inside Macintosh: Files (1992), p. 2-104.
+        // Where in Time is Carmen Sandiego? writes its sound cache's body and
+        // then goes back to write the header, which truncation destroyed.
+        if data.len() < end {
+            data.resize(end, 0);
+        }
         for offset in 0..write_len {
             let Some(byte) = memory.read_u8(buffer_ptr + offset as u32) else {
                 return Err(());

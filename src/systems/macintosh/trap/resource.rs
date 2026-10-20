@@ -4373,7 +4373,7 @@ impl super::TrapDispatcher {
                 let pos_offset = bus.read_long(pb + 46) as i32;
 
                 if let Some(filename) = self.open_files.get(&ref_num).cloned() {
-                    let file_len = self.vfs.get(&filename).map(|f| f.len()).unwrap_or(0);
+                    let file_len = self.vfs.len_of(&filename).unwrap_or(0);
                     let cur_pos = usize::try_from(*self.file_positions.get(&ref_num).unwrap_or(&0))
                         .unwrap_or(usize::MAX);
                     let Ok(requested_pos) =
@@ -7474,16 +7474,14 @@ impl super::TrapDispatcher {
                         let metadata = self.vfs_file_metadata(&metadata_name);
                         let file_len = if is_resource_fork {
                             self.vfs
-                                .get(&open_vfs_name)
-                                .map(|data| data.len())
+                                .len_of(&open_vfs_name)
                                 .or_else(|| {
                                     self.vfs_rsrc.get(&metadata_name).map(|data| data.len())
                                 })
                                 .unwrap_or(0)
                         } else {
                             self.vfs
-                                .get(&metadata_name)
-                                .map(|data| data.len())
+                                .len_of(&metadata_name)
                                 .unwrap_or(0)
                         };
                         let current_pos = self

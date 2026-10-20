@@ -134,6 +134,9 @@ pub mod menu_model {
 pub(crate) use systems::macintosh::mixed_mode;
 pub(crate) use systems::macintosh::notification_manager;
 pub(crate) use systems::macintosh::process_context;
+pub use systems::macintosh::process_context::{
+    evict_lazy_forks, lazy_fork_load_stats, lazy_fork_resident, set_lazy_fork_loader, LazyForkLoader,
+};
 pub(crate) use systems::macintosh::process_manager;
 pub(crate) use systems::macintosh::printing_manager;
 pub(crate) use systems::macintosh::queue_utilities;

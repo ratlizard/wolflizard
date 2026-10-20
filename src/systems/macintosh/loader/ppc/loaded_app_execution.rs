@@ -381,6 +381,8 @@ impl PpcLoadedApp {
         let mut get_mouse_idle_polls = HashMap::<u32, u32>::new();
         let mut get_mouse_last_location: Option<(i16, i16)> = None;
         let mut tick_count_idle_poll = PpcTickCountIdlePollState::default();
+        // (call site, tick, empty WaitNextEvent polls from it in that tick).
+        let mut wait_next_event_idle_poll: (u32, u32, u32) = (0, 0, 0);
         let needs_fetch_observer = trace_fetches || trace_ppc || trace_pc_range.is_some();
         let mut interrupt_return_work = None;
         let mut fetch_observer = PpcHleFetchObserver {
@@ -2111,6 +2113,49 @@ impl PpcLoadedApp {
                             action,
                             ppc_import_extra_cycles_for_binding(binding),
                         );
+                        // An application that polls WaitNextEvent with a
+                        // sleep of 0 and finds nothing, again and again from
+                        // one call site within a tick, is idle until the next
+                        // tick brings input or timer work: Inside Macintosh:
+                        // Macintosh Toolbox Essentials (1992), p. 2-86, gives
+                        // the sleep as the time the application can spare.
+                        // After a few such polls, the rest of the tick is
+                        // charged as idle, as TickCount polling already is,
+                        // rather than spent on the loop's import dispatch.
+                        // Where in Time is Carmen Sandiego? makes about 240
+                        // of these calls a tick.
+                        let action = if matches!(
+                            binding.dispatcher_target,
+                            PpcImportDispatcherTarget::GetNextEvent(
+                                PpcEventPollOperation::WaitNextEvent
+                            )
+                        ) && matches!(action, PpcImportAction::Return(0))
+                            && cpu.gpr[5] == 0
+                            && cpu.lr != 0
+                        {
+                            let (lr, tick, count) = wait_next_event_idle_poll;
+                            let count = if lr == cpu.lr && tick == import_tick_count {
+                                count.saturating_add(1)
+                            } else {
+                                1
+                            };
+                            wait_next_event_idle_poll = (cpu.lr, import_tick_count, count);
+                            if count > PPC_WAIT_NEXT_EVENT_IDLE_POLLS_PER_TICK {
+                                ppc_import_action_with_extra_cycles(
+                                    action,
+                                    ppc_cycles_until_next_tick(
+                                        clock_cycles_per_tick,
+                                        clock_cycle_phase,
+                                        elapsed,
+                                    )
+                                    .min(max_cycles.saturating_sub(elapsed)),
+                                )
+                            } else {
+                                action
+                            }
+                        } else {
+                            action
+                        };
                         if trace_imports {
                             if let (Some(action_name), Some(result)) = (
                                 ppc_draw_sprocket_action_name(&binding.dispatcher_target),

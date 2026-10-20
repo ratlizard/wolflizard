@@ -365,6 +365,10 @@ pub struct SndChannel {
     file_paused: bool,
     /// Active double-buffer state, if SndPlayDoubleBuffer is in use.
     pub double_buffer: Option<DoubleBufferState>,
+    /// The last source frames of the buffers this channel finished, for the
+    /// band-limited upsampler, which reads `SINC_DELAY` frames behind the
+    /// play position so that a double buffer's halves join without a seam.
+    history: Vec<StereoSample>,
     /// Number of SndDoubleBuffer records decoded into this channel.
     pub debug_double_buffer_loads: u32,
     /// Number of decoded SndDoubleBuffer records that contained at least one
@@ -424,6 +428,7 @@ impl SndChannel {
             file_completion_architecture: None,
             file_paused: false,
             double_buffer: None,
+            history: Vec::new(),
             debug_double_buffer_loads: 0,
             debug_double_buffer_non_silent_loads: 0,
             debug_double_buffer_frames_loaded: 0,
@@ -519,6 +524,7 @@ impl SndChannel {
         self.file_paused = false;
         self.rate_fixed = UNITY_RATE_FIXED;
         self.double_buffer = None;
+        self.history.clear();
     }
 
     /// Start playing a buffer of unsigned 8-bit samples.
@@ -1397,10 +1403,17 @@ impl SoundManager {
                         }
                     }
                     chan.note_hold = chan.note_hold.saturating_sub(1);
-                    let Some(source_sample) =
-                        resampled_sample(&buf.samples, buf.position, buf.step)
-                    else {
-                        break;
+                    let source_sample = if buf.step < (1u64 << 32) && interpolate_upsampling() {
+                        if (buf.position >> 32) as usize >= buf.samples.len() {
+                            break;
+                        }
+                        sinc_sample(&buf.samples, &chan.history, buf.position)
+                    } else {
+                        let Some(sample) = resampled_sample(&buf.samples, buf.position, buf.step)
+                        else {
+                            break;
+                        };
+                        sample
                     };
                     let sample = apply_volume_stereo(source_sample, mix_volume);
                     let mixed_left = slot.left as i16 + sample.left as i16 - 0x80;
@@ -1411,6 +1424,10 @@ impl SoundManager {
                 }
                 let final_idx = (buf.position >> 32) as usize;
                 if final_idx >= buf.samples.len() {
+                    let tail = buf.samples.len().min(SINC_TAPS);
+                    chan.history.extend_from_slice(&buf.samples[buf.samples.len() - tail..]);
+                    let excess = chan.history.len().saturating_sub(SINC_TAPS);
+                    chan.history.drain(..excess);
                     let playback_kind = chan.playback_kind;
                     let callback_addr = chan.callback_addr;
                     let chan_ptr = chan.guest_ptr;
@@ -1537,6 +1554,86 @@ fn playback_step(sample_rate_fixed: u32, rate_fixed: u32) -> u64 {
         step
     } else {
         rounded
+    }
+}
+
+/// Upsample through a band-limited (Lanczos) filter instead of repeating
+/// samples. Off by default; `SYSTEMLESS_INTERPOLATE_UPSAMPLING=1` or a host's
+/// call to `set_interpolate_upsampling` turns it on. Repeating each 11,025 Hz
+/// sample twice leaves images of the whole band between 5.5 and 11 kHz only
+/// about 14 dB down, which a Mac's output filter took away and a modern
+/// device plays as hiss; linear interpolation takes off only 6 dB more.
+static INTERPOLATE_UPSAMPLING: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+
+pub fn set_interpolate_upsampling(on: bool) {
+    INTERPOLATE_UPSAMPLING.store(on, std::sync::atomic::Ordering::Relaxed);
+}
+
+fn interpolate_upsampling() -> bool {
+    static FROM_ENV: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *FROM_ENV.get_or_init(|| std::env::var_os("SYSTEMLESS_INTERPOLATE_UPSAMPLING").is_some())
+        || INTERPOLATE_UPSAMPLING.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+/// Frames the band-limited upsampler reads on each side of a point.
+const SINC_HALF: usize = 8;
+const SINC_TAPS: usize = 2 * SINC_HALF;
+/// How far behind the play position it reads, so that every frame it needs
+/// has already been played or is in the current buffer.
+const SINC_DELAY: u64 = SINC_HALF as u64;
+const SINC_PHASES: usize = 256;
+
+/// Lanczos (a = 8) weights for each of `SINC_PHASES` fractional positions,
+/// normalised to sum to one. Weight `t` multiplies frame `i - 7 + t` for a
+/// point `i + phase / SINC_PHASES`.
+fn sinc_table() -> &'static [[f32; SINC_TAPS]] {
+    static TABLE: std::sync::OnceLock<Vec<[f32; SINC_TAPS]>> = std::sync::OnceLock::new();
+    TABLE.get_or_init(|| {
+        let sinc = |x: f64| if x.abs() < 1e-9 { 1.0 } else { (std::f64::consts::PI * x).sin() / (std::f64::consts::PI * x) };
+        (0..SINC_PHASES)
+            .map(|phase| {
+                let f = phase as f64 / SINC_PHASES as f64;
+                let mut w = [0f64; SINC_TAPS];
+                for (t, w) in w.iter_mut().enumerate() {
+                    let x = f - (t as f64 - (SINC_HALF as f64 - 1.0));
+                    *w = if x.abs() < SINC_HALF as f64 { sinc(x) * sinc(x / SINC_HALF as f64) } else { 0.0 };
+                }
+                let sum: f64 = w.iter().sum();
+                let mut out = [0f32; SINC_TAPS];
+                for (o, w) in out.iter_mut().zip(w) {
+                    *o = (w / sum) as f32;
+                }
+                out
+            })
+            .collect()
+    })
+}
+
+/// The band-limited value `SINC_DELAY` frames behind `position`, reaching
+/// back into `history` (the end of the buffers before this one) and treating
+/// anything before that as silence. Used only while upsampling, where the
+/// cut-off belongs at the source's own Nyquist frequency.
+fn sinc_sample(samples: &[StereoSample], history: &[StereoSample], position: u64) -> StereoSample {
+    let delayed = position.wrapping_sub(SINC_DELAY << 32) as i64;
+    let i = delayed >> 32;
+    let phase = ((delayed as u64 & 0xFFFF_FFFF) >> (32 - 8)) as usize;
+    let weights = &sinc_table()[phase];
+    let (mut left, mut right) = (0f32, 0f32);
+    for (t, w) in weights.iter().enumerate() {
+        let j = i - (SINC_HALF as i64 - 1) + t as i64;
+        let frame = if j >= 0 {
+            samples.get(j as usize).copied().unwrap_or(StereoSample::SILENCE)
+        } else {
+            let h = history.len() as i64 + j;
+            if h >= 0 { history[h as usize] } else { StereoSample::SILENCE }
+        };
+        left += w * (frame.left as f32 - 128.0);
+        right += w * (frame.right as f32 - 128.0);
+    }
+    StereoSample {
+        left: (left.round() + 128.0).clamp(0.0, 255.0) as u8,
+        right: (right.round() + 128.0).clamp(0.0, 255.0) as u8,
     }
 }
 

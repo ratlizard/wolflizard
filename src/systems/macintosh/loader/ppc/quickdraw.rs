@@ -3667,19 +3667,26 @@ pub(crate) fn ppc_paint_rect(
     if left >= right || top >= bottom {
         return false;
     }
-    if let Some(area) = ppc_local_to_port_rect(surface, top, left, bottom, right) {
-        let ink = crate::quickdraw::raster::paint::Ink {
-            fg: u32::from(fore_pixel),
-            bg: u32::from(back_pixel),
-            pattern: *pattern,
-            mode: crate::quickdraw::raster::paint::TransferMode::PatCopy,
-            pat_origin: (surface.left, surface.top),
-        };
-        let writes = PpcRunWrites::PerPixelOnFailure;
-        if let Some(wrote) =
-            ppc_draw_mono_rect(memory, surface, current_gworld, area, true, &ink, writes)
-        {
-            return wrote;
+    // The raster core paints in patCopy only, so any other pen mode is
+    // drawn by the loop below.
+    if operation == 0 && !inverted {
+        if let Some(area) = ppc_local_to_port_rect(surface, top, left, bottom, right) {
+            let ink = crate::quickdraw::raster::paint::Ink {
+                fg: u32::from(fore_pixel),
+                bg: u32::from(back_pixel),
+                pattern: *pattern,
+                mode: crate::quickdraw::raster::paint::TransferMode::PatCopy,
+                // The loop below aligns the pattern to the port's
+                // coordinates, not the pixel image's; `area` is in port
+                // coordinates, so the origin is the port's.
+                pat_origin: (0, 0),
+            };
+            let writes = PpcRunWrites::PerPixelOnFailure;
+            if let Some(wrote) =
+                ppc_draw_mono_rect(memory, surface, current_gworld, area, true, &ink, writes)
+            {
+                return wrote;
+            }
         }
     }
     let clip_storage = memory

@@ -3842,7 +3842,9 @@ fn ppc_shared_raster_rect_routes_preserve_bg_clip_erase_paint_invert_and_hidden_
         (PPC_RGB_WHITE, Some(fixture.bg_index)),
     ));
 
-    // 3. Patterned PaintRect at 8-bpp aligns its pattern to surface origin (left, top).
+    // 3. Patterned PaintRect at 8-bpp aligns its pattern to the port's
+    // coordinates, as the fork's per-pixel PaintRect does, not to the pixel
+    // image's top-left corner.
     let mut loaded = load_pef_application(&synthetic_pef_with_import(b"PaintRect")).unwrap();
     install_port(&mut loaded, &fixture, 8);
     ppc_write_rect(&mut loaded.memory, RECT, -3, -5, 9, 19).unwrap();
@@ -3862,9 +3864,7 @@ fn ppc_shared_raster_rect_routes_preserve_bg_clip_erase_paint_invert_and_hidden_
         for x in BOUNDS.1..BOUNDS.3 {
             let off = (y - BOUNDS.0) as usize * usize::from(ROW_BYTES) + (x - BOUNDS.1) as usize;
             if in_clip(x, y) {
-                let ly = (y - BOUNDS.0) as usize;
-                let lx = (x - BOUNDS.1) as usize;
-                let set = MIXED[ly & 7] & (0x80 >> (lx & 7)) != 0;
+                let set = MIXED[y.rem_euclid(8) as usize] & (0x80 >> x.rem_euclid(8)) != 0;
                 assert_eq!(painted[off], if set { fixture.fg_index } else { 0 });
             } else {
                 assert_eq!(painted[off], seed[off]);

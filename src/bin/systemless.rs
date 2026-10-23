@@ -100,6 +100,9 @@ mod runtime_owner;
 #[path = "desktop/runtime_protocol.rs"]
 mod runtime_protocol;
 
+#[cfg(unix)]
+#[path = "desktop/control_socket.rs"]
+mod control_socket;
 #[cfg(all(feature = "debug-server", unix))]
 #[path = "desktop/debug_server.rs"]
 mod debug_server;
@@ -4064,6 +4067,142 @@ fn memory_dump_request() -> Option<MemoryDumpRequest> {
     })
 }
 
+#[cfg(unix)]
+fn headless_control_socket() -> Option<control_socket::ControlSocket> {
+    let path = std::env::var_os("SYSTEMLESS_CONTROL_SOCKET")?;
+    match control_socket::ControlSocket::accept(std::path::Path::new(&path)) {
+        Ok(socket) => Some(socket),
+        Err(error) => {
+            eprintln!("Error: cannot open control socket {:?}: {error}", path);
+            std::process::exit(1);
+        }
+    }
+}
+
+#[cfg(not(unix))]
+fn headless_control_socket() -> Option<()> {
+    None
+}
+
+/// Serve control commands until one asks the run to continue or end.
+/// `run_reply_owed` is set when the previous command was a `run`, whose
+/// reply waits until its instructions have executed.
+#[cfg(unix)]
+fn serve_control(
+    socket: &mut control_socket::ControlSocket,
+    session: &mut MacintoshSession,
+    save_store: &mut DesktopSaveStore,
+    total: usize,
+    run_reply_owed: bool,
+) -> control_socket::ControlStep {
+    use control_socket::{ControlCommand, ControlStep, KeyKind, MouseKind};
+    use systemless::memory::MemoryBus;
+    if run_reply_owed {
+        let halted = session.runner().is_halted() as u8;
+        socket.reply(&format!(
+            "ok {total} {} {halted}",
+            session.status().guest_tick
+        ));
+    }
+    loop {
+        let Some(line) = socket.next_line() else {
+            eprintln!("[CONTROL] Socket failed after {total} instructions");
+            return ControlStep::Quit;
+        };
+        if line.is_empty() {
+            continue;
+        }
+        let command = match control_socket::parse_command(&line) {
+            Ok(command) => command,
+            Err(message) => {
+                socket.reply(&format!("err {message}"));
+                continue;
+            }
+        };
+        match command {
+            ControlCommand::Run(0) => socket.reply(&format!("ok {total}")),
+            ControlCommand::Run(count) => return ControlStep::Run(count),
+            ControlCommand::Quit => {
+                socket.reply("ok");
+                return ControlStep::Quit;
+            }
+            ControlCommand::Mouse { kind, v, h } => {
+                let (vertical, horizontal) = (v, h);
+                let inputs: &[MacintoshInput] = match kind {
+                    MouseKind::Move => &[MacintoshInput::MouseMove { vertical, horizontal }],
+                    MouseKind::Down => &[MacintoshInput::MouseDown { vertical, horizontal }],
+                    MouseKind::Up => &[MacintoshInput::MouseUp { vertical, horizontal }],
+                    MouseKind::Click => &[
+                        MacintoshInput::MouseDown { vertical, horizontal },
+                        MacintoshInput::MouseUp { vertical, horizontal },
+                    ],
+                };
+                for input in inputs {
+                    session.deliver_input(*input);
+                }
+                socket.reply("ok");
+            }
+            ControlCommand::Key { kind, key, ch } => {
+                let (mac_key, character) = (key, ch);
+                if matches!(kind, KeyKind::Down | KeyKind::Press) {
+                    session.deliver_input(MacintoshInput::KeyDown { mac_key, character });
+                }
+                if matches!(kind, KeyKind::Up | KeyKind::Press) {
+                    session.deliver_input(MacintoshInput::KeyUp { mac_key, character });
+                }
+                socket.reply("ok");
+            }
+            ControlCommand::Peek { addr, len } => {
+                let ram = session.runner().bus().ram_size();
+                if addr >= ram {
+                    socket.reply(&format!("err ${addr:08X} is past RAM (${ram:08X})"));
+                    continue;
+                }
+                let len = len.min((ram - addr) as usize);
+                let bytes = session.runner().bus().read_bytes(addr, len);
+                socket.reply(&format!("ok {}", control_socket::hex_string(&bytes)));
+            }
+            ControlCommand::Poke { addr, bytes } => {
+                MemoryBus::write_bytes(session.runner_mut().bus_mut(), addr, &bytes);
+                socket.reply("ok");
+            }
+            ControlCommand::Dump(path) => {
+                let ram = session.runner().bus().ram_size();
+                let bytes = session.runner().bus().read_bytes(0, ram as usize);
+                match std::fs::write(&path, &bytes) {
+                    Ok(()) => socket.reply(&format!("ok {}", bytes.len())),
+                    Err(error) => socket.reply(&format!("err {error}")),
+                }
+            }
+            ControlCommand::Shot(path) => match session.video_frame() {
+                Some(frame) if frame.width > 0 && frame.height > 0 => {
+                    let (w, h) = (frame.width, frame.height);
+                    let image = image::RgbImage::from_fn(w, h, |x, y| {
+                        let i = ((y * w + x) * 4) as usize;
+                        image::Rgb([frame.pixels[i], frame.pixels[i + 1], frame.pixels[i + 2]])
+                    });
+                    match image.save(&path) {
+                        Ok(()) => socket.reply(&format!("ok {w} {h}")),
+                        Err(error) => socket.reply(&format!("err {error}")),
+                    }
+                }
+                _ => socket.reply("err no frame yet"),
+            },
+            ControlCommand::Sync => {
+                save_store.sync_save_files_now(session.runner_mut());
+                socket.reply("ok");
+            }
+            ControlCommand::Status => {
+                let halted = session.runner().is_halted() as u8;
+                socket.reply(&format!(
+                    "ok {total} {} {halted}",
+                    session.status().guest_tick
+                ));
+            }
+        }
+    }
+}
+
 fn write_memory_dump(runner: &FixtureRunner, request: &mut MemoryDumpRequest, total: usize) {
     use systemless::memory::MemoryBus;
     request.done = true;
@@ -4324,6 +4463,11 @@ fn run_headless(
     }
 
     let mut debug_server = bind_headless_debug_server(debug_socket, session.runner_mut());
+    let mut control = headless_control_socket();
+    // The instruction count the client's last `run` asked to reach, and
+    // whether that request still owes its reply.
+    let mut run_until = 0usize;
+    let mut run_reply_owed = false;
 
     let chunk = 100_000;
     // How often the headless run writes a frame. A long run -- the multi-billion
@@ -4343,6 +4487,25 @@ fn run_headless(
     while total < max_instructions {
         if let Some(server) = debug_server.as_mut() {
             wait_for_debug_resume(server, session.runner_mut());
+        }
+        #[cfg(unix)]
+        if let Some(socket) = control.as_mut() {
+            if next_event >= script.len() && total >= run_until {
+                let step = serve_control(
+                    socket,
+                    &mut session,
+                    &mut save_store,
+                    total,
+                    std::mem::take(&mut run_reply_owed),
+                );
+                match step {
+                    control_socket::ControlStep::Run(count) => {
+                        run_until = total + count;
+                        run_reply_owed = true;
+                    }
+                    control_socket::ControlStep::Quit => break,
+                }
+            }
         }
         // Deliver everything the script has scheduled at or before this
         // point, then run only as far as the next event so its delivery
@@ -4393,7 +4556,10 @@ fn run_headless(
             chunk,
             max_instructions - total,
             total,
-            script.get(next_event).map(|event| event.at),
+            script
+                .get(next_event)
+                .map(|event| event.at)
+                .or(control.is_some().then_some(run_until)),
         );
         let advance = session.advance(InstructionBudget(steps_to_run));
         total += advance.instructions;

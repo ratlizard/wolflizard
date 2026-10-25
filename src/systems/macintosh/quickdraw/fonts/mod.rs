@@ -6,6 +6,8 @@ mod classic_metrics;
 mod compatibility;
 pub mod families;
 mod resources;
+mod smoothed;
+pub use smoothed::{get_smoothed_glyph, glyph_has_partial_coverage, set_text_smoothing, text_smoothing};
 pub mod style;
 use resources::*;
 pub(crate) use resources::{

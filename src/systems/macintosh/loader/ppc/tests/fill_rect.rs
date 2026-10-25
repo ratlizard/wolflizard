@@ -3323,6 +3323,10 @@ fn glyphs_whose_strike_reaches_past_their_outline_leave_no_bare_pixels() {
     // The one-bit glyph can reach past its outline (the arm of a bold "r").
     // A pixel it inks without a detail cell shows as a solid block in the
     // high-resolution presentation, beside the outline text.
+    // The fork smooths PowerPC text at 12 points and up as Mac OS 8.5 does,
+    // and smoothed text is drawn in software. This test reads the one-bit
+    // strike, so it draws sharp.
+    crate::quickdraw::fonts::set_text_smoothing(None);
     use crate::memory::{MacMemoryBus, MemoryBus};
     const SCREEN: u32 = 0x3_0000;
     const OFFSCREEN: u32 = 0x1_0000;

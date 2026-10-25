@@ -2256,6 +2256,19 @@ pub(crate) fn ppc_write_gworld_port(
         port + PPC_CGRAF_PORT_TX_SIZE_OFFSET,
         PPC_QD_TEXT_SIZE_SYSTEM as u16,
     )?;
+    // fgColor and bkColor (+80, +84) hold the pixel values of black and white,
+    // as InitCPort's ForeColor(blackColor) and BackColor(whiteColor) leave
+    // them (Imaging With QuickDraw (1994), p. 4-65). PortChanged takes an
+    // 8-bit port's colours from these fields, so a port left at zero drew
+    // Cythera's Seldane titles white on the PowerPC slice.
+    let depth = memory
+        .read_u32_be(pixmap_handle)
+        .filter(|pixmap| *pixmap != 0)
+        .and_then(|pixmap| memory.read_u16_be(pixmap + 32));
+    if depth == Some(8) {
+        memory.write_u32_be(port + 80, 255)?;
+        memory.write_u32_be(port + 84, 0)?;
+    }
     Some(())
 }
 

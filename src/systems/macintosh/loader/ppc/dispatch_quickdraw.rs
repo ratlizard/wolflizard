@@ -160,6 +160,15 @@ pub(super) fn dispatch_quickdraw_import(
                 PPC_CGRAF_PORT_RGB_FG_COLOR_OFFSET,
                 *quickdraw_fore_color,
             );
+            // ForeColor sets fgColor's pixel value too, as RGBForeColor does
+            // below: PortChanged reads it back on an 8-bit port.
+            let index = ppc_color_to_index(
+                memory,
+                current_gdevice,
+                color_manager_clut,
+                *quickdraw_fore_color,
+            ) as u8;
+            ppc_write_port_index_field(memory, current_gworld, 0x50, index);
             Some(PpcImportAction::ReturnPreserve)
         }
         PpcImportDispatcherTarget::BackColor => {
@@ -170,6 +179,13 @@ pub(super) fn dispatch_quickdraw_import(
                 PPC_CGRAF_PORT_RGB_BK_COLOR_OFFSET,
                 *quickdraw_back_color,
             );
+            let index = ppc_color_to_index(
+                memory,
+                current_gdevice,
+                color_manager_clut,
+                *quickdraw_back_color,
+            ) as u8;
+            ppc_write_port_index_field(memory, current_gworld, 0x54, index);
             Some(PpcImportAction::ReturnPreserve)
         }
         PpcImportDispatcherTarget::SetThemePen => {

@@ -813,6 +813,44 @@ mod tests {
         );
     }
 
+    /// Geneva 10 comes from the grid recreation (geneva10grid/README.md),
+    /// at the advances and in the frame of Mac OS 8.5's Geneva 10 strike, so a
+    /// line in Cythera's message pane is drawn as a real Mac draws it.
+    #[test]
+    fn geneva10_draws_the_grid_recreation_at_apples_advances() {
+        const APPLE_GENEVA10_ADVANCES: [u8; 95] = [
+            3, 4, 5, 9, 7, 10, 8, 3, 6, 6, 7, 8, 4, 7, 3, 6, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 3, 4,
+            5, 7, 5, 7, 9, 6, 7, 6, 7, 6, 6, 6, 7, 4, 6, 7, 6, 9, 7, 6, 7, 6, 7, 6, 6, 7, 6, 10,
+            6, 6, 6, 5, 5, 5, 5, 7, 4, 5, 6, 5, 5, 5, 4, 5, 6, 4, 5, 6, 4, 9, 6, 5, 6, 5, 6, 5,
+            4, 6, 6, 8, 6, 6, 5, 5, 4, 5, 7,
+        ];
+        let (face, _) = super::face(FONT_GENEVA, 10).unwrap();
+        let advances: Vec<u8> = face.glyphs.iter().take(95).map(|g| g.advance).collect();
+        assert_eq!(advances, APPLE_GENEVA10_ADVANCES);
+        // Mac OS 8.5's strike: ten above the baseline, two below, one of
+        // leading, and a widMax of 11.
+        assert_eq!(
+            (
+                face.metrics.ascent,
+                face.metrics.descent,
+                face.metrics.leading
+            ),
+            (10, 2, 1)
+        );
+        assert_eq!(face.metrics.wid_max, 11);
+        let h = &face.glyphs[usize::from(b'H' - b' ')];
+        let bytes = super::bytes(FONT_GENEVA).unwrap();
+        let (substitute, _) = super::rasterize(FONT_GENEVA, 10, bytes, None, None).unwrap();
+        assert_ne!(
+            glyph_rows(
+                substitute.data,
+                &substitute.glyphs[usize::from(b'H' - b' ')]
+            ),
+            glyph_rows(face.data, h),
+            "the substitute outline must differ, or this test proves nothing"
+        );
+    }
+
     /// A character the recreation does not have is still drawn, from the
     /// substitute outline, rather than as the recreation's missing glyph.
     #[test]
@@ -907,10 +945,12 @@ mod tests {
 
     #[test]
     fn compatibility_does_not_change_other_bundled_faces_or_guest_sfnt_rasterization() {
+        // Geneva and Application at 9 and 10 are pixel strikes, so 11 stands
+        // for the sizes drawn from the outline alone.
         for (font_id, size) in [
             (FONT_GENEVA, 8),
-            (FONT_GENEVA, 10),
-            (FONT_APPLICATION, 10),
+            (FONT_GENEVA, 11),
+            (FONT_APPLICATION, 11),
             (FONT_HELVETICA, 9),
             (FONT_COURIER, 23),
         ] {

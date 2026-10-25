@@ -19,6 +19,11 @@ static CHARCOAL12_ADVANCES: &[u8; 95] = include_bytes!("charcoal12-advances.bin"
 static CHARCOAL12_BEARINGS: &[u8; 95] = include_bytes!("charcoal12-bearings.bin");
 const CHARCOAL12_FRAME: (i16, i16, i16) = (12, 3, 1);
 const CHARCOAL12_WID_MAX: i16 = 12;
+// Geneva 10's line, ascent, descent and leading, and its widMax, as Mac OS
+// 8.5's strike gives them (System 7.5.2's has a widMax of 12). The grid
+// recreation (../geneva10grid/README.md) has its advances and no leading.
+const GENEVA10_FRAME: (i16, i16, i16) = (10, 2, 1);
+const GENEVA10_WID_MAX: i16 = 11;
 // Inside Macintosh: Text (1993), p. 4-91 defines FOND.ffWidMax as the
 // normalized maximum glyph width for a one-point font.
 const MONACO_MAX_ADVANCE_UNITS: i32 = 1552;
@@ -49,6 +54,7 @@ pub(super) fn bundled_layout(font_id: i16, size: i16) -> Layout {
         frame: match (font_id, size) {
             (FONT_CHICAGO, 12) => Some(CHICAGO12_FRAME),
             (FONT_CHARCOAL, 12) => Some(CHARCOAL12_FRAME),
+            (FONT_APPLICATION | FONT_GENEVA, 10) => Some(GENEVA10_FRAME),
             _ => None,
         },
     }
@@ -69,6 +75,9 @@ pub(super) fn bundled_wid_max(font_id: i16, size: i16) -> Option<i16> {
     }
     if font_id == FONT_CHARCOAL && size == 12 {
         return Some(CHARCOAL12_WID_MAX);
+    }
+    if matches!(font_id, FONT_APPLICATION | FONT_GENEVA) && size == 10 {
+        return Some(GENEVA10_WID_MAX);
     }
     // Monaco's scalable classic-family metadata records a 1552/2048-em
     // maximum advance. Match outline metric rounding at every requested size.

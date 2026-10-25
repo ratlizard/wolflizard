@@ -2674,7 +2674,21 @@ fn hle_import_runner_tracks_quicktime_gworld_targets_and_visible_draws() {
     assert_eq!(probe.unsupported_import_index, None);
     assert_eq!(loaded.cpu.gpr[3], 0);
 
+    // A second task in the same tick leaves the movie where it was, so a
+    // tight MoviesTask loop does not speed it up.
+    loaded.cpu.pc = loaded.entry_pc;
+    loaded.imports[0].dispatcher_target = PpcImportDispatcherTarget::QtMoviesTask;
+    loaded.cpu.gpr[3] = PPC_QT_MOVIE;
+    loaded.run_with_hle_imports(64);
+    assert_eq!(loaded.quicktime.movie_task_count, 1);
+
     for expected_count in 2..=PPC_QT_FALLBACK_MOVIE_TASKS_UNTIL_DONE {
+        // Movie time follows Ticks, so each task comes a tick after the last.
+        let tick = loaded
+            .memory
+            .read_u32_be(crate::memory::globals::addr::TICKS)
+            .unwrap_or(0);
+        loaded.set_tick_count(tick.wrapping_add(1));
         loaded.cpu.pc = loaded.entry_pc;
         loaded.imports[0].dispatcher_target = PpcImportDispatcherTarget::QtMoviesTask;
         loaded.cpu.gpr[3] = PPC_QT_MOVIE;

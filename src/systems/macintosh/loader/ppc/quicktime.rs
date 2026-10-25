@@ -3966,13 +3966,15 @@ pub(crate) fn ppc_qt_movies_task(
     // as it likes. Movie time follows the tick clock (60 a second, the
     // task-count unit), so a tight MoviesTask loop does not speed the movie
     // up. A task count set elsewhere (going to the beginning, seeking)
-    // re-bases the clock.
+    // re-bases the clock. The first call after a start or a re-base counts
+    // as one tick, as every call did before the clock, so a movie advances on
+    // its first task and later calls follow the ticks.
     let now = memory
         .read_u32_be(crate::memory::globals::addr::TICKS)
         .unwrap_or(0);
     let start = match quicktime.movie_clock {
         Some((start, last)) if last == quicktime.movie_task_count => start,
-        _ => now.wrapping_sub(quicktime.movie_task_count),
+        _ => now.wrapping_sub(quicktime.movie_task_count).wrapping_sub(1),
     };
     quicktime.movie_task_count = now.wrapping_sub(start).max(quicktime.movie_task_count);
     quicktime.movie_clock = Some((start, quicktime.movie_task_count));

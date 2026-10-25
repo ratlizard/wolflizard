@@ -36,6 +36,7 @@ pub(super) fn face(font_id: i16, size: i16) -> Option<Faces> {
         bytes,
         super::bundled::pixel_strike(font_id, size),
         super::compatibility::bundled_layout(font_id, size),
+        false,
     )?;
     // Coppet is an optical-size-specific ASCII substitute. Retain the
     // established GetFontInfo metrics and extended Mac Roman fallback.
@@ -88,6 +89,135 @@ impl skrifa::outline::OutlinePen for OutlinePath {
     fn close(&mut self) {
         self.0.push(zeno::Command::Close);
     }
+}
+
+/// Sub-pixels a side of the square Mac OS 8.5 samples each pixel with when it
+/// smooths text (Technical Note TN1149).
+const SMOOTH_SUBPIXELS: i32 = 4;
+
+/// The gray level, 0 to 15, for a count of covered sub-pixels, 0 to 16.
+/// TN1149 says only that the count "is then mapped to a gray level encoded in
+/// four bits". Capping at 15 is the mapping that fits Mac OS 8.5's smoothed
+/// Charcoal 12 (smoothed/README.md): smoothed here from Mac OS 8.5's own
+/// Charcoal outline, 52 of its 95 glyphs come out pixel for pixel as Mac OS
+/// 8.5 drew them, and 104 pixels of the rest differ, nearly all by one level
+/// (25 October 2026). Flattening curves four times more finely matched fewer.
+fn smoothed_level(count: u32) -> u8 {
+    count.min(15) as u8
+}
+
+/// A hinted glyph outline smoothed as Mac OS 8.5 does: scan-converted at four
+/// times the resolution, a sub-pixel on when its centre is inside the outline
+/// by the nonzero rule, as a TrueType scan converter decides a pixel, and each
+/// pixel's count of covered sub-pixels made a gray level. Returns the
+/// placement (left, top in pixels above the baseline, width, height) and one
+/// byte a pixel, `level * 17`.
+fn smoothed_mask(commands: &[zeno::Command]) -> Option<(i32, i32, usize, usize, Vec<u8>)> {
+    // Flatten every contour into line segments, in pixels, y up.
+    let mut edges: Vec<((f32, f32), (f32, f32))> = Vec::new();
+    let (mut start, mut at) = ((0.0f32, 0.0f32), (0.0f32, 0.0f32));
+    let push = |edges: &mut Vec<_>, a: (f32, f32), b: (f32, f32)| {
+        if a.1 != b.1 {
+            edges.push((a, b));
+        }
+    };
+    const STEPS: usize = 16;
+    for command in commands {
+        match *command {
+            zeno::Command::MoveTo(p) => {
+                if at != start {
+                    push(&mut edges, at, start);
+                }
+                start = (p.x, p.y);
+                at = start;
+            }
+            zeno::Command::LineTo(p) => {
+                push(&mut edges, at, (p.x, p.y));
+                at = (p.x, p.y);
+            }
+            zeno::Command::QuadTo(c, p) => {
+                let from = at;
+                for step in 1..=STEPS {
+                    let t = step as f32 / STEPS as f32;
+                    let u = 1.0 - t;
+                    let next = (
+                        u * u * from.0 + 2.0 * u * t * c.x + t * t * p.x,
+                        u * u * from.1 + 2.0 * u * t * c.y + t * t * p.y,
+                    );
+                    push(&mut edges, at, next);
+                    at = next;
+                }
+            }
+            zeno::Command::CurveTo(c0, c1, p) => {
+                let from = at;
+                for step in 1..=STEPS {
+                    let t = step as f32 / STEPS as f32;
+                    let u = 1.0 - t;
+                    let next = (
+                        u * u * u * from.0 + 3.0 * u * u * t * c0.x + 3.0 * u * t * t * c1.x + t * t * t * p.x,
+                        u * u * u * from.1 + 3.0 * u * u * t * c0.y + 3.0 * u * t * t * c1.y + t * t * t * p.y,
+                    );
+                    push(&mut edges, at, next);
+                    at = next;
+                }
+            }
+            zeno::Command::Close => {
+                if at != start {
+                    push(&mut edges, at, start);
+                }
+                at = start;
+            }
+        }
+    }
+    if at != start {
+        push(&mut edges, at, start);
+    }
+    if edges.is_empty() {
+        return None;
+    }
+    let points = edges.iter().flat_map(|(a, b)| [*a, *b]);
+    let (mut min_x, mut max_x, mut min_y, mut max_y) = (f32::MAX, f32::MIN, f32::MAX, f32::MIN);
+    for (x, y) in points {
+        (min_x, max_x, min_y, max_y) = (min_x.min(x), max_x.max(x), min_y.min(y), max_y.max(y));
+    }
+    let (left, right) = (min_x.floor() as i32, max_x.ceil() as i32);
+    let (bottom, top) = (min_y.floor() as i32, max_y.ceil() as i32);
+    let (width, height) = ((right - left) as usize, (top - bottom) as usize);
+    if width == 0 || height == 0 || width > 255 || height > 255 {
+        return None;
+    }
+    let n = SMOOTH_SUBPIXELS;
+    let mut counts = vec![0u32; width * height];
+    let mut crossings: Vec<(f32, i32)> = Vec::new();
+    for sub_row in 0..height as i32 * n {
+        let y = bottom as f32 + (sub_row as f32 + 0.5) / n as f32;
+        crossings.clear();
+        for &((x0, y0), (x1, y1)) in &edges {
+            let (lo, hi) = if y0 < y1 { (y0, y1) } else { (y1, y0) };
+            if y >= lo && y < hi {
+                let x = x0 + (y - y0) * (x1 - x0) / (y1 - y0);
+                crossings.push((x, if y1 > y0 { 1 } else { -1 }));
+            }
+        }
+        crossings.sort_by(|a, b| a.0.total_cmp(&b.0));
+        // The pixel row, counted down from the top of the box.
+        let row = height - 1 - (sub_row / n) as usize;
+        let mut winding = 0;
+        for pair in crossings.windows(2) {
+            winding += pair[0].1;
+            if winding == 0 {
+                continue;
+            }
+            // Sub-pixel columns whose centres lie between the two crossings.
+            let first = ((pair[0].0 - left as f32) * n as f32 - 0.5).ceil().max(0.0) as i32;
+            let last = ((pair[1].0 - left as f32) * n as f32 - 0.5).ceil() as i32;
+            for sub_col in first..last.min(width as i32 * n) {
+                counts[row * width + (sub_col / n) as usize] += 1;
+            }
+        }
+    }
+    let levels = counts.iter().map(|&count| smoothed_level(count) * 17).collect();
+    Some((left, top, width, height, levels))
 }
 
 /// Coverage below this is antialiasing fringe rather than a stroke crossing a
@@ -171,6 +301,41 @@ pub(super) fn rasterize(
             wid_max: compatibility_wid_max,
             ..Default::default()
         },
+        false,
+    )
+}
+
+/// The face of an outline font smoothed as Mac OS 8.5 smooths it
+/// (`smoothed_mask`): the same grid-fitted outlines and advances as
+/// `rasterize`, with each pixel a gray level instead of on or off. Its glyphs
+/// have no outline source, so the window's presentation shows their pixels.
+pub(super) fn rasterize_smoothed(font_id: i16, size: i16, bytes: &'static [u8]) -> Option<Faces> {
+    rasterize_with_strike(
+        font_id,
+        size,
+        bytes,
+        None,
+        super::compatibility::Layout {
+            frame: super::compatibility::resource_outline_frame(bytes, size),
+            ..Default::default()
+        },
+        true,
+    )
+}
+
+/// A game's own outline font, sharp, with Mac OS 8.5's line where it has
+/// been measured (`compatibility::resource_outline_frame`).
+pub(super) fn rasterize_resource(font_id: i16, size: i16, bytes: &'static [u8]) -> Option<Faces> {
+    rasterize_with_strike(
+        font_id,
+        size,
+        bytes,
+        None,
+        super::compatibility::Layout {
+            frame: super::compatibility::resource_outline_frame(bytes, size),
+            ..Default::default()
+        },
+        false,
     )
 }
 
@@ -188,6 +353,7 @@ fn rasterize_with_strike(
     bytes: &'static [u8],
     pixel_strike: Option<(&'static [u8], f32)>,
     layout: super::compatibility::Layout,
+    smoothed: bool,
 ) -> Option<Faces> {
     use skrifa::{
         instance::{LocationRef, Size},
@@ -293,7 +459,15 @@ fn rasterize_with_strike(
             origin_y: 0,
             data_offset: data.len(),
         };
-        if !path.0.is_empty() {
+        if smoothed && !path.0.is_empty() {
+            if let Some((left, top, width, height, levels)) = smoothed_mask(&path.0) {
+                result.width = u8::try_from(width).ok()?;
+                result.height = u8::try_from(height).ok()?;
+                result.origin_x = i8::try_from(left).ok()?;
+                result.origin_y = i8::try_from(-top).ok()?;
+                data.extend(levels);
+            }
+        } else if !path.0.is_empty() {
             let mut coverage = Vec::new();
             let placement = zeno::Mask::new(path.0.as_slice())
                 .origin(zeno::Origin::BottomLeft)
@@ -427,6 +601,9 @@ fn rasterize_with_strike(
         glyphs: Box::leak(extended.into_boxed_slice()),
         data,
     }));
+    if smoothed {
+        return Some((face, extended));
+    }
     let mut registry = SOURCES.lock().ok()?;
     for (glyph, source) in face
         .glyphs
@@ -573,6 +750,87 @@ pub(crate) fn unicode_glyph(font_id: i16, size: i16, ch: char) -> Option<Unicode
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Calibration against Mac OS 8.5, run by hand: CHARCOAL_85_TTF names
+    /// the TrueType data of Mac OS 8.5's Charcoal (its `sfnt` resource), which
+    /// is Apple's and is never in the repository. Smoothed here at 12 points,
+    /// each glyph is compared with the strike Mac OS 8.5 drew
+    /// (smoothed/charcoal-12.kfov).
+    #[test]
+    #[ignore]
+    fn smoothed_charcoal12_against_mac_os_8_5() {
+        let Some(path) = std::env::var_os("CHARCOAL_85_TTF") else {
+            return;
+        };
+        let bytes: &'static [u8] = Box::leak(std::fs::read(path).unwrap().into_boxed_slice());
+        let (ours, _) = super::rasterize_smoothed(9999, 12, bytes).unwrap();
+        let theirs = super::super::override_format::read_blob(include_bytes!("smoothed/charcoal-12.kfov")).unwrap();
+        let pixels = |glyph: &Glyph, data: &[u8]| {
+            let mut out = std::collections::BTreeMap::new();
+            for row in 0..usize::from(glyph.height) {
+                for col in 0..usize::from(glyph.width) {
+                    let value = data[glyph.data_offset + row * usize::from(glyph.width) + col];
+                    if value != 0 {
+                        out.insert((i32::from(glyph.origin_x) + col as i32, i32::from(glyph.origin_y) + row as i32), value / 17);
+                    }
+                }
+            }
+            out
+        };
+        let (mut same, mut differing, mut advances) = (0, 0, 0);
+        let mut pairs = std::collections::BTreeMap::new();
+        for code in 0..95usize {
+            let (a, b) = (&ours.glyphs[code], &theirs.glyphs[code]);
+            advances += usize::from(a.advance != b.advance);
+            let (pa, pb) = (pixels(a, ours.data), pixels(b, &theirs.data));
+            let keys: std::collections::BTreeSet<_> = pa.keys().chain(pb.keys()).collect();
+            let mut glyph_diff = 0;
+            for key in keys {
+                let (x, y) = (pa.get(key).copied().unwrap_or(0), pb.get(key).copied().unwrap_or(0));
+                if x != y {
+                    glyph_diff += 1;
+                    *pairs.entry((x, y)).or_insert(0) += 1;
+                }
+            }
+            if glyph_diff == 0 { same += 1 } else {
+                differing += glyph_diff;
+                eprintln!("{:?}: {} pixels differ", (code as u8 + 32) as char, glyph_diff);
+            }
+        }
+        for ch in [b'H', b'o'] {
+            for (label, glyph, data) in [("ours", &ours.glyphs[usize::from(ch - 32)], ours.data), ("8.5", &theirs.glyphs[usize::from(ch - 32)], &theirs.data[..])] {
+                let map = pixels(glyph, data);
+                eprintln!("{} {label}: origin ({}, {}) size {}x{}", ch as char, glyph.origin_x, glyph.origin_y, glyph.width, glyph.height);
+                for y in -12..4 {
+                    let row: String = (-2..10).map(|x| map.get(&(x, y)).map_or('.', |v| char::from_digit(u32::from(*v), 16).unwrap())).collect();
+                    if row.contains(|c: char| c != '.') { eprintln!("  {y:3} {row}"); }
+                }
+            }
+        }
+        eprintln!("{same} of 95 glyphs identical, {differing} pixels differ, {advances} advances differ");
+        eprintln!("(ours, Mac OS 8.5) level pairs that differ: {pairs:?}");
+    }
+
+    /// Run by hand: ARGOS_TTF names Cythera's Argos A Nouveau (`sfnt` 7289
+    /// in Cythera Data). Prints each size's tallest and deepest hinted glyph,
+    /// to set beside the ascent and descent Mac OS 8.5 gives it.
+    #[test]
+    #[ignore]
+    fn argos_hinted_extents() {
+        let Some(path) = std::env::var_os("ARGOS_TTF") else {
+            return;
+        };
+        let bytes: &'static [u8] = Box::leak(std::fs::read(path).unwrap().into_boxed_slice());
+        for size in [12, 14, 18, 22, 24] {
+            let (face, extended) = super::rasterize(1046, size, bytes, None, None).unwrap();
+            let glyphs = || face.glyphs.iter().chain(extended.glyphs.iter().map(|g| &g.glyph)).filter(|g| g.height > 0);
+            let top = glyphs().map(|g| -i32::from(g.origin_y)).max().unwrap();
+            let bottom = glyphs().map(|g| i32::from(g.origin_y) + i32::from(g.height)).max().unwrap();
+            let ascii_top = face.glyphs.iter().filter(|g| g.height > 0).map(|g| -i32::from(g.origin_y)).max().unwrap();
+            let ascii_bottom = face.glyphs.iter().filter(|g| g.height > 0).map(|g| i32::from(g.origin_y) + i32::from(g.height)).max().unwrap();
+            eprintln!("{size} pt: tallest {top} (ASCII {ascii_top}), deepest {bottom} (ASCII {ascii_bottom}), face {} {} {}", face.metrics.ascent, face.metrics.descent, face.metrics.leading);
+        }
+    }
 
     const GENEVA9_ADVANCES: &[u8; 95] = include_bytes!("compatibility/geneva9-advances.bin");
     const EXPECTED_GENEVA9_ADVANCES: [u8; 95] = [

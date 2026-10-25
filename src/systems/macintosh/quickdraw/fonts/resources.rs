@@ -300,7 +300,7 @@ pub(super) fn rasterize_resource_outline_face(
         .expect("resource outline font cache poisoned")
         .get(&font_id)
         .copied()?;
-    let (face, extended) = outline::rasterize(font_id, size, bytes, None, None)?;
+    let (face, extended) = outline::rasterize_resource(font_id, size, bytes)?;
     RESOURCE_FACES
         .lock()
         .expect("resource font cache poisoned")

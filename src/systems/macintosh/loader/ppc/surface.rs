@@ -180,6 +180,76 @@ fn ppc_quickdraw_surface_clut(
         .unwrap_or(fallback)
 }
 
+/// What blending smoothed text into a surface needs, resolved once a draw:
+/// the surface's colour table at an indexed depth, and the text colour.
+pub(crate) struct PpcTextBlend {
+    clut: Option<[[u16; 3]; 256]>,
+    entries: usize,
+    fore: [u16; 3],
+}
+
+pub(crate) fn ppc_text_blend(
+    memory: &mut PpcSectionMem,
+    surface: PpcQuickDrawSurface,
+    color: PpcRgbColor,
+    explicit_index: Option<u8>,
+) -> Option<PpcTextBlend> {
+    let depth = surface.front_buffer.depth;
+    let rgb = [color.red, color.green, color.blue];
+    match depth {
+        1 | 2 | 4 | 8 => {
+            let clut = ppc_quickdraw_surface_clut(memory, surface, depth);
+            let entries = ppc_indexed_depth_entry_count(depth)?;
+            let fore = explicit_index.map_or(rgb, |index| clut[usize::from(index) & (entries - 1)]);
+            Some(PpcTextBlend { clut: Some(clut), entries, fore })
+        }
+        16 => Some(PpcTextBlend { clut: None, entries: 0, fore: rgb }),
+        _ => None,
+    }
+}
+
+/// Blend `coverage` (out of 255) of the text colour into the pixel at
+/// `point` and store the nearest colour the surface holds. Mac OS 8.5's
+/// QuickDraw Text blends a smoothed glyph's gray levels "from the text's
+/// foreground color into the existing background color" (Technical Note
+/// TN1149); at full depth its levels came out as 255 * level / 15 of the way
+/// from white to black, which this reproduces with rounding.
+pub(crate) fn ppc_blend_text_pixel(
+    memory: &mut PpcSectionMem,
+    surface: PpcQuickDrawSurface,
+    vis_storage: Option<&[u8]>,
+    clip_storage: Option<&[u8]>,
+    point: (i32, i32),
+    blend: &PpcTextBlend,
+    coverage: u8,
+) -> bool {
+    if !ppc_local_point_in_port_regions(surface, point, vis_storage, clip_storage) {
+        return false;
+    }
+    let front_buffer = surface.front_buffer;
+    let Some(dst) = ppc_quickdraw_read_pixel(memory, front_buffer, point) else {
+        return false;
+    };
+    let back = match &blend.clut {
+        Some(clut) => clut[usize::from(dst) & 0xff],
+        None => ppc_rgb555_to_rgb16(dst),
+    };
+    let mix = |fore: u16, back: u16| -> u16 {
+        let (fore, back, coverage) = (i64::from(fore), i64::from(back), i64::from(coverage));
+        (back + ((fore - back) * coverage + if fore >= back { 127 } else { -127 }) / 255) as u16
+    };
+    let color = PpcRgbColor {
+        red: mix(blend.fore[0], back[0]),
+        green: mix(blend.fore[1], back[1]),
+        blue: mix(blend.fore[2], back[2]),
+    };
+    let value = match &blend.clut {
+        Some(clut) => u16::from(ppc_rgb_color_to_index_in_clut(color, clut, blend.entries)),
+        None => ppc_rgb_color_to_rgb555(color),
+    };
+    ppc_quickdraw_write_raw_pixel(memory, front_buffer, point, value)
+}
+
 /// The foreground and background pixels of a two-colour pattern draw, each
 /// resolved as [`ppc_quickdraw_surface_fore_pixel`] does, but reading the
 /// surface's colour table at most once. A colour passed as `None` (the

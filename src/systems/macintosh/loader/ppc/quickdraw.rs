@@ -2310,9 +2310,20 @@ pub(crate) fn ppc_draw_text_chars(
     let mut base_advance = 0i32;
     let packed_extra = ppc_port_char_extra_packed(memory, current_gworld);
     let mut nonspaces = 0i32;
+    // Resolved at the first smoothed glyph (crate::quickdraw::fonts::smoothed).
+    let mut text_blend: Option<Option<PpcTextBlend>> = None;
     for ch in chars {
         let local_h = local_h + ppc_char_extra_pixels(packed_extra, text_size, nonspaces);
-        if let Some((glyph, data)) = get_glyph(text_font, face.size, ch) {
+        let found = crate::quickdraw::fonts::get_smoothed_glyph(text_font, face.size, ch)
+            .or_else(|| get_glyph(text_font, face.size, ch));
+        if let Some((glyph, data)) = found {
+            // A smoothed glyph's partial pixels are blended in srcCopy and
+            // srcOr, the modes Mac OS 8.5 smooths. They draw on the CPU and
+            // stay out of the outline presentation, so the window shows
+            // these pixels as SheepShaver shows Mac OS 8.5's.
+            let smoothed = numerator == denominator
+                && matches!(text_mode & 0x3f, 0 | 1)
+                && crate::quickdraw::fonts::glyph_has_partial_coverage(glyph, data);
             if text_mode & 0x3f == 0 {
                 ppc_clear_text_cell(
                     memory,
@@ -2328,7 +2339,7 @@ pub(crate) fn ppc_draw_text_chars(
                     denominator,
                 );
             }
-            if matches!(text_mode & 0x3f, 0 | 1) && numerator == denominator {
+            if matches!(text_mode & 0x3f, 0 | 1) && numerator == denominator && !smoothed {
                 ppc_begin_outline_text_glyph(
                     memory,
                     surface,
@@ -2344,7 +2355,9 @@ pub(crate) fn ppc_draw_text_chars(
                     None,
                 );
             }
-            let gpu_glyph = if numerator == denominator {
+            let gpu_glyph = if smoothed {
+                false
+            } else if numerator == denominator {
                 ppc_gpu_text_glyph(
                     memory,
                     surface,
@@ -2385,7 +2398,27 @@ pub(crate) fn ppc_draw_text_chars(
                 for row in 0..height {
                     for col in 0..width {
                         let index = glyph.data_offset + row * width + col;
-                        if index < data.len() && data[index] >= 128 {
+                        let coverage = data.get(index).copied().unwrap_or(0);
+                        if smoothed && coverage != 0 && coverage != 255 {
+                            let blend = text_blend.get_or_insert_with(|| {
+                                ppc_text_blend(memory, surface, color, explicit_index)
+                            });
+                            if let Some(blend) = blend {
+                                let point = (
+                                    local_h + base_advance + i32::from(glyph.origin_x) + col as i32,
+                                    local_v + i32::from(glyph.origin_y) + row as i32,
+                                );
+                                let _ = ppc_blend_text_pixel(
+                                    memory,
+                                    surface,
+                                    vis_storage.as_deref(),
+                                    clip_storage.as_deref(),
+                                    point,
+                                    blend,
+                                    coverage,
+                                );
+                            }
+                        } else if coverage >= 128 {
                             let source_x = base_advance + i32::from(glyph.origin_x) + col as i32;
                             let source_y = i32::from(glyph.origin_y) + row as i32;
                             let left =

@@ -24,6 +24,32 @@ const CHARCOAL12_WID_MAX: i16 = 12;
 // recreation (../geneva10grid/README.md) has its advances and no leading.
 const GENEVA10_FRAME: (i16, i16, i16) = (10, 2, 1);
 const GENEVA10_WID_MAX: i16 = 11;
+// Cythera's Argos A Nouveau (`sfnt` 7289 in Cythera Data), known by its head
+// table's checkSumAdjustment, at 18 points: ascent 13, descent 5, leading 1.
+// Cythera draws its window titles and its To Do and Journal plaques in it at
+// 18 points and places them from the ascent. Its hhea ascent, 13.21, rounded
+// up put every one a row below Mac OS 8.5's (25 October 2026). The descent
+// and leading fill out TextEdit's line height of 19 on Mac OS 8.5. Its other
+// sizes are unmeasured: TextEdit's baselines alone did not separate ascent
+// from leading, and so do not settle them.
+const ARGOS_CHECKSUM_ADJUSTMENT: u32 = 0x5bfb_fdbb;
+const ARGOS_FRAMES: [(i16, (i16, i16, i16)); 1] = [(18, (13, 5, 1))];
+
+/// The line a game's own outline font has on Mac OS 8.5 at a size, where it
+/// has been measured.
+pub(super) fn resource_outline_frame(bytes: &[u8], size: i16) -> Option<(i16, i16, i16)> {
+    let tables = u16::from_be_bytes(bytes.get(4..6)?.try_into().ok()?) as usize;
+    let head = (0..tables).find_map(|i| {
+        let entry = bytes.get(12 + 16 * i..28 + 16 * i)?;
+        (&entry[..4] == b"head").then(|| u32::from_be_bytes(entry[8..12].try_into().unwrap()) as usize)
+    })?;
+    let adjustment = u32::from_be_bytes(bytes.get(head + 8..head + 12)?.try_into().ok()?);
+    if adjustment != ARGOS_CHECKSUM_ADJUSTMENT {
+        return None;
+    }
+    ARGOS_FRAMES.iter().find(|(s, _)| *s == size).map(|(_, frame)| *frame)
+}
+
 // Inside Macintosh: Text (1993), p. 4-91 defines FOND.ffWidMax as the
 // normalized maximum glyph width for a one-point font.
 const MONACO_MAX_ADVANCE_UNITS: i32 = 1552;

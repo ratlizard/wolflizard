@@ -62,10 +62,13 @@ fn hle_import_runner_open_cport_initializes_stale_port_storage() {
     assert_eq!(memory.read_u32_be(port + 58), Some(0));
     assert_eq!(memory.read_u32_be(port + 62), Some(0));
     assert_eq!(memory.read_u16_be(port + PPC_CGRAF_PORT_PN_VIS_OFFSET), Some(0));
-    // spExtra, fgColor = blackColor and bkColor = whiteColor.
+    // spExtra, then fgColor and bkColor as the 8-bit pixel values of black
+    // and white, which the fork keeps in step with RGBForeColor and
+    // RGBBackColor (a colour port's fields hold pixel values, not the
+    // classic blackColor and whiteColor constants).
     assert_eq!(memory.read_u32_be(port + 76), Some(0));
-    assert_eq!(memory.read_u32_be(port + 80), Some(0x21));
-    assert_eq!(memory.read_u32_be(port + 84), Some(0x1e));
+    assert_eq!(memory.read_u32_be(port + 80), Some(0xff));
+    assert_eq!(memory.read_u32_be(port + 84), Some(0));
     // colrBit, patStretch, picSave, rgnSave, polySave and grafProcs.
     assert_eq!(memory.read_u16_be(port + 88), Some(0));
     assert_eq!(memory.read_u16_be(port + 90), Some(0));

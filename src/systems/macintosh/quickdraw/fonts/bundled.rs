@@ -27,6 +27,10 @@ pub(super) fn pixel_strike(font_id: i16, size: i16) -> Option<(&'static [u8], f3
         (FONT_APPLICATION | FONT_GENEVA, 9) => {
             Some((include_bytes!("fontstruct/geneva-9.ttf"), 16.0))
         }
+        // Geneva 10 draws Cythera's message pane (geneva10grid/README.md).
+        (FONT_APPLICATION | FONT_GENEVA, 10) => {
+            Some((include_bytes!("geneva10grid/Geneva10Grid.ttf"), 10.0))
+        }
         (FONT_CHICAGO, 12) => Some((include_bytes!("chicago-kare/ChicagoKare-Regular.ttf"), 16.0)),
         (FONT_CHARCOAL, 12) => Some((
             include_bytes!("fontstruct/charcoal-12/charcoal-12.otf"),

@@ -825,6 +825,11 @@ fn load_pef_application_with_optional_disk_fragment(
             .map(|section| section.bytes.len() as u32)
             .fold(0, u32::saturating_add),
     };
+    for section in &mut mapped_sections {
+        if section.section_kind == SECTION_KIND_CODE && section.base == code_base {
+            cythera_light::install_native_apply_light(&mut section.bytes, section.base);
+        }
+    }
     for section in mapped_sections {
         if section.section_kind == SECTION_KIND_CODE
             || section.section_kind == SECTION_KIND_CONSTANT

@@ -864,6 +864,13 @@ fn load_pef_application_with_optional_disk_fragment(
             kind: section.section_kind,
         })
         .collect();
+    // The first code section, where the program's routines are.
+    let code_base = first_base_for_kind(&mapped_sections, SECTION_KIND_CODE);
+    for section in &mut mapped_sections {
+        if section.section_kind == SECTION_KIND_CODE && Some(section.base) == code_base {
+            cythera_light::install_native_apply_light(&mut section.bytes, section.base);
+        }
+    }
     for section in mapped_sections {
         // Classic Mac OS never write-protected application code. Apps that
         // patch their own instructions announce it by importing a code-cache

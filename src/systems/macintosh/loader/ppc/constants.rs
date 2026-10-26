@@ -138,13 +138,16 @@ pub(crate) const PPC_CFM_MAIN_STUB_COUNT: u32 = 256;
 pub const PPC_IMPORT_CAPACITY: u32 = 4096;
 // The final mapped traps are reserved for guest-call and thread returns, the
 // Dialog Manager's guest-callable standard filter procedure, RAVE draw-context
-// methods and AGL renderer methods. They do not reduce the 4,096 application/CFM binding
-// capacity.
+// methods, AGL renderer methods and Cythera's native map lighting. They do not
+// reduce the 4,096 application/CFM binding capacity.
 pub(crate) const PPC_QA_METHOD_IMPORT_BASE: u32 = PPC_IMPORT_CAPACITY + 3;
 pub(crate) const PPC_AGL_METHOD_IMPORT_BASE: u32 =
     PPC_QA_METHOD_IMPORT_BASE + super::rave::PPC_QA_METHOD_COUNT;
-pub(crate) const PPC_IMPORT_SLOT_COUNT: u32 =
+pub(crate) const PPC_CYTHERA_APPLY_LIGHT_IMPORT_INDEX: u32 =
     PPC_AGL_METHOD_IMPORT_BASE + super::agl_macros::PPC_AGL_METHOD_COUNT;
+pub(crate) const PPC_CYTHERA_APPLY_LIGHT_PC: u32 =
+    PPC_IMPORT_TRAP_BASE + PPC_CYTHERA_APPLY_LIGHT_IMPORT_INDEX * 4;
+pub(crate) const PPC_IMPORT_SLOT_COUNT: u32 = PPC_CYTHERA_APPLY_LIGHT_IMPORT_INDEX + 1;
 pub(crate) const PPC_THREAD_RETURN_IMPORT_INDEX: u32 = PPC_IMPORT_CAPACITY + 1;
 pub const PPC_THREAD_RETURN_PC: u32 = PPC_IMPORT_TRAP_BASE + PPC_THREAD_RETURN_IMPORT_INDEX * 4;
 pub(crate) const PPC_GUEST_CALL_RETURN_IMPORT_INDEX: u32 = PPC_IMPORT_CAPACITY;

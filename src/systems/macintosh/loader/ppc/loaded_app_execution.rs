@@ -698,6 +698,10 @@ impl PpcLoadedApp {
                     unsupported_import_index = Some(index);
                     return PpcImportAction::Halt;
                 }
+                if index == PPC_CYTHERA_APPLY_LIGHT_IMPORT_INDEX {
+                    cythera_light::apply_light(cpu, memory);
+                    return PpcImportAction::ReturnPreserve;
+                }
                 last_import_index = Some(index);
                 // A Mixed Mode callback can advance process time while the
                 // native slice is suspended. Refresh the whole-tick baseline

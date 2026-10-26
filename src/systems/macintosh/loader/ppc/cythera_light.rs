@@ -72,8 +72,33 @@ pub(super) fn install_native_apply_light(code: &mut [u8], code_base: u32) -> boo
     true
 }
 
-/// `TViewer::ApplyLight(this = r3)`, done on the guest's memory.
+/// `TViewer::ApplyLight(this = r3)`, done on the guest's memory. With
+/// `SYSTEMLESS_TRACE_LIGHT` set, it prints how many calls it has done and what
+/// they cost every two hundred.
 pub(super) fn apply_light(cpu: &PpcCpu, memory: &mut PpcSectionMem) {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    use std::sync::OnceLock;
+    static TRACE: OnceLock<bool> = OnceLock::new();
+    static CALLS: AtomicU64 = AtomicU64::new(0);
+    static NANOS: AtomicU64 = AtomicU64::new(0);
+    if *TRACE.get_or_init(|| std::env::var_os("SYSTEMLESS_TRACE_LIGHT").is_some()) {
+        let start = std::time::Instant::now();
+        apply_light_blocks(cpu, memory);
+        let nanos = NANOS.fetch_add(start.elapsed().as_nanos() as u64, Ordering::Relaxed);
+        let calls = CALLS.fetch_add(1, Ordering::Relaxed) + 1;
+        if calls % 200 == 0 {
+            eprintln!(
+                "[LIGHT] {calls} calls, {:.0} us each, viewer {:08X}",
+                nanos as f64 / calls as f64 / 1000.0,
+                cpu.gpr[3]
+            );
+        }
+        return;
+    }
+    apply_light_blocks(cpu, memory);
+}
+
+fn apply_light_blocks(cpu: &PpcCpu, memory: &mut PpcSectionMem) {
     let viewer = cpu.gpr[3];
     let Some(size) = memory.read_u16_be(viewer.wrapping_add(VIEWER_BLOCKS_FIELD)) else {
         return;

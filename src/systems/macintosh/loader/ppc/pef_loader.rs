@@ -827,7 +827,16 @@ fn load_pef_application_with_optional_disk_fragment(
     };
     for section in &mut mapped_sections {
         if section.section_kind == SECTION_KIND_CODE && section.base == code_base {
-            cythera_light::install_native_apply_light(&mut section.bytes, section.base);
+            let installed =
+                cythera_light::install_native_apply_light(&mut section.bytes, section.base);
+            if std::env::var_os("SYSTEMLESS_TRACE_LOAD").is_some() {
+                eprintln!(
+                    "[PPC-LOAD] native Cythera lighting {} (code section {} bytes at ${:08X})",
+                    if installed { "installed" } else { "not installed" },
+                    section.bytes.len(),
+                    section.base
+                );
+            }
         }
     }
     for section in mapped_sections {

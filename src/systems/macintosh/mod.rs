@@ -43,6 +43,7 @@ pub(crate) mod notification_manager;
 pub(crate) mod process_context;
 pub(crate) mod process_manager;
 pub(crate) mod printing_manager;
+pub(crate) mod qt_music;
 pub(crate) mod queue_utilities;
 pub mod quickdraw;
 pub mod runner;

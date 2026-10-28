@@ -113,6 +113,7 @@ fn ppc_tune_call(
                 crate::trap::read_tune_stream_with(header, |address| read_long(memory, address));
             player.header = header;
             player.header_programs = crate::tune_player::decode_tune(&words).programs;
+            player.header_words = words.clone();
             player.rendered = None;
             if trace {
                 eprintln!(

@@ -1332,6 +1332,12 @@ pub(crate) fn queue_tune_stream(
         None => (decoded, time_scale),
     };
     let duration_ms = crate::tune_player::units_to_ms(decoded.duration_units, render_scale);
+    if !substituted {
+        if let Some(library) = crate::systems::macintosh::qt_music::library() {
+            queue_quicktime_render(player, library, tune_ptr, words, checksum, trace);
+            return true;
+        }
+    }
 
     let cached = player.rendered.as_ref().filter(|rendered| {
         rendered.tune_ptr == tune_ptr
@@ -1367,6 +1373,93 @@ pub(crate) fn queue_tune_stream(
         samples,
     });
     true
+}
+
+/// Seconds of a QuickTime render kept after the tune's last note, and how
+/// much of that is faded. The next segment starts when this one ends, where
+/// QuickTime started it on time and let the last notes ring over it, so a
+/// short tail keeps a repeating tune near its time without ending on a cut.
+/// The browser player's qt-music.js keeps the same.
+const QT_TAIL_SECONDS: f32 = 1.0;
+const QT_FADE_SECONDS: f32 = 0.3;
+
+/// Queue a tune played through QuickTime's instruments (`qt_music.rs`),
+/// the parts' instruments from the header's note requests and the stream's.
+fn queue_quicktime_render(
+    player: &mut super::dispatch::TunePlayerState,
+    library: &crate::systems::macintosh::qt_music::InstrumentLibrary,
+    tune_ptr: u32,
+    words: &[u32],
+    checksum: u32,
+    trace: bool,
+) {
+    use crate::sound::{StereoSample, OUTPUT_RATE};
+    let (volume, time_scale) = (player.volume_fixed, player.time_scale);
+    let cached = player.rendered.as_ref().filter(|rendered| {
+        rendered.tune_ptr == tune_ptr
+            && rendered.longs == words.len()
+            && rendered.checksum == checksum
+            && rendered.volume_fixed == volume
+            && rendered.time_scale == time_scale
+            && !rendered.substituted
+    });
+    let samples = match cached {
+        Some(rendered) => rendered.samples.clone(),
+        None => {
+            let started = std::time::Instant::now();
+            let header = crate::systems::macintosh::qt_music::parse_tune(&player.header_words);
+            let tune = crate::systems::macintosh::qt_music::parse_tune(words);
+            let mut tones = header.tones;
+            tones.extend(tune.tones);
+            let r = crate::systems::macintosh::qt_music::render(
+                &tune.events,
+                &tones,
+                library,
+                OUTPUT_RATE,
+                time_scale,
+            );
+            let rate = OUTPUT_RATE as f32;
+            let n = r.left.len().min(r.last_frame + (QT_TAIL_SECONDS * rate) as usize);
+            let fade = ((QT_FADE_SECONDS * rate) as usize).min(n).max(1);
+            let master = (volume as f32 / 65536.0).clamp(0.0, 1.0);
+            let byte = |x: f32| (x * 127.0 + 128.0).round().clamp(0.0, 255.0) as u8;
+            let samples: Vec<StereoSample> = (0..n)
+                .map(|i| {
+                    let g = master * if i >= n - fade { (n - i) as f32 / fade as f32 } else { 1.0 };
+                    StereoSample { left: byte(r.left[i] * g), right: byte(r.right[i] * g) }
+                })
+                .collect();
+            if trace {
+                eprintln!(
+                    "[TUNE] QuickTime render {checksum:08X}: {} frames in {} ms{}",
+                    n,
+                    started.elapsed().as_millis(),
+                    if r.missing.is_empty() {
+                        String::new()
+                    } else {
+                        format!(", no instrument for part {:?}", r.missing)
+                    }
+                );
+            }
+            player.rendered = Some(super::dispatch::RenderedTune {
+                tune_ptr,
+                longs: words.len(),
+                checksum,
+                volume_fixed: volume,
+                time_scale,
+                substituted: false,
+                samples: samples.clone(),
+            });
+            samples
+        }
+    };
+    let duration_ticks = (samples.len() as u64 * 60 / u64::from(OUTPUT_RATE)) as u32;
+    player.queue.push_back(super::dispatch::QueuedTuneSegment {
+        tune_ptr,
+        duration_ticks,
+        sample_rate: OUTPUT_RATE,
+        samples,
+    });
 }
 
 /// Where `StyledLineBreak` breaks one style run: its result code
@@ -1525,6 +1618,7 @@ impl super::TrapDispatcher {
                 if let Some(player) = self.tune_players.get_mut(&instance) {
                     player.header = header;
                     player.header_programs = programs;
+                    player.header_words = words;
                     // The instruments changed, so any cached render is stale.
                     player.rendered = None;
                 }

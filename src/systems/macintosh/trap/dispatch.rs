@@ -1417,6 +1417,9 @@ pub(crate) struct TunePlayerState {
     pub(crate) header: u32,
     /// Part to General MIDI program, from the header's note requests.
     pub(crate) header_programs: Vec<(u8, u8)>,
+    /// The header's stream, for the QuickTime instruments its note requests
+    /// name (`qt_music.rs`), which a kit's 16385 needs and the program drops.
+    pub(crate) header_words: Vec<u32>,
     /// `TuneSetTimeScale`; units per second. Cythera asks for 600.
     pub(crate) time_scale: u32,
     /// `TuneSetVolume`, a `Fixed` where 0x0001_0000 is unity.
@@ -1437,6 +1440,7 @@ impl Default for TunePlayerState {
         Self {
             header: 0,
             header_programs: Vec::new(),
+            header_words: Vec::new(),
             time_scale: 600,
             volume_fixed: 0x0001_0000,
             queue: std::collections::VecDeque::new(),

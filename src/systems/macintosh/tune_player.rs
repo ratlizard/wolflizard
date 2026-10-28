@@ -10,6 +10,8 @@
 //! General MIDI family, an attack and either a plucked decay or a sustain with
 //! release. It is not trying to sound like a QuickTime instrument, only to
 //! play the right notes at the right times with a timbre that suits the part.
+//! With `SYSTEMLESS_QT_INSTRUMENTS` set, a tune is played through QuickTime's
+//! instruments instead (`qt_music.rs`), and this synthesiser is not used.
 //! Durations in the stream are milliseconds and pitches are MIDI key numbers,
 //! so neither needs a mapping table.
 

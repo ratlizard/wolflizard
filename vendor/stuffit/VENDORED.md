@@ -23,9 +23,18 @@ StuffIt also writes 0x8000 at offset 28 of the metadata block, points a
 folder's first child's `prev_off` at the folder, and puts in a folder's header
 the unpacked size of every fork inside it (bytes 38-41) and the bytes its
 contents take in the archive (42-45); the writer now does the same.
+
+StuffIt closes each folder with an end-of-folder entry after its contents: a
+48-byte header with the folder flag, no name and no metadata block, `prev_off`
+at the folder's last child, `dir_off` at the folder, 0xFFFFFFFF at bytes 34-37
+and its own header CRC. The last child's `next_off` points at it, and the
+folder's byte count (42-45) includes it. This crate's parser already skipped
+such entries; the writer now writes them. With the CRCs alone, Expander opened
+an archive of one file but still refused one with folders (error 17537).
+
 `test_sit5_header_crcs_match_stuffit` checks the layout. Archives written this
 way were unpacked to identical forks by The Unarchiver; whether StuffIt
-Expander opens them is being tried.
+Expander opens one with folders is being tried.
 
 The archive in `tests/toolbox-showcase/` is written by its own packer with
 stuffit 0.1.5 and is left as it is: its SHA-256 is recorded in the capture

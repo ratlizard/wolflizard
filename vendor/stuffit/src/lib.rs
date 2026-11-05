@@ -287,7 +287,8 @@ fn system_time_to_mac_time(time: SystemTime) -> u32 {
 /// Walk a written StuffIt 5 archive in file order and fill in each entry's header CRC
 /// (over the whole header with the CRC field zeroed) and the CRC at offset 2 of its
 /// metadata block (over the 36-byte block, plus the 14-byte resource fork record when
-/// there is one, with that field zeroed). Read from archives made by StuffIt 5 and 6.
+/// there is one, with that field zeroed). An end-of-folder entry has only the header.
+/// Read from archives made by StuffIt 5 and 6.
 fn fill_sit5_entry_crcs(data: &mut [u8]) {
     let u16_at = |d: &[u8], o: usize| u16::from_be_bytes([d[o], d[o + 1]]) as usize;
     let u32_at = |d: &[u8], o: usize| u32::from_be_bytes([d[o], d[o + 1], d[o + 2], d[o + 3]]) as usize;
@@ -295,14 +296,18 @@ fn fill_sit5_entry_crcs(data: &mut [u8]) {
     while o + 48 <= data.len() && u32_at(data, o) == 0xA5A5_A5A5 {
         let hs = u16_at(data, o + 6);
         let is_folder = data[o + 9] & 0x40 != 0;
-        let meta = o + hs;
-        let has_rsrc = !is_folder && u16_at(data, meta) & 1 != 0;
-        let meta_len = 36 + if has_rsrc { 14 } else { 0 };
-
         data[o + 32] = 0;
         data[o + 33] = 0;
         let c = crc16(&data[o..o + hs]);
         data[o + 32..o + 34].copy_from_slice(&c.to_be_bytes());
+        if is_folder && u32_at(data, o + 34) == 0xFFFF_FFFF {
+            // End-of-folder entry: a header and nothing else
+            o += hs;
+            continue;
+        }
+        let meta = o + hs;
+        let has_rsrc = !is_folder && u16_at(data, meta) & 1 != 0;
+        let meta_len = 36 + if has_rsrc { 14 } else { 0 };
 
         data[meta + 2] = 0;
         data[meta + 3] = 0;
@@ -601,6 +606,26 @@ impl SitArchive {
                     }
                     last_child_off = this_child_off;
                 }
+
+                // StuffIt closes a folder with a header-only entry: folder flag, no name,
+                // no metadata block, prev_off at the last child, dir_off at the folder and
+                // 0xFFFFFFFF at 34-37. The last child's next_off points at it.
+                let end_off = data.len() as u32;
+                data[last_child_off as usize + 22..last_child_off as usize + 26]
+                    .copy_from_slice(&end_off.to_be_bytes());
+                write_u32_be(data, 0xA5A5A5A5);
+                data.push(1);
+                data.push(0);
+                write_u16_be(data, 48);
+                data.push(0);
+                data.push(0x40);
+                data.extend_from_slice(&[0u8; 8]); // ctime, mtime
+                write_u32_be(data, last_child_off);
+                write_u32_be(data, 0); // next_off
+                write_u32_be(data, entry_start);
+                data.extend_from_slice(&[0u8; 4]); // name_len, hdr_crc
+                write_u32_be(data, 0xFFFFFFFF);
+                data.extend_from_slice(&[0u8; 10]);
 
                 // Folder header bytes 38-41: the unpacked size of every fork inside it;
                 // 42-45: the bytes its contents take in the archive
@@ -3382,10 +3407,24 @@ mod tests {
             let folder = u32_at(88) as usize;
             let mut start = folder;
             let mut seen = 0;
+            let mut last_child = 0;
             while start + 4 <= data.len() {
                 assert_eq!(u32_at(start), 0xA5A5_A5A5);
                 let hs = u16_at(start + 6) as usize;
                 let is_folder = data[start + 9] & 0x40 != 0;
+                if is_folder && u32_at(start + 34) == 0xFFFF_FFFF {
+                    // The folder's end entry: 48 bytes, last in the archive
+                    assert_eq!(hs, 48);
+                    assert_eq!(start + hs, data.len());
+                    assert_eq!(u16_at(start + 30), 0, "no name");
+                    assert_eq!(u32_at(start + 18) as usize, last_child, "prev_off");
+                    assert_eq!(u32_at(start + 26) as usize, folder, "dir_off");
+                    assert_eq!(u32_at(last_child + 22) as usize, start, "last child's next_off");
+                    assert_eq!(u16_at(start + 32), crc_with_zeroed(start..start + hs, start + 32));
+                    start += hs;
+                    seen += 1;
+                    continue;
+                }
                 let meta = start + hs;
                 let has_rsrc = !is_folder && u16_at(meta) & 1 != 0;
                 let meta_len = if has_rsrc { 50 } else { 36 };
@@ -3403,11 +3442,19 @@ mod tests {
                     }
                     let rsrc_clen = if has_rsrc { u32_at(meta + 40) } else { 0 };
                     next += (rsrc_clen + u32_at(start + 38)) as usize;
+                    last_child = start;
                 }
                 start = next;
                 seen += 1;
             }
-            assert_eq!(seen, 3);
+            assert_eq!(seen, 4);
+            let names: Vec<String> = SitArchive::parse(&data)
+                .unwrap()
+                .entries
+                .iter()
+                .map(|e| e.name.clone())
+                .collect();
+            assert_eq!(names, ["Folder", "Folder/App", "Folder/Read Me"]);
         }
     }
 

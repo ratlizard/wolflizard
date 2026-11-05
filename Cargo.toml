@@ -30,9 +30,13 @@ include = [
 
 [workspace]
 members = ["www/tools/catalogue", "www", "www/api"]
-exclude = ["tests/toolbox-showcase/packer", ".agents/tools/play-oracle"]
+exclude = ["tests/toolbox-showcase/packer", ".agents/tools/play-oracle", "vendor/stuffit"]
 default-members = ["."]
 resolver = "2"
+
+# stuffit 0.3.0 with the SIT5 header CRCs StuffIt Expander checks (vendor/stuffit/VENDORED.md).
+[patch.crates-io]
+stuffit = { path = "vendor/stuffit" }
 
 [dependencies]
 clap = { version = "4.5", features = ["derive"] }

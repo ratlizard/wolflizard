@@ -8490,7 +8490,9 @@ mod tests {
         // An encrypted SIT13 stream starts with an invalid table code, as in
         // the encrypted add-ons on the Ferazel's Wand disc.
         let after_type = archive.windows(8).position(|w| w == b"TEXTttxt").unwrap() + 8;
-        let stream = after_type + archive[after_type..].iter().position(|&b| b != 0).unwrap();
+        // The vendored writer fills header fields after the type and creator,
+        // so the stream is the first byte with SIT13's table code 1.
+        let stream = after_type + archive[after_type..].iter().position(|&b| b >> 4 == 1).unwrap();
         assert_eq!(archive[stream] >> 4, 1);
         archive[stream] = 12 << 4;
         let payload = payload_from_forks(

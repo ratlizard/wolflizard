@@ -4630,8 +4630,6 @@ dependencies = [
 [[package]]
 name = "stuffit"
 version = "0.3.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f980c19c60203496a51071b1493cb1ffcffded0ad646dad870577275e95b50c4"
 dependencies = [
  "clap",
  "encoding_rs",

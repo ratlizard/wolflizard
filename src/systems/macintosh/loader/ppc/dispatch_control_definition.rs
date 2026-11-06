@@ -16,7 +16,15 @@ pub(super) struct PpcControlDefinitionFrame {
     device: u32,
     completion: Option<PpcImportAction>,
     pending: VecDeque<(u32, u16, u32)>,
+    /// FindControl's theControl, cleared when the CDEF's testCntl finds no
+    /// part (0 for none, or for TestControl).
+    test_out: u32,
+    /// The call in flight is testCntl, whose answer is the import's result.
+    awaiting_test: bool,
 }
+
+/// testCntl (Macintosh Toolbox Essentials (1992), pp. 5-110 and 5-112).
+const CDEF_TEST_CNTL: u16 = 1;
 
 pub(super) fn ppc_application_control_definition(
     resources: &[PpcVfsResourceRecord],
@@ -58,13 +66,6 @@ pub(super) fn ppc_control_definition_resource(
     if matches!(record.proc_id, 0 | 1 | 2 | 16) || (1008..=1023).contains(&record.proc_id) {
         return None;
     }
-    // A control whose definition the fork calls itself (dispatch_defproc:
-    // an application CDEF, resource ID 128 and up) is left to that path,
-    // which Cythera's controls are drawn and tracked through; this path
-    // takes the rest.
-    if super::dispatch_defproc::ppc_control_has_app_cdef(record.handle) {
-        return None;
-    }
     let handle = memory.read_u32_be(record.pointer + 24).unwrap_or(0);
     resources
         .iter()
@@ -100,14 +101,34 @@ pub(super) fn ppc_control_definition_continuation(
         .last()
         .is_some_and(|frame| frame.import_pc == cpu.pc && cpu.lr == cpu.pc);
     let mut frame = if resumed && completion.is_none() {
-        startup.control_definition_stack.pop().unwrap()
+        let mut frame = startup.control_definition_stack.pop().unwrap();
+        if frame.awaiting_test {
+            frame.awaiting_test = false;
+            let part = cpu.gpr[3] as u16 as i16;
+            if part == 0 && frame.test_out != 0 {
+                let _ = memory.write_u32_be(frame.test_out, 0);
+            }
+            frame.completion = Some(PpcImportAction::Return(u32::from(part as u16)));
+        }
+        frame
     } else if let Some(completion) = completion {
-        if !controls.iter().any(|control| {
-            control.native_definition_pending_init
-                || !control.native_definition_draws.borrow().is_empty()
-        }) {
+        let testing = startup.control_definition_test.is_some();
+        if !testing
+            && !controls.iter().any(|control| {
+                control.native_definition_pending_init
+                    || !control.native_definition_draws.borrow().is_empty()
+            })
+        {
             return Some(completion);
         }
+        // A window's frame is drawn before the controls in it: an
+        // application WDEF called after this import (dispatch_defproc) goes
+        // first, and these calls follow at a later import.
+        if !testing && super::dispatch_defproc::ppc_has_pending_wdef_calls() {
+            return Some(completion);
+        }
+        let test = startup.control_definition_test.take();
+        let test_handle = test.map_or(0, |(handle, _, _)| handle);
         let mut handles = manager.native_handle_records().to_vec();
         let mut pending = VecDeque::new();
         let mut draws = Vec::new();
@@ -115,7 +136,10 @@ pub(super) fn ppc_control_definition_continuation(
             let index = ppc_control_definition_resource(memory, resources, resource_file, control);
             let initializing = control.native_definition_pending_init;
             control.native_definition_pending_init = false;
-            if initializing || !control.native_definition_draws.borrow().is_empty() {
+            if initializing
+                || !control.native_definition_draws.borrow().is_empty()
+                || control.handle == test_handle
+            {
                 if let Some(index) = index {
                     let handle = ppc_materialize_vfs_resource_handle(
                         manager,
@@ -143,6 +167,12 @@ pub(super) fn ppc_control_definition_continuation(
         }
         draws.sort_by_key(|&(sequence, _)| sequence);
         pending.extend(draws.into_iter().map(|(_, handle)| (handle, 0, 0)));
+        // The hit test goes last, so that its answer ends the import.
+        let mut test_out = 0;
+        if let Some((handle, point, out)) = test {
+            pending.push_back((handle, CDEF_TEST_CNTL, point));
+            test_out = out;
+        }
         if pending.is_empty() {
             return Some(completion);
         }
@@ -159,6 +189,8 @@ pub(super) fn ppc_control_definition_continuation(
             device: *device,
             completion: Some(completion),
             pending,
+            test_out,
+            awaiting_test: false,
         }
     } else {
         if !matches!(
@@ -210,6 +242,8 @@ pub(super) fn ppc_control_definition_continuation(
             device: *device,
             completion: None,
             pending,
+            test_out: 0,
+            awaiting_test: false,
         }
     };
 
@@ -218,9 +252,19 @@ pub(super) fn ppc_control_definition_continuation(
             continue;
         };
         let definition_handle = memory.read_u32_be(control.pointer + 24).unwrap_or(0);
-        let entry = memory.read_u32_be(definition_handle).unwrap_or(0);
+        let mut entry = memory.read_u32_be(definition_handle).unwrap_or(0);
         if entry == 0 {
             continue;
+        }
+        // A PowerPC application's CDEF resource is commonly a 68K JMP to a
+        // routine descriptor for its native definition, patched in at run
+        // time (Cythera's TCDEFRegister). Mixed Mode switches at the
+        // descriptor, so the call goes to the descriptor directly.
+        if memory.read_u16_be(entry) == Some(0x4ef9) {
+            let jump = memory.read_u32_be(entry.wrapping_add(2)).unwrap_or(0);
+            if jump != 0 && memory.read_u16_be(jump) == Some(PPC_MIXED_MODE_TRAP) {
+                entry = jump;
+            }
         }
         let Some(target) = resolve_guest_procedure(
             memory,
@@ -305,6 +349,7 @@ pub(super) fn ppc_control_definition_continuation(
             }
         };
         if let Some(action) = action {
+            frame.awaiting_test = message == CDEF_TEST_CNTL;
             startup.control_definition_stack.push(frame);
             return Some(action);
         }

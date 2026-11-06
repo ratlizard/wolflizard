@@ -1471,8 +1471,8 @@ fn find_control_asks_an_application_cdef_which_part_is_hit() {
     loaded.memory.add_region(scratch, vec![0; 0x100]);
     let window = create_test_cwindow(&mut loaded, scratch, (40, 40, 200, 300), 0, true, u32::MAX);
 
-    // 'CDEF' 128 as Cythera ships it: a 68K JMP to a PowerPC procedure,
-    // here `li r3,21; blr`.
+    // 'CDEF' 128 as Cythera patches it: a 68K JMP to a routine descriptor
+    // for a PowerPC procedure, here `li r3,21; blr`.
     let code = PPC_CODE_BASE + 0x1000;
     loaded.memory.add_region(
         code,
@@ -1484,9 +1484,20 @@ fn find_control_asks_an_application_cdef_which_part_is_hit() {
     let tvector = scratch + 0x80;
     loaded.memory.write_u32_be(tvector, code).unwrap();
     loaded.memory.write_u32_be(tvector + 4, loaded.cpu.gpr[2]).unwrap();
+    let descriptor = PPC_CODE_BASE + 0x1100;
+    let mut bytes =
+        vec![0; (PPC_ROUTINE_DESCRIPTOR_HEADER_SIZE + PPC_ROUTINE_RECORD_SIZE) as usize];
+    bytes[..2].copy_from_slice(&PPC_MIXED_MODE_TRAP.to_be_bytes());
+    bytes[2] = PPC_ROUTINE_DESCRIPTOR_VERSION;
+    let record = PPC_ROUTINE_DESCRIPTOR_HEADER_SIZE as usize;
+    bytes[record..record + 4].copy_from_slice(&0x3bb0u32.to_be_bytes());
+    bytes[record + 5] = PPC_ROUTINE_RECORD_POWERPC_ISA;
+    bytes[record + 6..record + 8].copy_from_slice(&PPC_ROUTINE_FLAG_USE_NATIVE_ISA.to_be_bytes());
+    bytes[record + 8..record + 12].copy_from_slice(&tvector.to_be_bytes());
+    loaded.memory.add_region(descriptor, bytes);
     let stub = scratch + 0x90;
     loaded.memory.write_u16_be(stub, 0x4ef9).unwrap();
-    loaded.memory.write_u32_be(stub + 2, tvector).unwrap();
+    loaded.memory.write_u32_be(stub + 2, descriptor).unwrap();
     let cdef_handle = scratch + 0xa0;
     loaded.memory.write_u32_be(cdef_handle, stub).unwrap();
     let current_resource_refnum = *loaded.process_file_system.current_resource_file;

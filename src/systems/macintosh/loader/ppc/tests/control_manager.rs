@@ -4651,7 +4651,6 @@ fn multiline_control_titles_draw_two_separate_text_bands() {
 }
 
 #[test]
-#[ignore = "the fork's control-definition path takes registered application CDEFs, so this one runs queued, not inline"]
 fn native_custom_control_loads_and_enters_its_classic_definition() {
     for resource_id in [1002i16, 319, 4095] {
         let mut loaded = load_pef_application(&synthetic_pef_with_import(b"NewControl")).unwrap();
@@ -4771,7 +4770,109 @@ fn custom_definition_lookup_preserves_full_resource_ids_and_builtin_fallbacks() 
 }
 
 #[test]
-#[ignore = "the fork's control-definition path takes registered application CDEFs, so this one runs queued, not inline"]
+fn native_custom_control_in_an_offscreen_gworld_draws_through_its_definition() {
+    // An offscreen GWorld has pixels of its own and no window visibility
+    // flag, so a control an application puts in one is drawn there:
+    // Cythera's character window draws its inventory list's scroll bar,
+    // CDEF 1001, into a GWorld. The definition counts its calls, initCntl
+    // and drawCntl.
+    const VECTOR: u32 = 0x0180_0000;
+    const MARKER: u32 = VECTOR + 0x80;
+    let mut loaded = load_pef_application(&synthetic_pef_with_import(b"NewGWorld")).unwrap();
+    let scratch = ppc_heap_alloc(
+        &mut loaded.memory,
+        test_heap_cursor!(loaded),
+        test_heap_limit!(loaded),
+        64,
+        true,
+    );
+    ppc_write_rect(&mut loaded.memory, scratch, 0, 0, 64, 128).unwrap();
+    loaded.cpu.gpr[3] = scratch + 16;
+    loaded.cpu.gpr[4] = 8;
+    loaded.cpu.gpr[5] = scratch;
+    loaded.cpu.gpr[6] = 0;
+    loaded.cpu.gpr[7] = 0;
+    loaded.cpu.gpr[8] = 0;
+    let probe = loaded.run_with_hle_imports(64);
+    assert_eq!(probe.unsupported_import_index, None);
+    let gworld = loaded.memory.read_u32_be(scratch + 16).unwrap();
+    assert_ne!(gworld, 0);
+
+    loaded.memory.add_region(VECTOR, vec![0; 0x100]);
+    loaded.memory.write_u32_be(VECTOR, VECTOR + 8).unwrap();
+    loaded.memory.write_u32_be(VECTOR + 4, PPC_DATA_BASE).unwrap();
+    for (index, word) in [
+        0x3d80_0180u32,
+        0x618c_0080,
+        0x906c_0000,
+        0x908c_0004,
+        0x90ac_0008,
+        0x90cc_000c,
+        0x816c_0010,
+        0x396b_0001,
+        0x916c_0010,
+        0x3860_0000,
+        0x4e80_0020,
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        loaded
+            .memory
+            .write_u32_be(VECTOR + 8 + index as u32 * 4, word)
+            .unwrap();
+    }
+    let mut descriptor =
+        vec![0; (PPC_ROUTINE_DESCRIPTOR_HEADER_SIZE + PPC_ROUTINE_RECORD_SIZE) as usize];
+    descriptor[..2].copy_from_slice(&PPC_MIXED_MODE_TRAP.to_be_bytes());
+    descriptor[2] = PPC_ROUTINE_DESCRIPTOR_VERSION;
+    let record = PPC_ROUTINE_DESCRIPTOR_HEADER_SIZE as usize;
+    descriptor[record..record + 4].copy_from_slice(&0x3bb0u32.to_be_bytes());
+    descriptor[record + 5] = PPC_ROUTINE_RECORD_POWERPC_ISA;
+    descriptor[record + 6..record + 8]
+        .copy_from_slice(&PPC_ROUTINE_FLAG_USE_NATIVE_ISA.to_be_bytes());
+    descriptor[record + 8..record + 12].copy_from_slice(&VECTOR.to_be_bytes());
+    loaded
+        .process_file_system
+        .push_vfs_resource(PpcVfsResourceRecord {
+            ref_num: *loaded.process_file_system.current_resource_file,
+            path: String::new(),
+            res_type: u32::from_be_bytes(*b"CDEF"),
+            res_id: 1001,
+            name: Vec::new(),
+            data: descriptor.into(),
+            raw_data: None,
+            raw_attrs: None,
+            attrs: 0,
+            handle: 0,
+        });
+    ppc_write_rect(&mut loaded.memory, scratch, 10, 20, 40, 36).unwrap();
+    write_ppc_pstring(&mut loaded.memory, scratch + 8, b"");
+    loaded.cpu.pc = loaded.entry_pc;
+    loaded.cpu.lr = PPC_HALT_PC;
+    loaded.imports[0].dispatcher_target =
+        PpcImportDispatcherTarget::LegacyControl(PpcLegacyControlOperation::NewControl);
+    loaded.cpu.gpr[3] = gworld;
+    loaded.cpu.gpr[4] = scratch;
+    loaded.cpu.gpr[5] = scratch + 8;
+    loaded.cpu.gpr[6] = 1;
+    loaded.cpu.gpr[7] = 0;
+    loaded.cpu.gpr[8] = 0;
+    loaded.cpu.gpr[9] = 10;
+    loaded.cpu.gpr[10] = 1001 * 16;
+    let probe = loaded.run_with_hle_imports(512);
+    assert_eq!(probe.unsupported_import_index, None);
+    let handle = loaded.controls.records()[0].handle;
+    assert_eq!(loaded.cpu.gpr[3], handle);
+    assert_eq!(
+        loaded.memory.read_u32_be(MARKER + 16),
+        Some(2),
+        "initCntl and drawCntl"
+    );
+    assert_eq!(loaded.memory.read_u32_be(MARKER + 8), Some(0), "drawCntl last");
+}
+
+#[test]
 fn native_custom_control_executes_a_powerpc_definition_descriptor() {
     const VECTOR: u32 = 0x0180_0000;
     const MARKER: u32 = VECTOR + 0x80;

@@ -597,6 +597,23 @@ pub enum PpcLegacyControlOperation {
 }
 
 #[allow(clippy::too_many_arguments)]
+/// Whether a control's definition is application code the Control Manager
+/// calls (dispatch_control_definition), so that it, not the native geometry,
+/// answers testCntl.
+fn ppc_control_has_application_definition(
+    memory: &mut PpcSectionMem,
+    controls: &[PpcControlRecord],
+    vfs_resources: &[PpcVfsResourceRecord],
+    current_resource_refnum: i16,
+    handle: u32,
+) -> bool {
+    controls.iter().any(|record| {
+        record.handle == handle
+            && ppc_control_definition_resource(memory, vfs_resources, current_resource_refnum, record)
+                .is_some()
+    })
+}
+
 pub(super) fn ppc_dispatch_legacy_control(
     operation: PpcLegacyControlOperation,
     cpu: &mut PpcCpu,
@@ -1168,11 +1185,19 @@ pub(super) fn ppc_dispatch_legacy_control(
             if cpu.gpr[5] != 0 {
                 memory.write_u32_be(cpu.gpr[5], handle)?;
             }
-            // An application CDEF names its own parts: Cythera's scroll
-            // bars answer with their arrows and page regions, which its list
-            // code tracks itself.
-            if handle != 0 && super::dispatch_defproc::ppc_control_has_app_cdef(handle) {
-                super::dispatch_defproc::ppc_note_app_cdef_test(handle, cpu.gpr[3], cpu.gpr[5]);
+            // An application CDEF names its parts (testCntl): Cythera's
+            // scroll bars answer with their arrows and page regions, which its
+            // list code tracks itself.
+            if handle != 0
+                && ppc_control_has_application_definition(
+                    memory,
+                    controls,
+                    vfs_resources,
+                    current_resource_refnum,
+                    handle,
+                )
+            {
+                toolbox_startup.control_definition_test = Some((handle, cpu.gpr[3], cpu.gpr[5]));
             }
             Some(PpcImportAction::Return(ppc_i16_result(part)))
         }
@@ -1186,8 +1211,16 @@ pub(super) fn ppc_dispatch_legacy_control(
                     cpu.gpr[3], v, h, part
                 );
             }
-            if part != 0 && super::dispatch_defproc::ppc_control_has_app_cdef(cpu.gpr[3]) {
-                super::dispatch_defproc::ppc_note_app_cdef_test(cpu.gpr[3], cpu.gpr[4], 0);
+            if part != 0
+                && ppc_control_has_application_definition(
+                    memory,
+                    controls,
+                    vfs_resources,
+                    current_resource_refnum,
+                    cpu.gpr[3],
+                )
+            {
+                toolbox_startup.control_definition_test = Some((cpu.gpr[3], cpu.gpr[4], 0));
             }
             Some(PpcImportAction::Return(ppc_i16_result(part)))
         }
@@ -2108,7 +2141,6 @@ pub(super) fn ppc_new_control_record_values(
     }
     // Macintosh Toolbox Essentials (1992), pp. 5-79--5-80.
     let _ = memory.write_u32_be(control + 32, if popup { u32::MAX } else { 0 });
-    super::dispatch_defproc::ppc_register_control_proc(handle, proc_id as i16);
     controls.retain(|record| record.handle != handle);
     controls.push(PpcControlRecord {
         handle,
@@ -3505,22 +3537,24 @@ pub(super) fn ppc_draw_control_inner(
     {
         return true;
     }
-    // A control with an application CDEF is drawn by that CDEF, after the
-    // import that would have drawn it (drawCntl, whole control).
-    if super::dispatch_defproc::ppc_control_app_cdef_exists(vfs_resources, handle) {
-        super::dispatch_defproc::ppc_note_app_cdef_message(
-            handle,
-            super::dispatch_defproc::CDEF_DRAW,
-            0,
-        );
-        return true;
-    }
     let owner = memory
         .read_u32_be(control + PPC_CONTROL_OWNER_OFFSET)
         .unwrap_or(0);
-    // The screen ports are not windows and have no visibility flag.
+    // The screen ports are not windows and have no visibility flag, and
+    // neither is an offscreen port with pixels of its own (a GWorld an
+    // application draws its controls into, as Cythera's character window
+    // does its inventory list's scroll bar).
+    let screen_base = gworlds
+        .iter()
+        .find(|record| record.port == PPC_MAIN_GWORLD)
+        .map(|record| record.base_addr);
+    let offscreen = gworlds
+        .iter()
+        .find(|record| record.port == owner)
+        .is_some_and(|record| Some(record.base_addr) != screen_base);
     if owner != 0
         && !matches!(owner, PPC_MAIN_GWORLD | PPC_DSP_BACK_GWORLD)
+        && !offscreen
         && !ppc_window_is_visible(memory, owner)
     {
         // Controls in an invisible window draw nothing onscreen; ShowWindow

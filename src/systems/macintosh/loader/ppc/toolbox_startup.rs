@@ -37,6 +37,10 @@ pub struct PpcToolboxStartupState {
     pub(crate) mixed_mode_m68k: SharedProcessMixedModeM68kState,
     pub(super) system_allocations: PpcSystemAllocationPool,
     pub(super) control_definition_stack: Vec<PpcControlDefinitionFrame>,
+    /// A testCntl FindControl or TestControl leaves for an application CDEF:
+    /// the control, the point as the CDEF receives it, and FindControl's
+    /// theControl to clear on no part (0 for none).
+    pub(super) control_definition_test: Option<(u32, u32, u32)>,
     pub(super) control_definition_globals: u32,
     pub(super) kchr_cache_ptr: u32,
     pub(crate) pending_launch: Option<dispatch_launch::PpcPendingLaunch>,
@@ -179,6 +183,7 @@ impl Default for PpcToolboxStartupState {
             mixed_mode_m68k: SharedProcessMixedModeM68kState::default(),
             system_allocations: PpcSystemAllocationPool::default(),
             control_definition_stack: Vec::new(),
+            control_definition_test: None,
             control_definition_globals: 0,
             kchr_cache_ptr: 0,
             pending_launch: None,

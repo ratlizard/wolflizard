@@ -27,7 +27,8 @@ struct DefProcCall {
     target: PpcCallbackTarget,
     args: [u32; 7],
     arg_count: usize,
-    /// The port to make current for the call (a CDEF draws in its window).
+    /// The port to make current for the call (an LDEF draws in its list's
+    /// port).
     port: Option<u32>,
     /// A Rect to place on the guest stack, passed as the third argument.
     rect: Option<(i16, i16, i16, i16)>,
@@ -102,66 +103,6 @@ pub(super) fn ppc_note_app_ldef_call(call: PpcLdefCall) {
     });
 }
 
-/// CDEF messages (Macintosh Toolbox Essentials (1992), pp. 5-104 to 5-116).
-pub(super) const CDEF_DRAW: u32 = 0;
-/// testCntl: the CDEF answers with the part code under a point, or 0
-/// (Macintosh Toolbox Essentials (1992), pp. 5-110 and 5-112).
-pub(super) const CDEF_TEST: u32 = 1;
-pub(super) const CDEF_INIT: u32 = 3;
-
-/// Record a new control; one naming an application CDEF is told of it.
-pub(super) fn ppc_register_control_proc(handle: u32, proc_id: i16) {
-    let app = (proc_id as u16 >> 4) >= 128;
-    APP_CDEF_CONTROLS.with(|controls| {
-        let mut controls = controls.borrow_mut();
-        if app {
-            controls.insert(handle, proc_id);
-        } else {
-            controls.remove(&handle);
-        }
-    });
-    if app {
-        ppc_note_app_cdef_message(handle, CDEF_INIT, 0);
-    }
-}
-
-pub(super) fn ppc_control_has_app_cdef(handle: u32) -> bool {
-    APP_CDEF_CONTROLS.with(|controls| controls.borrow().contains_key(&handle))
-}
-
-/// Whether the application CDEF a control names is among the open resources.
-/// One that is not cannot draw the control, and the standard painter does.
-pub(super) fn ppc_control_app_cdef_exists(
-    vfs_resources: &[PpcVfsResourceRecord],
-    handle: u32,
-) -> bool {
-    let Some(proc_id) = APP_CDEF_CONTROLS.with(|controls| controls.borrow().get(&handle).copied())
-    else {
-        return false;
-    };
-    let cdef = u32::from_be_bytes(*b"CDEF");
-    let res_id = (proc_id as u16 >> 4) as i16;
-    vfs_resources
-        .iter()
-        .any(|record| record.res_type == cdef && record.res_id == res_id)
-}
-
-/// FindControl and TestControl on a control with an application CDEF: ask
-/// the CDEF (testCntl) once the import has finished, and make its answer the
-/// import's result. `point` is packed as the CDEF receives it, vertical in
-/// the high word; `control_out`, when not 0, is FindControl's theControl,
-/// cleared if the CDEF says the point is in no part.
-pub(super) fn ppc_note_app_cdef_test(handle: u32, point: u32, control_out: u32) {
-    PENDING_HIT_TEST.with(|slot| {
-        *slot.borrow_mut() = Some(PendingHitTest {
-            kind: HitTestKind::Control,
-            target: handle,
-            point,
-            out: control_out,
-        })
-    });
-}
-
 /// FindWindow on a window with an application WDEF: ask the WDEF (wHit,
 /// Macintosh Toolbox Essentials (1992), pp. 4-122 and 4-131) once the import
 /// has finished. Its answer plus 2 is FindWindow's part code (inContent is
@@ -184,7 +125,6 @@ const WDEF_HIT: u32 = 1;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum HitTestKind {
-    Control,
     Window,
     /// TrackGoAway's answer: whether the release is in wInGoAway.
     GoAway,
@@ -212,15 +152,6 @@ struct PendingHitTest {
     out: u32,
 }
 
-pub(super) fn ppc_note_app_cdef_message(handle: u32, message: u32, param: u32) {
-    PENDING_CDEF_CALLS.with(|pending| {
-        let mut pending = pending.borrow_mut();
-        if !pending.contains(&(handle, message, param)) {
-            pending.push((handle, message, param));
-        }
-    });
-}
-
 struct DefProcCallState {
     /// The current port when the calls began; the Window Manager restores it
     /// after calling a definition function, which may leave its own port set.
@@ -239,9 +170,9 @@ struct DefProcCallState {
     calls: Vec<DefProcCall>,
     next: usize,
     completion: PpcImportAction,
-    /// Set when the last call is a CDEF testCntl or a WDEF wHit whose
-    /// answer is the import's result, with the import's control or window
-    /// pointer to clear on no hit (0 for none).
+    /// Set when the last call is a WDEF wHit whose answer is the import's
+    /// result, with the import's window pointer to clear on no hit (0 for
+    /// none).
     part_result: Option<(HitTestKind, u32)>,
 }
 
@@ -251,10 +182,6 @@ thread_local! {
     static APP_WDEF_WINDOWS: RefCell<std::collections::HashMap<u32, i16>> =
         RefCell::new(std::collections::HashMap::new());
     static PENDING_WDEF_DRAWS: RefCell<Vec<(u32, u32)>> = const { RefCell::new(Vec::new()) };
-    /// Controls with an application CDEF: handle -> procID.
-    static APP_CDEF_CONTROLS: RefCell<std::collections::HashMap<u32, i16>> =
-        RefCell::new(std::collections::HashMap::new());
-    static PENDING_CDEF_CALLS: RefCell<Vec<(u32, u32, u32)>> = const { RefCell::new(Vec::new()) };
     static PENDING_HIT_TEST: RefCell<Option<PendingHitTest>> = const { RefCell::new(None) };
     /// Lists whose LDEF is the refCon shell.
     static APP_LDEF_LISTS: RefCell<std::collections::HashSet<u32>> =
@@ -281,6 +208,14 @@ pub(super) fn ppc_app_wdef_window_proc_id(window: u32) -> Option<i16> {
 pub(super) fn ppc_forget_app_wdef_window(window: u32) -> bool {
     PENDING_WDEF_DRAWS.with(|pending| pending.borrow_mut().retain(|(w, _)| *w != window));
     APP_WDEF_WINDOWS.with(|windows| windows.borrow_mut().remove(&window).is_some())
+}
+
+/// Whether a WDEF call waits to run after the current import. An
+/// application's control definitions draw after it
+/// (dispatch_control_definition), as the Window Manager draws a window's
+/// frame before the Control Manager draws in it.
+pub(super) fn ppc_has_pending_wdef_calls() -> bool {
+    PENDING_WDEF_DRAWS.with(|pending| !pending.borrow().is_empty())
 }
 
 pub(super) fn ppc_note_app_wdef_draw(window: u32) {
@@ -358,13 +293,12 @@ fn ppc_next_def_proc_call(cpu: &mut PpcCpu, memory: &mut PpcSectionMem) -> Optio
             }
             if state.next >= state.calls.len() {
                 let state = stack.pop().expect("state present");
-                // The last call was a CDEF's testCntl or a WDEF's wHit: its
-                // answer is the part code the import returns.
+                // The last call was a WDEF's wHit: its answer is the part
+                // code the import returns.
                 let completion = match state.part_result {
                     Some((kind, out)) => {
                         let answer = cpu.gpr[3] as u16 as i16;
                         let part = match kind {
-                            HitTestKind::Control => answer,
                             HitTestKind::Window if answer > 0 => answer + 2,
                             HitTestKind::Window => 0,
                             HitTestKind::GoAway => i16::from(answer == 4),
@@ -517,13 +451,10 @@ pub(super) fn ppc_begin_pending_def_procs(
     current_port: u32,
 ) -> Option<PpcImportAction> {
     let pending = PENDING_WDEF_DRAWS.with(|pending| std::mem::take(&mut *pending.borrow_mut()));
-    let pending_controls =
-        PENDING_CDEF_CALLS.with(|pending| std::mem::take(&mut *pending.borrow_mut()));
     let pending_lists =
         PENDING_LDEF_CALLS.with(|pending| std::mem::take(&mut *pending.borrow_mut()));
     let pending_test = PENDING_HIT_TEST.with(|slot| slot.borrow_mut().take());
     if pending.is_empty()
-        && pending_controls.is_empty()
         && pending_lists.is_empty()
         && pending_test.is_none()
     {
@@ -542,7 +473,6 @@ pub(super) fn ppc_begin_pending_def_procs(
         // meaning; the frames are drawn at a later import.
         other => {
             PENDING_WDEF_DRAWS.with(|slot| slot.borrow_mut().extend(pending));
-            PENDING_CDEF_CALLS.with(|slot| slot.borrow_mut().extend(pending_controls));
             PENDING_LDEF_CALLS.with(|slot| slot.borrow_mut().extend(pending_lists));
             PENDING_HIT_TEST.with(|slot| *slot.borrow_mut() = pending_test);
             return other;
@@ -577,25 +507,7 @@ pub(super) fn ppc_begin_pending_def_procs(
             Some(DefProcCall::new(target, &[var_code, window, message, 0], None))
         })
         .collect();
-    let cdef = u32::from_be_bytes(*b"CDEF");
     let mut calls = calls;
-    calls.extend(pending_controls.into_iter().filter_map(|(handle, message, param)| {
-        let proc_id = APP_CDEF_CONTROLS.with(|controls| controls.borrow().get(&handle).copied())?;
-        let res_id = (proc_id as u16 >> 4) as i16;
-        let var_code = u32::from(proc_id as u16 & 0x000F);
-        let target = ppc_app_def_proc_target(memory, vfs_resources, cdef, res_id, cpu.gpr[2])?;
-        let control = memory.read_u32_be(handle).filter(|ptr| *ptr != 0)?;
-        // Macintosh Toolbox Essentials (1992), p. 5-114: contrlDefProc is
-        // the handle to the CDEF, which an application CDEF may identify
-        // itself by (Cythera's TCDEFRegister, like its WDEF).
-        if message == CDEF_INIT {
-            if let Some(defproc) = ppc_app_def_proc_handle(vfs_resources, cdef, res_id) {
-                let _ = memory.write_u32_be(control.wrapping_add(24), defproc);
-            }
-        }
-        let owner = memory.read_u32_be(control.wrapping_add(4)).filter(|ptr| *ptr != 0);
-        Some(DefProcCall::new(target, &[var_code, handle, message, param], owner))
-    }));
     // LDEF(lMessage, lSelect, lRect, lCell, lDataOffset, lDataLen, lHandle),
     // through the procedure in the list's refCon, as the shell calls it.
     let rtoc = cpu.gpr[2];
@@ -631,22 +543,6 @@ pub(super) fn ppc_begin_pending_def_procs(
     let mut part_result = None;
     if let Some(pending) = pending_test {
         let test = match pending.kind {
-            HitTestKind::Control => APP_CDEF_CONTROLS
-                .with(|controls| controls.borrow().get(&pending.target).copied())
-                .and_then(|proc_id| {
-                    let res_id = (proc_id as u16 >> 4) as i16;
-                    let var_code = u32::from(proc_id as u16 & 0x000F);
-                    let target =
-                        ppc_app_def_proc_target(memory, vfs_resources, cdef, res_id, cpu.gpr[2])?;
-                    let control = memory.read_u32_be(pending.target).filter(|ptr| *ptr != 0)?;
-                    let owner =
-                        memory.read_u32_be(control.wrapping_add(4)).filter(|ptr| *ptr != 0);
-                    Some(DefProcCall::new(
-                        target,
-                        &[var_code, pending.target, CDEF_TEST, pending.point],
-                        owner,
-                    ))
-                }),
             HitTestKind::Window | HitTestKind::GoAway => {
                 let proc_id = ppc_window_proc_id(memory, pending.target);
                 let res_id = (proc_id as u16 >> 4) as i16;

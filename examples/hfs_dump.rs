@@ -3,7 +3,7 @@
 //! `cargo run --example hfs_dump --no-default-features -- <image.dsk>`
 //!
 //! This exists so that a writer of HFS volumes living outside this repository
-//! can be checked against the reader in `src/disk_image/hfs.rs`: build an
+//! can be checked against the reader in `src/systems/macintosh/disk_image/hfs.rs`: build an
 //! image, read it back here, and compare the file list, the Finder types and
 //! both forks of every file against what went in. The reader is the
 //! interesting half -- it walks the catalog's leaf chain and the extents
@@ -52,7 +52,7 @@ fn main() -> ExitCode {
             return ExitCode::FAILURE;
         }
     };
-    let contents = match systemless::disk_image::extract_dc42_or_hfs(&bytes) {
+    let contents = match systemless::systems::macintosh::disk_image::extract_dc42_or_hfs(&bytes) {
         Ok(Some(contents)) => contents,
         Ok(None) => {
             eprintln!("{path} does not look like a DC42 or HFS image");

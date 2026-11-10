@@ -1017,6 +1017,17 @@ pub(super) fn dispatch_dialog_import(
             let dialog = params.dialog_ptr();
             *current_gworld = dialog;
             *current_gdevice = ppc_gworld_device(gworlds, dialog).unwrap_or(*current_gdevice);
+            // A hidden window's visRgn is empty (Inside Macintosh Volume I,
+            // I-283), so DrawDialog on one changes nothing on the screen. This
+            // path draws the items and runs their procedures without clipping
+            // to visRgn, so it stops here instead. Cythera hides its
+            // character-creation dialog on Cancel and never disposes of it,
+            // and TApp::RedrawAllNow draws every window, hidden ones included,
+            // between BeginUpdate and EndUpdate: without this the cancelled
+            // dialog came back behind the map after a new game.
+            if !ppc_window_is_visible(memory, dialog) {
+                return Some(PpcImportAction::ReturnPreserve);
+            }
             let bounds = ppc_dialog_global_bounds(memory, gworlds, dialog);
             let items = ppc_dialog_items_for_dialog(memory, handles, dialog);
             let _ = ppc_draw_dialog(
@@ -2133,6 +2144,11 @@ fn ppc_dispatch_dialog_compatibility(
             let dialog = params.dialog_ptr();
             *current_gworld = dialog;
             *current_gdevice = ppc_gworld_device(gworlds, dialog).unwrap_or(*current_gdevice);
+            // As DrawDialog: a hidden dialog's visRgn is empty, so nothing of
+            // it reaches the screen.
+            if !ppc_window_is_visible(memory, dialog) {
+                return PpcImportAction::ReturnPreserve;
+            }
             let bounds = ppc_dialog_global_bounds(memory, gworlds, dialog);
             let items = ppc_dialog_items_for_dialog(memory, handles, dialog);
             let _ = ppc_draw_dialog(

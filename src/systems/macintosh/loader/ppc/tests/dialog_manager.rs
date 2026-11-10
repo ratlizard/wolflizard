@@ -7443,6 +7443,111 @@ fn dialog_item_styles_copy_named_font_resource_render_short_labels_and_dispose()
     }
 }
 
+/// A hidden window's visRgn is empty (Inside Macintosh Volume I, I-283), so
+/// DrawDialog and UpdateDialog on a hidden dialog change nothing on the
+/// screen. Cythera hides its character-creation dialog on Cancel without
+/// disposing of it and later redraws every window, hidden ones included,
+/// which brought the cancelled dialog back behind the map.
+#[test]
+fn draw_dialog_and_update_dialog_leave_the_screen_alone_for_a_hidden_dialog() {
+    let mut loaded = load_pef_application_with_config(
+        &synthetic_pef_with_import(b"GetNewDialog"),
+        PpcLoadConfig {
+            screen_depth: 16,
+            ..PpcLoadConfig::default()
+        },
+    )
+    .unwrap();
+    let mut dlog = vec![0; 22];
+    // Below the menu bar, which is outside every window's visRgn.
+    dlog[0..2].copy_from_slice(&40i16.to_be_bytes());
+    dlog[4..6].copy_from_slice(&140i16.to_be_bytes());
+    dlog[6..8].copy_from_slice(&200i16.to_be_bytes());
+    dlog[10] = 1;
+    dlog[18..20].copy_from_slice(&128i16.to_be_bytes());
+    let mut ditl = vec![0; 20];
+    ditl[6..8].copy_from_slice(&10i16.to_be_bytes());
+    ditl[8..10].copy_from_slice(&10i16.to_be_bytes());
+    ditl[10..12].copy_from_slice(&40i16.to_be_bytes());
+    ditl[12..14].copy_from_slice(&150i16.to_be_bytes());
+    ditl[14] = PPC_DIALOG_ITEM_STATIC_TEXT;
+    ditl[15] = 4;
+    ditl[16..20].copy_from_slice(b"WIDE");
+    for (kind, data) in [(*b"DLOG", dlog), (*b"DITL", ditl)] {
+        loaded
+            .process_file_system
+            .push_vfs_resource(PpcVfsResourceRecord {
+                ref_num: *loaded.process_file_system.current_resource_file,
+                path: String::new(),
+                res_type: u32::from_be_bytes(kind),
+                res_id: 128,
+                name: Vec::new(),
+                data: data.into(),
+                raw_data: None,
+                raw_attrs: None,
+                attrs: 0,
+                handle: 0,
+            });
+    }
+    loaded.cpu.gpr[3] = 128;
+    loaded.cpu.gpr[4] = 0;
+    loaded.cpu.gpr[5] = 0;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::GetNewDialog);
+    let dialog = loaded.cpu.gpr[3];
+    assert_ne!(dialog, 0);
+    let bounds = ppc_dialog_global_bounds(&mut loaded.memory, &loaded.gworlds, dialog).unwrap();
+    let front = ppc_front_buffer_for_gworld(&loaded.gworlds, PPC_MAIN_GWORLD).unwrap();
+    let rect = (bounds.0 + 10, bounds.1 + 10, bounds.0 + 40, bounds.1 + 150);
+    let content = loaded
+        .memory
+        .read_u32_be(dialog + PPC_CWINDOW_CONTENT_RGN_OFFSET)
+        .unwrap();
+    let red = PpcRgbColor {
+        red: 0xffff,
+        green: 0,
+        blue: 0,
+    };
+    let changed = |loaded: &mut PpcSectionMem| {
+        let mut changed = 0;
+        for y in rect.0..rect.2 {
+            for x in rect.1..rect.3 {
+                if ppc_quickdraw_read_pixel(loaded, front, (i32::from(x), i32::from(y)))
+                    != Some(0x7c00)
+                {
+                    changed += 1;
+                }
+            }
+        }
+        changed
+    };
+    let draw_dialog = |loaded: &mut PpcLoadedApp| {
+        loaded.cpu.gpr[3] = dialog;
+        run_test_import(loaded, PpcImportDispatcherTarget::DrawDialog);
+    };
+    let update_dialog = |loaded: &mut PpcLoadedApp| {
+        loaded.cpu.gpr[3] = dialog;
+        loaded.cpu.gpr[4] = content;
+        run_test_import(
+            loaded,
+            PpcImportDispatcherTarget::DialogCompatibility(
+                PpcDialogCompatibilityOperation::UpdateDialog,
+            ),
+        );
+    };
+    // While the dialog shows, each call draws its text item over the red.
+    for draw in [&draw_dialog as &dyn Fn(&mut PpcLoadedApp), &update_dialog] {
+        ppc_fill_front_rect(&mut loaded.memory, front, rect, red);
+        draw(&mut loaded);
+        assert!(changed(&mut loaded.memory) > 0, "a visible dialog draws its items");
+    }
+    loaded.cpu.gpr[3] = dialog;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::HideWindow);
+    for draw in [&draw_dialog as &dyn Fn(&mut PpcLoadedApp), &update_dialog] {
+        ppc_fill_front_rect(&mut loaded.memory, front, rect, red);
+        draw(&mut loaded);
+        assert_eq!(changed(&mut loaded.memory), 0, "a hidden dialog draws nothing");
+    }
+}
 
 #[test]
 fn set_dialog_item_text_redraws_only_its_visible_item_and_erases_shorter_text() {

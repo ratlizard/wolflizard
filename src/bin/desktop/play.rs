@@ -423,7 +423,7 @@ pub(super) fn run(
         let app = super::load_launch_media(&mut runner, archive, mounts)
             .map_err(|e| format!("load {}: {e}", archive.display()))?;
         game::init_game_owned(&mut runner, app);
-        runner.prepare_text_presentation();
+        super::prepare_text_presentation(&mut runner);
         configure_realtime_execution_rate(&mut runner);
         runner.composite_frame();
         report.architecture = Some(

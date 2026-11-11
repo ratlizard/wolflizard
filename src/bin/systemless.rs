@@ -465,6 +465,23 @@ fn preference_files_to_seed(from_cli: &[PathBuf]) -> Vec<PathBuf> {
     files
 }
 
+/// Whether the window keeps a second copy of the screen at four times its
+/// size, in which a glyph from an outline font is drawn again at that size.
+/// It is off unless `SYSTEMLESS_OUTLINE_TEXT=1`: every glyph is then drawn
+/// at the game's size and enlarged with the rest of the picture, as the
+/// browser player and the Board app show it.
+fn outline_text_wanted() -> bool {
+    std::env::var("SYSTEMLESS_OUTLINE_TEXT").is_ok_and(|value| value == "1")
+}
+
+/// Track the four-times copy of the screen when it is wanted, and otherwise
+/// leave the runner without one.
+fn prepare_text_presentation(runner: &mut FixtureRunner) {
+    if outline_text_wanted() {
+        runner.prepare_text_presentation();
+    }
+}
+
 /// Seed the preferences files into the guest, after the save store has
 /// restored what it holds and before the application initialises, so a
 /// seeded file wins over a stored one and the application never sees the

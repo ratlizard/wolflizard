@@ -107,7 +107,7 @@ pub(super) fn frame(runner: &mut FixtureRunner, audio_samples: usize) -> FrameWo
         service_sound(runner, &mut work.instructions, &mut reserve_used);
     }
     service_sound(runner, &mut work.instructions, &mut reserve_used);
-    runner.prepare_text_presentation();
+    super::prepare_text_presentation(runner);
     runner.composite_frame();
     runner.finish_gui_frame();
     work
@@ -156,7 +156,7 @@ pub(super) fn run(
         runner.import_vfs_file(&file);
     }
     game::init_game_owned(&mut runner, app);
-    runner.prepare_text_presentation();
+    super::prepare_text_presentation(&mut runner);
     let instructions_per_tick = configure_realtime_execution_rate(&mut runner);
     let mut debug_server = super::bind_headless_debug_server(debug_socket, &mut runner);
     let start_tick = runner.guest_tick();

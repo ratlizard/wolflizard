@@ -178,7 +178,7 @@ impl GuiDriver {
         let entry_point = app.entry_point(a5_base);
         super::seed_preference_files(&mut runner, &self.preferences_files);
         game::init_game_owned(&mut runner, app);
-        runner.prepare_text_presentation();
+        super::prepare_text_presentation(&mut runner);
         runner.set_arrows_as_numpad(self.arrows_as_numpad);
 
         let ipt = configure_realtime_execution_rate(&mut runner);
@@ -341,7 +341,7 @@ impl GuiDriver {
         };
         {
             let _timing = FramePhaseTimer::new("outline palette preparation");
-            runner.prepare_text_presentation();
+            super::prepare_text_presentation(runner);
         }
         {
             let _timing = FramePhaseTimer::new("window compositing");

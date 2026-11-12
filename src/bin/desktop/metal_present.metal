@@ -146,8 +146,13 @@ static uint guest_argb(
         bool mask_set = row < 16 && column < 16 && (cursor.mask_rows[row] & bit) != 0;
 
         if (frame.cursor_kind == 1) {
+            bool data_set = row < 16 && column < 16 && (cursor.data_rows[row] & bit) != 0;
             if (mask_set) {
-                argb = (cursor.data_rows[row] & bit) != 0 ? 0xFF000000 : 0xFFFFFFFF;
+                argb = data_set ? 0xFF000000 : 0xFFFFFFFF;
+            } else if (data_set) {
+                // Mask clear and data set inverts, as QuickDraw does: the
+                // system I-beam is drawn this way alone.
+                argb ^= 0x00FFFFFF;
             }
         } else {
             uint cursor_argb = cursor.color_pixels[row * frame.cursor_width + column];

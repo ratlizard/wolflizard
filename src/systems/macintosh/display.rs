@@ -1206,7 +1206,13 @@ fn render_mono_cursor(
 
         for col in 0..16i32 {
             let bit = 15 - col;
-            if (mask_word >> bit) & 1 == 0 {
+            let masked = (mask_word >> bit) & 1 == 1;
+            let data_bit = (data_word >> bit) & 1;
+            // Mask clear and data set inverts what is under the pixel
+            // (Imaging With QuickDraw, p. 8-19). The system I-beam is drawn
+            // this way alone, with an empty mask, so it shows on dark text
+            // fields as on light ones.
+            if !masked && data_bit == 0 {
                 continue;
             }
             let gx = cx + col;
@@ -1214,9 +1220,12 @@ fn render_mono_cursor(
             if gx < 0 || gy < 0 || gx >= width as i32 || gy >= height as i32 {
                 continue;
             }
-            let data_bit = (data_word >> bit) & 1;
             let idx = ((gy as u32 * width + gx as u32) * 4) as usize;
-            if data_bit == 1 {
+            if !masked {
+                pixels[idx] ^= 0xFF;
+                pixels[idx + 1] ^= 0xFF;
+                pixels[idx + 2] ^= 0xFF;
+            } else if data_bit == 1 {
                 pixels[idx] = 0;
                 pixels[idx + 1] = 0;
                 pixels[idx + 2] = 0;
@@ -1290,7 +1299,10 @@ fn render_mono_cursor_argb(
 
         for col in 0..16i32 {
             let bit = 15 - col;
-            if (mask_word >> bit) & 1 == 0 {
+            let masked = (mask_word >> bit) & 1 == 1;
+            let data_bit = (data_word >> bit) & 1;
+            // Mask clear and data set inverts, as in render_mono_cursor.
+            if !masked && data_bit == 0 {
                 continue;
             }
             let gx = cx + col;
@@ -1298,9 +1310,10 @@ fn render_mono_cursor_argb(
             if gx < 0 || gy < 0 || gx >= width as i32 || gy >= height as i32 {
                 continue;
             }
-            let data_bit = (data_word >> bit) & 1;
             let idx = gy as usize * width as usize + gx as usize;
-            pixels[idx] = if data_bit == 1 {
+            pixels[idx] = if !masked {
+                pixels[idx] ^ 0x00FF_FFFF
+            } else if data_bit == 1 {
                 BLACK_ARGB
             } else {
                 WHITE_ARGB
@@ -2387,6 +2400,31 @@ mod tests {
         assert_eq!(argb[1], 0xFFBF_AF9F);
         assert_eq!(argb[2], 0xFF40_5060);
         assert_eq!(argb[3], 0xFF40_5060);
+    }
+
+    #[test]
+    fn render_mono_cursor_inverts_where_the_mask_is_clear() {
+        // (0,0) masked black, (0,1) masked white, (1,0) data with no mask:
+        // inverted, (1,1) neither: left alone. Before 12 November 2026 the
+        // third was skipped, so the system I-beam, all such pixels, drew
+        // nothing.
+        let mut data = [0u8; 32];
+        let mut mask = [0u8; 32];
+        data[0] = 0x80;
+        mask[0] = 0xC0;
+        data[2] = 0x80;
+        let cursor = CursorImage::mono(data, mask, 0, 0);
+
+        let mut rgba = vec![0x40, 0x50, 0x60, 0xFF].repeat(4);
+        render_cursor(&mut rgba, 2, 2, &cursor, (0, 0));
+        assert_eq!(&rgba[0..4], &[0x00, 0x00, 0x00, 0xFF]);
+        assert_eq!(&rgba[4..8], &[0xFF, 0xFF, 0xFF, 0xFF]);
+        assert_eq!(&rgba[8..12], &[0xBF, 0xAF, 0x9F, 0xFF]);
+        assert_eq!(&rgba[12..16], &[0x40, 0x50, 0x60, 0xFF]);
+
+        let mut argb = vec![0xFF40_5060; 4];
+        render_cursor_argb(&mut argb, 2, 2, &cursor, (0, 0));
+        assert_eq!(argb, vec![0xFF00_0000, 0xFFFF_FFFF, 0xFFBF_AF9F, 0xFF40_5060]);
     }
 
     #[test]

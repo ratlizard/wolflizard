@@ -324,6 +324,18 @@ mod tests {
     use super::*;
 
     #[test]
+    fn the_system_ibeam_inverts_and_has_the_rom_hotspot() {
+        // An empty mask, as the Power Macintosh 7500 ROM's CURS 1 has, so
+        // every pixel inverts; the stem is column 7 and the hotspot 4 down.
+        let (data, mask, hot_v, hot_h) =
+            crate::trap::TrapDispatcher::system_cursor(IBEAM_CURSOR_ID).unwrap();
+        assert_eq!(mask, [0; 32]);
+        assert_eq!((hot_v, hot_h), (4, 7));
+        assert_eq!(u16::from_be_bytes([data[8], data[9]]), 0x0100);
+        assert_eq!(data.iter().filter(|b| **b != 0).count(), 20);
+    }
+
+    #[test]
     fn cursor_and_icon_manager_evaluation() {
         assert_eq!(CURSOR_RECORD_SIZE, 68);
         assert_eq!(CURSOR_DATA_OFFSET, 0);

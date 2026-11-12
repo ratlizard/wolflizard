@@ -45,6 +45,9 @@ pub struct CursorRgba {
 #[cfg(target_os = "macos")]
 pub struct HostCursor {
     enabled: bool,
+    /// The current image inverts what is under it, which an `NSCursor`
+    /// cannot do, so the frame draws it, as on Windows.
+    software_overlay: bool,
     pointer_inside: bool,
     cursor: Option<Retained<NSCursor>>,
     /// (guest image, presentation scale bits, backing scale bits) the cursor
@@ -57,15 +60,17 @@ impl HostCursor {
     pub fn new() -> Self {
         Self {
             enabled: std::env::var_os("SYSTEMLESS_SOFTWARE_CURSOR").is_none(),
+            software_overlay: false,
             pointer_inside: false,
             cursor: None,
             key: None,
         }
     }
 
-    /// False when the composited overlay is in use instead.
+    /// False when the composited overlay is in use instead: always with
+    /// `SYSTEMLESS_SOFTWARE_CURSOR`, and for an image that inverts.
     pub fn enabled(&self) -> bool {
-        self.enabled
+        self.enabled && !self.software_overlay
     }
 
     pub fn set_pointer_inside(&mut self, inside: bool) {
@@ -85,8 +90,16 @@ impl HostCursor {
         let backing = window.scale_factor().max(0.01);
         let key = (cursor.cloned(), scale_phys.to_bits(), backing.to_bits());
         if self.key.as_ref() != Some(&key) {
+            self.software_overlay = false;
             match cursor {
                 None => {
+                    self.cursor = None;
+                    window.set_cursor_visible(false);
+                }
+                Some(image) if inverts(image) => {
+                    // The frame draws it (render_mono_cursor and the Metal
+                    // shader invert), and the host pointer is hidden.
+                    self.software_overlay = true;
                     self.cursor = None;
                     window.set_cursor_visible(false);
                 }
@@ -151,6 +164,17 @@ pub fn presentation_scale(
     }
     (f64::from(drawable_width) / f64::from(content_width))
         .min(f64::from(drawable_height) / f64::from(content_height))
+}
+
+/// Whether a one-bit cursor has a pixel with its data set and its mask clear,
+/// which inverts what is under it. Mac OS's I-beam is all such pixels.
+/// Windows makes the same test in its own cursor code.
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+pub fn inverts(image: &CursorImage) -> bool {
+    match image {
+        CursorImage::Mono { data, mask, .. } => data.iter().zip(mask).any(|(d, m)| d & !m != 0),
+        CursorImage::Color { .. } => false,
+    }
 }
 
 /// Convert a guest cursor to straight-alpha RGBA.
@@ -316,6 +340,17 @@ mod tests {
             1.0,
             "zero dims fall back"
         );
+    }
+
+    #[test]
+    fn an_inverting_cursor_is_left_to_the_frame() {
+        let mut data = [0u8; 32];
+        let mut mask = [0u8; 32];
+        data[0] = 0x80;
+        mask[0] = 0x80;
+        assert!(!inverts(&CursorImage::mono(data, mask, 0, 0)));
+        data[2] = 0x80;
+        assert!(inverts(&CursorImage::mono(data, mask, 0, 0)));
     }
 
     #[test]

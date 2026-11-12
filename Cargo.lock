@@ -4703,7 +4703,7 @@ dependencies = [
 
 [[package]]
 name = "systemless"
-version = "0.115.0"
+version = "0.116.0"
 dependencies = [
  "base64 0.22.1",
  "bzip2",
@@ -4746,7 +4746,7 @@ dependencies = [
 
 [[package]]
 name = "systemless-catalogue-tools"
-version = "0.115.0"
+version = "0.116.0"
 dependencies = [
  "anyhow",
  "clap",
@@ -4770,7 +4770,7 @@ dependencies = [
 
 [[package]]
 name = "systemless-org"
-version = "0.115.0"
+version = "0.116.0"
 dependencies = [
  "base64 0.22.1",
  "futures-channel",
@@ -4790,7 +4790,7 @@ dependencies = [
 
 [[package]]
 name = "systemless-popularity-api"
-version = "0.115.0"
+version = "0.116.0"
 dependencies = [
  "chrono",
  "futures-util",

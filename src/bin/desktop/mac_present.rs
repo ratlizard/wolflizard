@@ -43,12 +43,25 @@ impl Presenter {
             Self::Software(_) => false,
         }
     }
-    /// Whether frames go through grimoire's undither filter
-    /// (`SYSTEMLESS_UNDITHER=1`), which only the Metal presenter has.
+    /// Whether frames go through grimoire's undither filter, which only the
+    /// Metal presenter has. `SYSTEMLESS_UNDITHER=1` starts it on, and
+    /// View > Undither switches it.
     pub(super) fn undither(&self) -> bool {
         match self {
             Self::Metal(p) => p.undither(),
             Self::Software(_) => false,
+        }
+    }
+    /// Whether the filter can be switched on at all.
+    pub(super) fn undither_available(&self) -> bool {
+        match self {
+            Self::Metal(p) => p.undither_available(),
+            Self::Software(_) => false,
+        }
+    }
+    pub(super) fn set_undither(&mut self, on: bool) {
+        if let Self::Metal(p) = self {
+            p.set_undither(on);
         }
     }
     pub(super) fn present(

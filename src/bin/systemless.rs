@@ -1618,6 +1618,32 @@ impl App {
         }
     }
 
+    /// Act on View > Undither, and show the filter's state on the item. The
+    /// item belongs to the host's menu, so nothing reaches the guest.
+    #[cfg(target_os = "macos")]
+    fn sync_undither_menu(&mut self) {
+        let Some(native_menu) = self.native_menu.as_mut() else {
+            return;
+        };
+        let toggled = native_menu.take_undither_toggle();
+        let (available, on) = match self.surface.as_mut() {
+            Some(surface) => {
+                if toggled {
+                    let on = !surface.undither();
+                    surface.set_undither(on);
+                }
+                (surface.undither_available(), surface.undither())
+            }
+            None => (false, false),
+        };
+        native_menu.set_undither_state(available, on);
+        if toggled {
+            if let Some(window) = &self.window {
+                window.request_redraw();
+            }
+        }
+    }
+
     fn sync_native_state(&mut self, event_loop: &ActiveEventLoop) {
         #[cfg(any(target_os = "macos", target_os = "windows"))]
         self.sync_host_cursor(event_loop);
@@ -3820,6 +3846,8 @@ impl ApplicationHandler for App {
                     self.send_command(runtime_protocol::GuiCommand::Menu { menu, item });
                 }
             }
+            #[cfg(target_os = "macos")]
+            self.sync_undither_menu();
             self.poll_owner(event_loop);
             // Device maintenance must still run when an unchanged guest is idle.
             if self.wgpu.is_some() && !self.closing {
@@ -3891,6 +3919,8 @@ impl ApplicationHandler for App {
                 self.send_command(runtime_protocol::GuiCommand::Menu { menu, item });
             }
         }
+        #[cfg(target_os = "macos")]
+        self.sync_undither_menu();
 
         // Step emulation, then render
         self.driver.as_mut().expect("serial runtime").step_frame();

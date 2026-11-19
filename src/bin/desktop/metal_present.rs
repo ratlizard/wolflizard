@@ -953,18 +953,14 @@ impl MetalPresenter {
         let compact_pipeline = device
             .newRenderPipelineStateWithDescriptor_error(&descriptor)
             .map_err(|error| format!("Metal compact pipeline creation failed: {error}"))?;
-        // Built only when asked for. A filter that cannot be built leaves the
-        // screen as the game draws it: a display filter must not be able to
+        // Built always, so View > Undither can switch the filter on during a
+        // run; `SYSTEMLESS_UNDITHER=1` only sets where it starts. A filter
+        // that cannot be built leaves the screen as the game draws it and
+        // the menu item greyed out: a display filter must not be able to
         // stop the game.
-        let undither_pipelines = undither::enabled_by_environment()
-            .then(|| undither::UnditherPipelines::new(&device))
-            .and_then(|built| {
-                built
-                    .map_err(|error| {
-                        eprintln!("[METAL] {error}; the undither filter is unavailable")
-                    })
-                    .ok()
-            });
+        let undither_pipelines = undither::UnditherPipelines::new(&device)
+            .map_err(|error| eprintln!("[METAL] {error}; the undither filter is unavailable"))
+            .ok();
 
         let async_command_queue = device
             .newCommandQueue()
@@ -1016,7 +1012,7 @@ impl MetalPresenter {
                 .is_none_or(|value| value != "0"),
             last_compact: None,
             async_guest_presenter,
-            undither: undither_pipelines.is_some(),
+            undither: undither_pipelines.is_some() && undither::enabled_by_environment(),
             undither_pipelines,
             undither_targets: undither::UnditherTargets::default(),
         })
@@ -1025,6 +1021,18 @@ impl MetalPresenter {
     /// Whether frames are drawn through the undither filter.
     pub fn undither(&self) -> bool {
         self.undither
+    }
+
+    /// Whether the filter could be built, so can be switched on.
+    pub fn undither_available(&self) -> bool {
+        self.undither_pipelines.is_some()
+    }
+
+    /// Switch the filter on or off (View > Undither). The next frame's
+    /// metadata differs in its `undither` field, so an unchanged guest
+    /// screen is still drawn again in the new form.
+    pub fn set_undither(&mut self, on: bool) {
+        self.undither = on && self.undither_pipelines.is_some();
     }
 
     /// The indices to send with a raster frame, when the filter is on.

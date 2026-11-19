@@ -13713,6 +13713,7 @@ impl super::TrapDispatcher {
                                 } else {
                                     state.cells.remove(&key);
                                 }
+                                state.cap_cell_data();
                             }
                         });
                         cpu.write_reg(Register::A7, sp + 16);
@@ -13733,6 +13734,7 @@ impl super::TrapDispatcher {
                                 let key = (cell.0, cell.1);
                                 if Self::list_cell_is_valid(state, key.0, key.1) {
                                     state.cells.entry(key).or_default().extend_from_slice(&data);
+                                    state.cap_cell_data();
                                 }
                             });
                         }

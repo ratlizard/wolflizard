@@ -588,6 +588,7 @@ fn dispatch_list_import_inner(context: PpcListDispatchContext<'_>) -> Option<Ppc
                 list_manager.with_record_mut(cpu.gpr[6], |record| {
                     if ppc_list_cell_index(record, v, h).is_some() {
                         record.cells.insert((v, h), bytes);
+                        record.cap_cell_data();
                         let mut allocator = PpcProcessAllocatorView {
                             memory_manager: process_memory_manager,
                         };
@@ -629,6 +630,7 @@ fn dispatch_list_import_inner(context: PpcListDispatchContext<'_>) -> Option<Ppc
                 list_manager.with_record_mut(cpu.gpr[6], |record| {
                     if ppc_list_cell_index(record, v, h).is_some() {
                         record.cells.entry((v, h)).or_default().extend(bytes);
+                        record.cap_cell_data();
                         let mut allocator = PpcProcessAllocatorView {
                             memory_manager: process_memory_manager,
                         };

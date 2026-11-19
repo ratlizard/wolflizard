@@ -75,6 +75,41 @@ impl ProcessListRecord {
         (offsets, data)
     }
 
+    /// The most data a list's cells can hold, together. The `cellArray` word
+    /// keeps a cell's start in 15 bits beside its selection bit, so the
+    /// `cells` handle cannot be addressed past 32,767 bytes. More Macintosh
+    /// Toolbox (1993), p. 4-3: "The List Manager cannot maintain lists that
+    /// occupy more than 32 KB of memory."
+    pub(crate) const CELL_DATA_LIMIT: usize = 0x7FFF;
+
+    /// Hold the cells to `CELL_DATA_LIMIT`, counted in index order as the
+    /// `cells` handle packs them: a cell past the limit loses its data, and
+    /// the cell that crosses it keeps what fits. This is what `guest_image`
+    /// writes, so the cells the fork draws and returns are the ones the
+    /// guest can see. Without it a list grew without bound here, and a
+    /// program that outgrows the real limit, as Cythera's journal does past
+    /// about 2,700 rows, never showed the fault on the fork
+    /// (systemless/list-limit-52fhju). Called after every write of cell data.
+    pub(crate) fn cap_cell_data(&mut self) {
+        let total: usize = self.cells.values().map(Vec::len).sum();
+        if total <= Self::CELL_DATA_LIMIT {
+            return;
+        }
+        let mut used = 0usize;
+        for index in 0..self.cell_count() {
+            let cell = self.cell_for_index(index).expect("index is inside dataBounds");
+            let Some(bytes) = self.cells.get_mut(&cell) else {
+                continue;
+            };
+            let room = Self::CELL_DATA_LIMIT - used;
+            if bytes.len() > room {
+                bytes.truncate(room);
+            }
+            used += bytes.len();
+        }
+        self.cells.retain(|_, bytes| !bytes.is_empty());
+    }
+
     /// Take the cells and their selection back from a guest copy, as an
     /// application that edits `**cells` in place leaves it; Cythera sorts a
     /// list's data that way. Nothing changes, and false is returned, when the
@@ -344,6 +379,32 @@ mod tests {
             last_click: (0, 0),
             last_click_tick: 0,
         }
+    }
+
+    #[test]
+    fn cell_data_is_held_to_the_32_kb_limit_in_index_order() {
+        // One column of 3,000 rows of 12 bytes, as Cythera's journal keeps a
+        // line: 36,000 bytes, past the 32,767 a cellArray word can address.
+        let mut list = two_by_three();
+        list.data_bounds = (0, 0, 3000, 1);
+        list.cells = (0..3000).map(|row| ((row as i16, 0), vec![row as u8; 12])).collect();
+        list.cap_cell_data();
+        let total: usize = list.cells.values().map(Vec::len).sum();
+        assert_eq!(total, ProcessListRecord::CELL_DATA_LIMIT);
+        // The first 2,730 rows keep their 12 bytes, the next keeps the 7 that
+        // fit, and every row after it is empty.
+        assert_eq!(list.cells.get(&(2729, 0)).map(Vec::len), Some(12));
+        assert_eq!(list.cells.get(&(2730, 0)).map(Vec::len), Some(7));
+        assert_eq!(list.cells.get(&(2731, 0)), None);
+        assert_eq!(list.cells.get(&(2999, 0)), None);
+        // The guest's copy agrees with what the fork keeps.
+        let (offsets, data) = list.guest_image();
+        assert_eq!(data.len(), ProcessListRecord::CELL_DATA_LIMIT);
+        assert_eq!(offsets[3000], 0x7FFF);
+        // A list under the limit is left alone.
+        let mut small = two_by_three();
+        small.cap_cell_data();
+        assert_eq!(small, two_by_three());
     }
 
     #[test]

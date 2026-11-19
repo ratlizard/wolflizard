@@ -362,6 +362,12 @@ pub(super) fn dispatch_control_import(
     }
 }
 
+thread_local! {
+    /// The slider whose drag outline is showing, and the pointer's horizontal
+    /// position it was drawn at.
+    static SLIDER_OUTLINE: std::cell::Cell<Option<(u32, i16)>> = const { std::cell::Cell::new(None) };
+}
+
 pub(super) fn ppc_set_control_title(
     cpu: &PpcCpu,
     allocator: Option<&mut PpcProcessAllocatorView<'_>>,
@@ -1328,7 +1334,37 @@ pub(super) fn ppc_dispatch_legacy_control(
                         } else {
                             super::appearance_controls::ppc_slider_value_at(rect, pointer, min, max)
                         };
-                        if memory.read_u16_be(control + PPC_CONTROL_VALUE_OFFSET) != Some(value as u16) {
+                        // A slider made without kControlSliderLiveFeedback
+                        // (variation bit 0) keeps its thumb and value while
+                        // the button is held and drags an outline instead.
+                        let live = controls
+                            .iter()
+                            .find(|record| record.handle == cpu.gpr[3])
+                            .is_some_and(|record| record.proc_id & 1 != 0);
+                        if !live
+                            && input.mouse_button
+                            && super::platinum::ppc_window_is_platinum(memory, owner)
+                            && rect.3 - rect.1 >= rect.2 - rect.0
+                        {
+                            let previous = SLIDER_OUTLINE.with(|cell| cell.replace(Some((cpu.gpr[3], pointer.1))));
+                            if previous != Some((cpu.gpr[3], pointer.1)) {
+                                let _ = ppc_draw_control(
+                                    memory,
+                                    handles,
+                                    controls,
+                                    gworlds,
+                                    vfs_resources,
+                                    current_resource_refnum,
+                                    cpu.gpr[3],
+                                );
+                                super::platinum::ppc_draw_platinum_slider_outline(
+                                    memory, gworlds, owner, rect, pointer.1,
+                                );
+                            }
+                            return Some(PpcImportAction::Yield(u64::MAX));
+                        }
+                        let outlined = SLIDER_OUTLINE.with(|cell| cell.take()).is_some();
+                        if outlined || memory.read_u16_be(control + PPC_CONTROL_VALUE_OFFSET) != Some(value as u16) {
                             let _ = memory.write_u16_be(control + PPC_CONTROL_VALUE_OFFSET, value as u16);
                             let _ = ppc_draw_control(
                                 memory,
@@ -1354,7 +1390,47 @@ pub(super) fn ppc_dispatch_legacy_control(
             let is_popup = controls
                 .iter()
                 .any(|record| record.handle == cpu.gpr[3] && (1008..=1023).contains(&record.proc_id));
-            if part != 0 && part != 129 && !is_popup && action_proc == 0 && input.mouse_button {
+            let pushes = part != 0 && part != 129 && !is_popup && action_proc == 0;
+            if pushes {
+                // The part is highlighted while the pointer is held inside the
+                // control and unhighlighted when it leaves or the button is
+                // released (Macintosh Toolbox Essentials (1992), p. 5-79).
+                let inside = input.mouse_button
+                    && ppc_control_ptr(memory, cpu.gpr[3]).is_some_and(|control| {
+                        let owner =
+                            memory.read_u32_be(control + PPC_CONTROL_OWNER_OFFSET).unwrap_or(0);
+                        let origin = memory
+                            .read_u32_be(owner.wrapping_add(2))
+                            .and_then(|pixmap| memory.read_u32_be(pixmap))
+                            .and_then(|pixmap| ppc_read_rect(memory, pixmap.wrapping_add(6)))
+                            .map_or((0, 0), |(top, left, _, _)| (top, left));
+                        let (pv, ph) = (
+                            input.mouse_v.wrapping_add(origin.0),
+                            input.mouse_h.wrapping_add(origin.1),
+                        );
+                        ppc_read_rect(memory, control + PPC_CONTROL_RECT_OFFSET).is_some_and(
+                            |(top, left, bottom, right)| {
+                                pv >= top && pv < bottom && ph >= left && ph < right
+                            },
+                        )
+                    });
+                let hilite = if inside { part as u8 } else { 0 };
+                if let Some(control) = ppc_control_ptr(memory, cpu.gpr[3]) {
+                    if memory.read_u8(control + PPC_CONTROL_HILITE_OFFSET) != Some(hilite) {
+                        let _ = memory.write_u8(control + PPC_CONTROL_HILITE_OFFSET, hilite);
+                        let _ = ppc_draw_control(
+                            memory,
+                            handles,
+                            controls,
+                            gworlds,
+                            vfs_resources,
+                            current_resource_refnum,
+                            cpu.gpr[3],
+                        );
+                    }
+                }
+            }
+            if pushes && input.mouse_button {
                 // Re-entry after release cannot re-derive a start point from the held mouse.
                 cpu.gpr[4] = (u32::from(v as u16) << 16) | u32::from(h as u16);
                 return Some(PpcImportAction::Yield(u64::MAX));

@@ -4,17 +4,21 @@
 //
 // grimoire (ratlizard/grimoire) is where the filter comes from, and its
 // js/delv-graphics.js is the reference: the presenter runs the browser
-// player's GPU version of it, which leaves out stray-colour repair and runs
-// one smoothing pass, so the reference is undither() with `stray: 0` and
-// `passes: 1`, in stored values (the presenter's `light` off), with the
-// game's animated colours (indices 0xE0 to 0xFB) locked.
+// player's GPU version of it with grimoire's stray-colour repair put back,
+// at the maintainer's word (19 November 2026: the desktop filter should look
+// like grimoire's). The reference is undither() with grimoire's settings and
+// `passes: 1`, which gives the same output as its 3 (each pass after the
+// first recomputes the same result, delv-graphics.js, UD_MEASURED's note),
+// in stored values (the presenter's `light` off), with the game's animated
+// colours (indices 0xE0 to 0xFB) locked.
 //
 // The frame is made here, from formulas, and is nobody's artwork: a
 // checkerboard of two close colours, an ordered dither of a ramp, a
 // checkerboard between two ramps of different hue (the kind of dither
 // grimoire's notes describe in Cythera's portraits), a random-threshold
 // dither of a lit disc, drawn lines and a hard edge that must survive, and a
-// checkerboard of an animated colour and an ordinary one.
+// checkerboard of an animated colour and an ordinary one. A few magenta
+// pixels sit alone inside the interleaved ramps, for the stray repair.
 //
 //   node tests/undither/generate.mjs <grimoire checkout>
 //
@@ -47,6 +51,7 @@ for (let i = 0; i < 32; i++) {
 for (let i = 0xe0; i < 0xfc; i++) palette[i] = rgb(200, 40 + (i - 0xe0) * 6, 60);
 palette[0xff] = rgb(0, 0, 0);
 palette[0xfe] = rgb(255, 255, 255);
+palette[0xfd] = rgb(230, 30, 220);
 
 const bayer = [0, 8, 2, 10, 12, 4, 14, 6, 3, 11, 1, 9, 15, 7, 13, 5];
 // A fixed hash, so the random-threshold dither is the same on every run.
@@ -72,6 +77,7 @@ for (let y = 0; y < H; y++) {
       // Grey and warm ramps interleaved, lightening down the square.
       const level = 6 + Math.floor(ty / 3);
       index = (x + y) % 2 ? 32 + level : 64 + level;
+      if (tx % 9 === 4 && ty % 7 === 3) index = 0xfd;
     } else if (region === 3) {
       // A flat field with a one-pixel line and a hard edge through it.
       index = ty < 20 ? 40 : 70;
@@ -103,20 +109,26 @@ for (let i = 0; i < W * H; i++) {
   locked[i] = indices[i] >= 0xe0 && indices[i] < 0xfc ? 1 : 0;
 }
 
-const P = Object.assign({}, UD, { stray: 0, passes: 1 });
+const P = Object.assign({}, UD, { passes: 1 });
 const out = undither(new Uint8ClampedArray(raw), W, H, P, locked, null).out;
 
 // The fixture has to be able to tell a filter that skipped a stage from one
 // that ran it: say how far grimoire without its supersample is from itself.
 const P0 = Object.assign({}, P, { upscale: 1, supersample: false });
 const out0 = undither(new Uint8ClampedArray(raw), W, H, P0, locked, null).out;
-let changed = 0, stageApart = 0;
+// And how far grimoire without its stray repair is.
+const Ps = Object.assign({}, P, { stray: 0 });
+const outS = undither(new Uint8ClampedArray(raw), W, H, Ps, locked, null).out;
+let changed = 0, stageApart = 0, strayApart = 0;
 for (let i = 0; i < W * H; i++) {
   let moved = false, apart = 0;
   for (let c = 0; c < 3; c++) {
     if (out[i * 4 + c] !== raw[i * 4 + c]) moved = true;
     apart = Math.max(apart, Math.abs(out[i * 4 + c] - out0[i * 4 + c]));
   }
+  let strayDiff = 0;
+  for (let c = 0; c < 3; c++) strayDiff = Math.max(strayDiff, Math.abs(out[i * 4 + c] - outS[i * 4 + c]));
+  if (strayDiff > 2) strayApart++;
   if (moved) changed++;
   if (apart > 2) stageApart++;
 }
@@ -131,4 +143,5 @@ const file = Buffer.concat([
 const target = join(dirname(fileURLToPath(import.meta.url)), 'grimoire-reference.bin');
 writeFileSync(target, file);
 console.log(`${target}: ${W}x${H}, grimoire changes ${changed} pixels; ` +
-  `without its supersample it is ${stageApart} pixels more than 2 away`);
+  `without its supersample it is ${stageApart} pixels more than 2 away, ` +
+  `without its stray repair ${strayApart}`);

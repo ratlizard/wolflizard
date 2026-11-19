@@ -3683,16 +3683,21 @@ pub(crate) fn ppc_paint_rect(
     let vis_storage = memory
         .read_u32_be(current_gworld.wrapping_add(PPC_CGRAF_PORT_VIS_RGN_OFFSET))
         .and_then(|vis_rgn| ppc_region_storage(memory, vis_rgn));
+    // The clip and vis rows of the painted band, decoded once. Testing each
+    // pixel against the region storage decodes the region's row again for
+    // every pixel, and with a window whose visRgn is not a rectangle that
+    // made Cythera's patterned conversation panel (patOr over the whole box)
+    // cost seconds of host time each time a conversation opened.
+    let band = |value: i32| (value + i32::from(surface.top)).clamp(-32768, 32767) as i16;
+    let mut vis_rows =
+        regions::PpcRegionRowCache::for_band(vis_storage.as_deref(), band(top), band(bottom));
+    let mut clip_rows =
+        regions::PpcRegionRowCache::for_band(clip_storage.as_deref(), band(top), band(bottom));
     let mut wrote = false;
     for y in top..bottom {
         let pattern_row = pattern[((y + i32::from(surface.top)) & 7) as usize];
         for x in left..right {
-            if !ppc_local_point_in_port_regions(
-                surface,
-                (x, y),
-                vis_storage.as_deref(),
-                clip_storage.as_deref(),
-            ) {
+            if !ppc_cached_point_in_port_regions(surface, (x, y), &mut vis_rows, &mut clip_rows) {
                 continue;
             }
             let mask = 0x80 >> ((x + i32::from(surface.left)) & 7);
@@ -6367,6 +6372,13 @@ pub(crate) fn ppc_copy_bits(
             // This transfer owns one destination palette snapshot. Cache exact
             // RGB555 conversions locally, with an out-of-range index sentinel.
             let mut direct_index_cache: Option<Vec<u16>> = None;
+            // The arithmetic modes blend each pixel and match the result to
+            // the destination's table, a search of every entry. A blend of
+            // indexed pixels gives few distinct colors, and Cythera blends
+            // its whole conversation box when one opens, so the matches are
+            // kept for this transfer, which has one destination table.
+            let mut blend_index_cache: std::collections::HashMap<[u16; 3], u32> =
+                std::collections::HashMap::new();
             for dst_y in copy_top..copy_bottom {
                 let rel_y = i64::from(dst_y) - i64::from(dst_top);
                 let src_y = i64::from(src_top) + (rel_y * src_height) / dst_height;
@@ -6435,7 +6447,18 @@ pub(crate) fn ppc_copy_bits(
                                 )
                             }
                         });
-                        ppc_rgb_to_pixmap_pixel(dst_bits, transformed, dst_clut.as_ref())?
+                        match blend_index_cache.get(&transformed) {
+                            Some(&pixel) => pixel,
+                            None => {
+                                let pixel = ppc_rgb_to_pixmap_pixel(
+                                    dst_bits,
+                                    transformed,
+                                    dst_clut.as_ref(),
+                                )?;
+                                blend_index_cache.insert(transformed, pixel);
+                                pixel
+                            }
+                        }
                     } else if transparent && src_bits.depth == 1 {
                         bitmap_fore_pixel
                     } else if src_bits.depth == 1 {

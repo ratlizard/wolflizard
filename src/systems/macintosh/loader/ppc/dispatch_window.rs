@@ -4075,8 +4075,13 @@ fn ppc_paint_revealed_window_content(
     // Only the standard document and dialog WDEFs (IDs 0 and 1, procIDs
     // 0-15) have content regions Systemless computes; a custom WDEF defines
     // its own, so without a WCTab its content is left to the application.
-    let Some(color) = color_table
-        .and_then(|handle| ppc_window_content_color(memory, handle))
+    // A window drawn in Mac OS 8's look erases to the background its port
+    // holds, which SetThemeWindowBackground sets to the theme's dialog grey.
+    let theme_background = super::platinum::ppc_window_is_platinum(memory, window)
+        .then(|| ppc_read_rgb_color(memory, window + PPC_CGRAF_PORT_RGB_BK_COLOR_OFFSET))
+        .flatten();
+    let Some(color) = theme_background
+        .or_else(|| color_table.and_then(|handle| ppc_window_content_color(memory, handle)))
         .or_else(|| {
             (0..16).contains(&ppc_window_proc_id(memory, window)).then(|| {
                 ppc_theme_rgb(ppc_ui_theme(gworlds).provider().palette().window_background)

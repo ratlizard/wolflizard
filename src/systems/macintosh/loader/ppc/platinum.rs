@@ -188,6 +188,10 @@ impl<'a> Pen<'a> {
     }
 
     fn text(&mut self, pen: (i16, i16), bytes: &[u8]) {
+        self.text_in(pen, bytes, PPC_RGB_BLACK);
+    }
+
+    fn text_in(&mut self, pen: (i16, i16), bytes: &[u8], color: PpcRgbColor) {
         let _ = ppc_draw_text_bytes(
             self.memory,
             self.gworlds,
@@ -196,7 +200,7 @@ impl<'a> Pen<'a> {
             crate::quickdraw::fonts::FONT_CHARCOAL,
             12,
             PPC_QD_TEXT_MODE_SRC_OR,
-            PPC_RGB_BLACK,
+            color,
             None,
             bytes,
         );
@@ -297,6 +301,40 @@ pub(super) fn ppc_platinum_slider_value_at(
     (i32::from(min) + (position * range + travel / 2) / travel) as i16
 }
 
+/// The dotted outline a slider without live feedback drags in place of its
+/// thumb while the button is held, as DragControl's gray outline follows the
+/// pointer: one pixel in two along a thumb-sized rectangle whose left edge is
+/// `thumb_left`, pinned to the track. The thumb itself stays where it was
+/// until the button is released.
+pub(super) fn ppc_draw_platinum_slider_outline(
+    memory: &mut PpcSectionMem,
+    gworlds: &[PpcGWorldRecord],
+    owner: u32,
+    (t, l, _b, r): (i16, i16, i16, i16),
+    pointer_h: i16,
+) {
+    let track = ppc_platinum_slider_track(l, r);
+    let x = (pointer_h - PPC_PLATINUM_THUMB_WIDTH / 2).clamp(track.start, track.start + track.travel);
+    let mut pen = Pen::new(memory, gworlds, owner);
+    let (right, bottom) = (x + PPC_PLATINUM_THUMB_WIDTH - 1, t + THUMB_HEIGHT - 1);
+    for h in x..=right {
+        if (h + t) % 2 == 0 {
+            pen.dot(h, t, grey(BLACK));
+        }
+        if (h + bottom) % 2 == 0 {
+            pen.dot(h, bottom, grey(BLACK));
+        }
+    }
+    for v in t + 1..bottom {
+        if (x + v) % 2 == 0 {
+            pen.dot(x, v, grey(BLACK));
+        }
+        if (right + v) % 2 == 0 {
+            pen.dot(right, v, grey(BLACK));
+        }
+    }
+}
+
 /// The check box's tick, relative to the box's top-left corner: black
 /// strokes with grey edges, reaching two pixels past the box's right side.
 const TICK: &[(i16, i16, u8)] = &[
@@ -370,9 +408,12 @@ pub(super) fn ppc_draw_platinum_control(
         .read_u16_be(control + PPC_CONTROL_MAX_OFFSET)
         .unwrap_or(0) as i16;
     let default = super::appearance_controls::ppc_control_is_default(handle);
+    let hilite = memory
+        .read_u8(control + PPC_CONTROL_HILITE_OFFSET)
+        .unwrap_or(0);
     let mut pen = Pen::new(memory, gworlds, owner);
     match proc_id {
-        0 => draw_push_button(&mut pen, rect, &title, default),
+        0 => draw_push_button(&mut pen, rect, &title, default, (1..=253).contains(&hilite)),
         1 => draw_check_box(&mut pen, rect, &title, value != 0),
         160 | 161 => draw_group_box(&mut pen, rect, &title),
         p if super::appearance_controls::ppc_is_slider_proc_id(p) => {
@@ -407,12 +448,17 @@ fn draw_push_button(
     (t, l, b, r): (i16, i16, i16, i16),
     title: &[u8],
     default: bool,
+    pressed: bool,
 ) {
     if b - t < 8 || r - l < 8 {
         return;
     }
     if default {
         draw_default_ring(pen, (t, l, b, r));
+    }
+    if pressed {
+        draw_pressed_push_button(pen, (t, l, b, r), title);
+        return;
     }
     let (g60, g148, g191, g203) = (grey(60), grey(148), grey(191), grey(203));
     pen.rect((t + 3, l + 1, b - 3, r - 1), grey(BACKGROUND));
@@ -461,6 +507,38 @@ fn draw_push_button(
         let (advance, ascent, descent) = title_metrics(title);
         let h = l + (r - l - advance) / 2;
         pen.text((h, centred_baseline(t, b, ascent, descent)), title);
+    }
+}
+
+/// A push button held down: the same outline, a dark grey face with its
+/// bevels turned over (dark above and to the left, lighter below and to the
+/// right) and a white title, as Mac OS 8's Platinum look shows a pressed
+/// button. Not measured from a capture.
+fn draw_pressed_push_button(pen: &mut Pen<'_>, (t, l, b, r): (i16, i16, i16, i16), title: &[u8]) {
+    let (face, dark, light) = (grey(102), grey(60), grey(136));
+    pen.rect((t + 1, l + 1, b - 1, r - 1), face);
+    pen.hline(t, l + 3, r - 4, grey(BLACK));
+    pen.hline(b - 1, l + 3, r - 4, grey(BLACK));
+    pen.vline(l, t + 3, b - 4, grey(BLACK));
+    pen.vline(r - 1, t + 3, b - 4, grey(BLACK));
+    pen.dot(l + 1, t + 1, grey(BLACK));
+    pen.dot(r - 2, t + 1, grey(BLACK));
+    pen.dot(l + 1, b - 2, grey(BLACK));
+    pen.dot(r - 2, b - 2, grey(BLACK));
+    for (h, v) in [(l + 1, t), (l + 2, t), (l, t + 1), (l, t + 2), (r - 2, t), (r - 3, t), (r - 1, t + 1), (r - 1, t + 2), (l, b - 2), (l, b - 3), (l + 1, b - 1), (l + 2, b - 1), (r - 1, b - 2), (r - 1, b - 3), (r - 2, b - 1), (r - 3, b - 1)] {
+        pen.dot(h, v, grey(BACKGROUND));
+    }
+    for (h, v) in [(l + 2, t), (l, t + 2), (r - 3, t), (r - 1, t + 2), (l, b - 3), (l + 2, b - 1), (r - 1, b - 3), (r - 3, b - 1)] {
+        pen.dot(h, v, dark);
+    }
+    pen.hline(t + 1, l + 2, r - 3, dark);
+    pen.vline(l + 1, t + 2, b - 3, dark);
+    pen.hline(b - 2, l + 2, r - 3, light);
+    pen.vline(r - 2, t + 2, b - 3, light);
+    if !title.is_empty() {
+        let (advance, ascent, descent) = title_metrics(title);
+        let h = l + (r - l - advance) / 2;
+        pen.text_in((h, centred_baseline(t, b, ascent, descent)), title, PPC_RGB_WHITE);
     }
 }
 

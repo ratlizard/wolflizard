@@ -4,25 +4,32 @@
 // This file is compiled appended to metal_present.metal, whose vertex shader,
 // `unpack_argb` and `guest_argb` it uses. It is the browser player's version
 // of the filter (ratlizard.github.io, www/index.html, `makeUndither`) moved
-// from WebGL to Metal with the same settings, the same four passes and the
-// same two departures from grimoire:
+// from WebGL to Metal with the same settings, and since 19 November 2026 with
+// grimoire's stray-colour repair, which the browser player leaves out, put
+// back, at the maintainer's word that the desktop filter should look like
+// grimoire's:
 //
 //   1  mean    a 3x3 box mean of the frame
-//   2  detect  how dithered each pixel is (residuals that alternate along a
-//              line through it, three pixels each way), and the
-//              checkerboard-notch blend by that amount
-//   3  detail  re-sharpen what the blend softened
-//   4  super   grimoire's 2x structure-guided upscale averaged straight back
+//   2  dmap    how dithered each pixel is (residuals that alternate along a
+//              line through it, three pixels each way)
+//   3  stray   grimoire's stray-colour repair, where the 7x7 neighbourhood
+//              is dithered
+//   4  detect  the checkerboard-notch blend of the repaired frame by that
+//              amount
+//   5  detail  re-sharpen what the blend softened
+//   6  super   grimoire's 2x structure-guided upscale averaged straight back
 //              down to one pixel, pulled back toward the pixel before this
 //              pass by 1 - d * strength, so a pixel the detector left alone
 //              comes out exactly as it went in
 //
-// The departures: stray-colour repair is left out, because on the live screen
-// it scatters specks over the conversation window's patterned background; and
-// blends and averages are taken in light (the sRGB transfer curve) when
-// `light` is set, while detection stays on stored values where grimoire's
-// thresholds were tuned, because averaging stored values darkens a dithered
-// area -- the conversation window's blue by 40%.
+// One departure from grimoire remains available and is off: blends and
+// averages taken in light (the sRGB transfer curve) when `light` is set, with
+// detection kept on stored values where grimoire's thresholds were tuned.
+// Averaging stored values darkens a dithered area, the conversation window's
+// blue by 40%, which is why it was written; grimoire's look is the stored
+// one. The browser player had reported stray repair scattering specks over
+// the conversation window's patterned background; whether it does here is
+// for the maintainer's eye.
 //
 // One thing the browser does not need is added. The desktop window draws text
 // at the drawable's scale over the guest's pixels, and draws the cursor over
@@ -161,14 +168,17 @@ fragment float4 undither_mean(
 // mean, and the detector compares residuals along both axes, three pixels each
 // way (grimoire's LINE_REACH). The result is the blended colour -- in light
 // when `light` is set -- with the amount `d` in alpha for the next two passes.
-fragment float4 undither_detect(
-    RasterVertex in [[stage_in]],
-    texture2d<float> source [[texture(0)]],
-    texture2d<float> mean [[texture(1)]],
-    constant UnditherParams& params [[buffer(0)]])
+//
+// The amount is taken from the frame as drawn, before the stray repair, as
+// grimoire's detect() is; `undither_dmap` writes it alone, for the repair's
+// neighbourhood test, and `undither_detect` blends the repaired frame by it.
+static float ud_dither_amount(
+    texture2d<float> source,
+    texture2d<float> mean,
+    int2 p,
+    int2 size,
+    constant UnditherParams& params)
 {
-    int2 size = int2(source.get_width(), source.get_height());
-    int2 p = int2(in.position.xy);
     float4 s = source.read(uint2(p));
     uint cls = ud_class(s);
     float3 r0 = (s.rgb - mean.read(uint2(p)).rgb) * 255.0;
@@ -201,6 +211,134 @@ fragment float4 undither_detect(
         }
         float coherence = best < -1.0 ? 1.0 : best;
         d = clamp((params.sens - coherence) * 8.0, 0.0, 1.0) * smoothstep(1.5, 5.0, m);
+    }
+    return d;
+}
+
+fragment float4 undither_dmap(
+    RasterVertex in [[stage_in]],
+    texture2d<float> source [[texture(0)]],
+    texture2d<float> mean [[texture(1)]],
+    constant UnditherParams& params [[buffer(0)]])
+{
+    int2 size = int2(source.get_width(), source.get_height());
+    int2 p = int2(in.position.xy);
+    return float4(0.0, 0.0, 0.0, ud_dither_amount(source, mean, p, size, params));
+}
+
+// grimoire's fixStrayColors, threshold 40 and region 0.65: a lone pixel whose
+// hue is far from its neighbours' median hue, and from every neighbour's,
+// takes the colour of the neighbour nearest all the others (their vector
+// median), so the replacement is a colour that occurs next door. Only where
+// the neighbourhood is dithered, the dither amount averaged over 7x7 at 0.65
+// or more: a stray scores high wherever it sits, and its company is what
+// separates an accident on a face (0.67 to 0.89) from an odd pixel in a drawn
+// frame (0.24 to 0.59). The repaired frame keeps the source's class in alpha.
+constant float UD_STRAY = 40.0;
+constant float UD_STRAY_REGION = 0.65;
+
+fragment float4 undither_stray(
+    RasterVertex in [[stage_in]],
+    texture2d<float> source [[texture(0)]],
+    texture2d<float> dmap [[texture(1)]])
+{
+    int2 size = int2(source.get_width(), source.get_height());
+    int2 p = int2(in.position.xy);
+    float4 s = source.read(uint2(p));
+    if (ud_class(s) != UD_PICTURE) {
+        return s;
+    }
+    float local = 0.0;
+    float local_count = 0.0;
+    for (int dy = -3; dy <= 3; ++dy) {
+        for (int dx = -3; dx <= 3; ++dx) {
+            int2 q = p + int2(dx, dy);
+            if (!ud_usable(source, q, size)) {
+                continue;
+            }
+            local += dmap.read(uint2(q)).a;
+            local_count += 1.0;
+        }
+    }
+    if (local_count == 0.0 || local / local_count < UD_STRAY_REGION) {
+        return s;
+    }
+    // Chroma as grimoire takes it: red and blue less luma, in 0-255 units.
+    float3 c0 = s.rgb * 255.0;
+    float y0 = 0.299 * c0.r + 0.587 * c0.g + 0.114 * c0.b;
+    float2 h0 = float2(c0.r - y0, c0.b - y0);
+    float3 colours[8];
+    float2 hues[8];
+    int n = 0;
+    for (int dy = -1; dy <= 1; ++dy) {
+        for (int dx = -1; dx <= 1; ++dx) {
+            int2 q = p + int2(dx, dy);
+            if ((dx == 0 && dy == 0) || !ud_usable(source, q, size)) {
+                continue;
+            }
+            float3 c = source.read(uint2(q)).rgb * 255.0;
+            float y = 0.299 * c.r + 0.587 * c.g + 0.114 * c.b;
+            colours[n] = c;
+            hues[n] = float2(c.r - y, c.b - y);
+            n += 1;
+        }
+    }
+    if (n < 4) {
+        return s;
+    }
+    // The median of each chroma axis, the upper one of an even count, as
+    // grimoire's sorted[length >> 1].
+    float sr[8];
+    float sb[8];
+    for (int i = 0; i < n; ++i) {
+        sr[i] = hues[i].x;
+        sb[i] = hues[i].y;
+    }
+    for (int i = 1; i < n; ++i) {
+        for (int j = i; j > 0 && sr[j - 1] > sr[j]; --j) {
+            float t = sr[j]; sr[j] = sr[j - 1]; sr[j - 1] = t;
+        }
+        for (int j = i; j > 0 && sb[j - 1] > sb[j]; --j) {
+            float t = sb[j]; sb[j] = sb[j - 1]; sb[j - 1] = t;
+        }
+    }
+    if (length(h0 - float2(sr[n >> 1], sb[n >> 1])) <= UD_STRAY) {
+        return s; // the hue fits
+    }
+    for (int i = 0; i < n; ++i) {
+        if (length(h0 - hues[i]) <= UD_STRAY) {
+            return s; // part of a coloured patch
+        }
+    }
+    int best = 0;
+    float best_sum = INFINITY;
+    for (int a = 0; a < n; ++a) {
+        float sum = 0.0;
+        for (int b = 0; b < n; ++b) {
+            if (a != b) {
+                sum += length(colours[a] - colours[b]);
+            }
+        }
+        if (sum < best_sum) {
+            best_sum = sum;
+            best = a;
+        }
+    }
+    return float4(colours[best] / 255.0, s.a);
+}
+
+// The blend, over the repaired frame, by the amount `undither_dmap` measured.
+fragment float4 undither_detect(
+    RasterVertex in [[stage_in]],
+    texture2d<float> source [[texture(0)]],
+    texture2d<float> dmap [[texture(1)]],
+    constant UnditherParams& params [[buffer(0)]])
+{
+    int2 size = int2(source.get_width(), source.get_height());
+    int2 p = int2(in.position.xy);
+    float4 s = source.read(uint2(p));
+    float d = dmap.read(uint2(p)).a;
+    if (d > 0.0) {
         // A pixel whose whole neighbourhood is its own colour has nothing to undither.
         bool uniform_area = true;
         for (int dy = -1; dy <= 1; ++dy) {

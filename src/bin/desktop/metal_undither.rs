@@ -33,7 +33,8 @@ const STRENGTH: f32 = 0.67;
 const DETAIL: f32 = 0.5;
 const EDGE: f32 = 64.0;
 /// Blend in light rather than in stored values (see the shader's header).
-pub(super) const LIGHT: bool = true;
+/// Off since 19 November 2026, so the filter looks like grimoire's.
+pub(super) const LIGHT: bool = false;
 
 /// Whether the filter is wanted: `SYSTEMLESS_UNDITHER=1`. It is off by
 /// default, as the browser player's Undither button is.
@@ -81,6 +82,8 @@ pub(super) struct UnditherPipelines {
     source_guest: Retained<ProtocolObject<dyn MTLRenderPipelineState>>,
     source_presented: Retained<ProtocolObject<dyn MTLRenderPipelineState>>,
     mean: Retained<ProtocolObject<dyn MTLRenderPipelineState>>,
+    dmap: Retained<ProtocolObject<dyn MTLRenderPipelineState>>,
+    stray: Retained<ProtocolObject<dyn MTLRenderPipelineState>>,
     detect: Retained<ProtocolObject<dyn MTLRenderPipelineState>>,
     detail: Retained<ProtocolObject<dyn MTLRenderPipelineState>>,
     upscale: Retained<ProtocolObject<dyn MTLRenderPipelineState>>,
@@ -127,6 +130,8 @@ impl UnditherPipelines {
             source_guest: pipeline("undither_source_guest", SOURCE_FORMAT)?,
             source_presented: pipeline("undither_source_presented", SOURCE_FORMAT)?,
             mean: pipeline("undither_mean", WORKING_FORMAT)?,
+            dmap: pipeline("undither_dmap", WORKING_FORMAT)?,
+            stray: pipeline("undither_stray", SOURCE_FORMAT)?,
             detect: pipeline("undither_detect", WORKING_FORMAT)?,
             detail: pipeline("undither_detail", WORKING_FORMAT)?,
             upscale: pipeline("undither_super", OUTPUT_FORMAT)?,
@@ -141,6 +146,9 @@ struct GuestTargets {
     size: (u32, u32),
     source: Texture,
     mean: Texture,
+    dmap: Texture,
+    /// The source after the stray repair, its class kept in alpha.
+    repaired: Texture,
     detected: Texture,
     detailed: Texture,
     filtered: Texture,
@@ -191,6 +199,8 @@ impl UnditherTargets {
                 size,
                 source: target_texture(device, SOURCE_FORMAT, size)?,
                 mean: target_texture(device, WORKING_FORMAT, size)?,
+                dmap: target_texture(device, WORKING_FORMAT, size)?,
+                repaired: target_texture(device, SOURCE_FORMAT, size)?,
                 detected: target_texture(device, WORKING_FORMAT, size)?,
                 detailed: target_texture(device, WORKING_FORMAT, size)?,
                 filtered: target_texture(device, OUTPUT_FORMAT, size)?,
@@ -276,7 +286,7 @@ fn encode_pass(
     Ok(())
 }
 
-/// The four filter passes over a source already drawn into `targets.source`.
+/// The six filter passes over a source already drawn into `targets.source`.
 fn encode_filter(
     command_buffer: &ProtocolObject<dyn MTLCommandBuffer>,
     pipelines: &UnditherPipelines,
@@ -300,12 +310,33 @@ fn encode_filter(
     )?;
     encode_pass(
         command_buffer,
-        &pipelines.detect,
-        &targets.detected,
+        &pipelines.dmap,
+        &targets.dmap,
         |encoder| {
             unsafe {
                 encoder.setFragmentTexture_atIndex(Some(&targets.source), 0);
                 encoder.setFragmentTexture_atIndex(Some(&targets.mean), 1);
+            }
+            bind_params(encoder);
+        },
+    )?;
+    encode_pass(
+        command_buffer,
+        &pipelines.stray,
+        &targets.repaired,
+        |encoder| unsafe {
+            encoder.setFragmentTexture_atIndex(Some(&targets.source), 0);
+            encoder.setFragmentTexture_atIndex(Some(&targets.dmap), 1);
+        },
+    )?;
+    encode_pass(
+        command_buffer,
+        &pipelines.detect,
+        &targets.detected,
+        |encoder| {
+            unsafe {
+                encoder.setFragmentTexture_atIndex(Some(&targets.repaired), 0);
+                encoder.setFragmentTexture_atIndex(Some(&targets.dmap), 1);
             }
             bind_params(encoder);
         },
@@ -943,11 +974,13 @@ mod tests {
         // The bottom-right square is left out: its ordinary pixels blend with
         // animated ones that are locked and do not blend back, so light there
         // is not conserved in any arithmetic -- in light it rises by about a
-        // sixth -- and that is grimoire's lock, not the blending.
+        // sixth -- and that is grimoire's lock, not the blending. The
+        // top-right square is left out too: its magenta strays are repaired
+        // to a neighbour's colour, which changes the light by design.
         let (mut raw_light, mut lit_light, mut stored_light) = (0.0, 0.0, 0.0);
         for y in 0..height {
             for x in 0..width {
-                if x >= 64 && y >= 32 {
+                if x >= 64 {
                     continue;
                 }
                 let before =

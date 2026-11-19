@@ -6,6 +6,7 @@
 
 use std::collections::VecDeque;
 use std::ffi::{c_char, c_void, CString};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Mutex, OnceLock};
 
 use objc2::rc::Retained;
@@ -17,6 +18,13 @@ use objc2_foundation::{MainThreadMarker, NSObject, NSObjectProtocol, NSProcessIn
 use systemless::systems::macintosh::menu_model::{GuestMenu, GuestMenuSnapshot};
 
 static COMMANDS: OnceLock<Mutex<VecDeque<(i16, i16)>>> = OnceLock::new();
+
+/// Set when the host's View > Undither item is chosen, and cleared by the
+/// runner that toggles the presenter's filter. The item is the host's, not
+/// the guest's: it is never queued as a Menu Manager command, so the game
+/// cannot see it, and a separate flag keeps it out of the guest's menu-ID
+/// space, where any `i16` is a valid ID.
+static UNDITHER_TOGGLE: AtomicBool = AtomicBool::new(false);
 
 #[repr(C)]
 struct ProcessSerialNumber {
@@ -88,6 +96,11 @@ declare_class!(
             let item = packed as u16 as i16;
             commands().lock().unwrap().push_back((menu_id, item));
         }
+
+        #[method(systemlessUnditherSelected:)]
+        fn undither_selected(&self, _sender: &NSMenuItem) {
+            UNDITHER_TOGGLE.store(true, Ordering::Relaxed);
+        }
     }
 );
 
@@ -106,6 +119,13 @@ pub struct NativeMenuBridge {
     guest_menus: Vec<(Retained<NSMenu>, isize)>,
     last_snapshot: GuestMenuSnapshot,
     installed: bool,
+    /// The host's View > Undither item, rebuilt with the menu bar.
+    undither_item: Option<Retained<NSMenuItem>>,
+    /// Whether the presenter can draw through the filter (only the Metal
+    /// presenter can), and whether it does. The item is shown greyed out
+    /// when the filter is unavailable.
+    undither_available: bool,
+    undither_on: bool,
 }
 
 impl NativeMenuBridge {
@@ -117,6 +137,27 @@ impl NativeMenuBridge {
             guest_menus: Vec::new(),
             last_snapshot: GuestMenuSnapshot::default(),
             installed: false,
+            undither_item: None,
+            undither_available: false,
+            undither_on: false,
+        }
+    }
+
+    /// Whether View > Undither was chosen since the last call.
+    pub fn take_undither_toggle(&self) -> bool {
+        UNDITHER_TOGGLE.swap(false, Ordering::Relaxed)
+    }
+
+    /// Show the filter's state on View > Undither.
+    pub fn set_undither_state(&mut self, available: bool, on: bool) {
+        // Called every frame; AppKit is touched only on a change.
+        if (available, on) == (self.undither_available, self.undither_on) {
+            return;
+        }
+        self.undither_available = available;
+        self.undither_on = on;
+        if let Some(item) = &self.undither_item {
+            apply_undither_state(item, available, on);
         }
     }
 
@@ -195,6 +236,29 @@ impl NativeMenuBridge {
             }
             root_items.push((root_item, root_title.to_owned()));
         }
+
+        // The host's View menu, after the guest's menus. It has one item, the
+        // undither filter, which the browser player has as a button; the
+        // desktop window has no room for one, and Cythera's function keys
+        // are the game's (systemless/undither-ruuuks).
+        let view_title = "View";
+        let view_root = new_item(view_title, None, "", mtm);
+        let view_menu = new_menu(view_title, mtm);
+        let undither_item = new_item("Undither", Some(sel!(systemlessUnditherSelected:)), "", mtm);
+        unsafe {
+            undither_item.setTarget(Some(
+                &**self
+                    .target
+                    .as_ref()
+                    .expect("native menu target initialized before building menus"),
+            ));
+        }
+        apply_undither_state(&undither_item, self.undither_available, self.undither_on);
+        view_menu.addItem(&undither_item);
+        view_root.setSubmenu(Some(&view_menu));
+        main_menu.addItem(&view_root);
+        root_items.push((view_root, view_title.to_owned()));
+        self.undither_item = Some(undither_item);
 
         let app = NSApplication::sharedApplication(mtm);
         if let Some(title) = guest_process_name.as_deref() {
@@ -312,6 +376,13 @@ fn guest_application_name(menu: &GuestMenu) -> Option<&str> {
         .unwrap_or(name)
         .trim();
     (!name.is_empty()).then_some(name)
+}
+
+fn apply_undither_state(item: &NSMenuItem, available: bool, on: bool) {
+    unsafe {
+        item.setEnabled(available);
+        item.setState(if on { NSControlStateValueOn } else { NSControlStateValueOff });
+    }
 }
 
 fn new_menu(title: &str, mtm: MainThreadMarker) -> Retained<NSMenu> {

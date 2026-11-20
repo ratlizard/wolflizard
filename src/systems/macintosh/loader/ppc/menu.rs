@@ -682,6 +682,14 @@ thread_local! {
     /// around PopUpMenuSelect so its Do menu is drawn in the window's font
     /// (Geneva 9 on Mac OS 8.5), then puts them back.
     static SYS_FONT: std::cell::Cell<(i16, i16)> = const { std::cell::Cell::new((0, 0)) };
+    /// Set while PopUpMenuSelect tracks a menu. On Mac OS 8.5 every pop-up
+    /// menu takes the Appearance look, in Charcoal 12 when the application
+    /// has not set a system font (Cythera's contextual menu).
+    static POPUP_OPEN: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    /// Set by RegisterAppearanceClient: only a registered application's
+    /// pop-ups take the Appearance look (Cythera registers when Gestalt
+    /// reports the Appearance Manager).
+    static APPEARANCE_CLIENT: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
 }
 
 /// LMSetSysFontFam (`family`) or LMSetSysFontSize.
@@ -692,11 +700,36 @@ pub(crate) fn ppc_set_sys_font(family: bool, value: i16) {
     });
 }
 
+/// PopUpMenuSelect starts (`true`) or MenuSelect starts (`false`).
+pub(crate) fn ppc_set_popup_open(open: bool) {
+    POPUP_OPEN.with(|cell| cell.set(open && APPEARANCE_CLIENT.with(std::cell::Cell::get)));
+}
+
+/// RegisterAppearanceClient (`true`) or UnregisterAppearanceClient.
+pub(crate) fn ppc_set_appearance_client(registered: bool) {
+    APPEARANCE_CLIENT.with(|cell| cell.set(registered));
+}
+
 /// The font a menu is laid out and drawn in when it is not the system font:
 /// while it is set, a menu takes Mac OS 8.5's look (`ppc_draw_platinum_popup`).
 fn ppc_popup_window_font() -> Option<(i16, i16)> {
     let (fam, size) = SYS_FONT.with(std::cell::Cell::get);
-    (fam != 0).then_some((fam, if size == 0 { 12 } else { size }))
+    if fam != 0 {
+        return Some((fam, if size == 0 { 12 } else { size }));
+    }
+    POPUP_OPEN.with(std::cell::Cell::get).then_some((crate::quickdraw::fonts::FONT_CHARCOAL, 12))
+}
+
+/// Where a Mac OS 8.5 pop-up's item text starts, from the frame's left
+/// edge: 17 in Cythera's Do menu (Geneva 9) and 21 in its contextual menu
+/// (Charcoal 12), measured under SheepShaver. Ten pixels follow the widest
+/// item in both.
+fn ppc_popup_text_inset(size: i16) -> i16 {
+    if size >= 12 {
+        21
+    } else {
+        17
+    }
 }
 
 /// A line of the pop-up's window font: ascent, descent and leading.
@@ -1841,15 +1874,16 @@ pub(crate) fn ppc_popup_menu_layout_with_resources(
         request.requested_item,
     )?;
 
-    if ppc_popup_window_font().is_some() {
+    if let Some((_, size)) = ppc_popup_window_font() {
         // Mac OS 8.5's pop-up: the frame lies a pixel outside the item rows,
-        // and the inside is the widest item plus 27 (measured from
-        // Cythera's Do menu); menuWidth here is the widest item plus 32.
+        // and the inside is the text inset, the widest item and 10 more
+        // (measured from Cythera's Do and contextual menus); menuWidth here
+        // is the widest item plus 32.
         let menu_width = i16::try_from(memory.read_u16_be(menu + 2)?).ok()?;
         return Some((
             layout.left - 1,
             layout.top - 1,
-            menu_width - 3,
+            menu_width - 20 + ppc_popup_text_inset(size),
             layout.height + 2,
             layout.highlighted_item,
             layout.content_top,
@@ -6032,12 +6066,41 @@ pub(crate) fn ppc_ensure_help_menu(
     }
 }
 
-/// A pop-up control's menu in Mac OS 8.5's look, measured from Cythera's Do
-/// menu under SheepShaver: a black frame with a shadow a pixel right and
-/// below, a white edge inside it above and to the left and grey 102 below
-/// and to the right, grey 227 behind the items, the window font's lines
-/// with the text 17 pixels in, and the chosen item in blue (0, 114, 181)
-/// with white text.
+/// Mac OS 8.5's diamond marks, 7 by 7, as coverage from 0 to 255, read from
+/// Cythera's contextual menu under SheepShaver: character 19 (a filled
+/// diamond, the action a double click does) and 0xD7 (the lozenge the
+/// Commands menu gives Examine).
+fn ppc_popup_mark_mask(mark: u8) -> Option<[[u8; 7]; 7]> {
+    match mark {
+        0x13 => Some([
+            [0, 0, 148, 244, 148, 0, 0],
+            [0, 148, 255, 255, 255, 148, 0],
+            [148, 255, 255, 255, 255, 255, 148],
+            [244, 255, 255, 255, 255, 255, 244],
+            [148, 255, 255, 255, 255, 255, 148],
+            [0, 148, 255, 255, 255, 148, 0],
+            [0, 0, 148, 244, 148, 0, 0],
+        ]),
+        0xD7 => Some([
+            [0, 0, 13, 140, 13, 0, 0],
+            [0, 13, 213, 140, 213, 13, 0],
+            [13, 213, 74, 0, 74, 213, 13],
+            [140, 140, 0, 0, 0, 140, 140],
+            [13, 213, 74, 0, 74, 213, 13],
+            [0, 13, 213, 140, 213, 13, 0],
+            [0, 0, 13, 140, 13, 0, 0],
+        ]),
+        _ => None,
+    }
+}
+
+/// A pop-up menu in Mac OS 8.5's look, measured from Cythera's Do menu and
+/// its contextual menu under SheepShaver: a black frame with a shadow a
+/// pixel right and below, a white edge inside it above and to the left and
+/// grey 178 below and to the right, grey 227 behind the items, the font's
+/// lines with the pen 17 pixels in (Geneva 9) or 21 (Charcoal 12), each
+/// item's mark 4 pixels in, and the chosen item in blue (0, 114, 181) with
+/// white text.
 fn ppc_draw_platinum_popup(
     memory: &mut PpcSectionMem,
     gworlds: &[PpcGWorldRecord],
@@ -6054,7 +6117,8 @@ fn ppc_draw_platinum_popup(
     let (l, t) = (state.popup_left(), state.popup_top());
     let (w, h) = (state.popup_width(), state.popup_height());
     let (r, b) = (l + w - 1, t + h - 1);
-    let items: Vec<(i16, Vec<u8>, i16, i16, bool, bool)> = (1..=i16::try_from(state.item_appearances().len()).unwrap_or(0))
+    type PopupRow = (i16, Vec<u8>, i16, i16, bool, bool, u8);
+    let items: Vec<PopupRow> = (1..=i16::try_from(state.item_appearances().len()).unwrap_or(0))
         .filter_map(|item| {
             let (address, len) = ppc_menu_item(memory, state.menu_handle(), item)?;
             let text = ppc_memory_read_bytes(memory, address + 1, u32::from(len)).unwrap_or_default();
@@ -6062,13 +6126,19 @@ fn ppc_draw_platinum_popup(
             let height = ppc_tracked_menu_item_height(state, item);
             let separator = ppc_menu_item_is_separator(memory, state.menu_handle(), item);
             let enabled = ppc_menu_item_is_selectable(memory, state.menu_handle(), item);
-            Some((item, text, top, height, separator, enabled))
+            let mark = ppc_menu_item_attribute_address(memory, state.menu_handle(), item, 2)
+                .and_then(|address| memory.read_u8(address))
+                .unwrap_or(0);
+            Some((item, text, top, height, separator, enabled, mark))
         })
         .collect();
+    let text_inset = ppc_popup_text_inset(size);
+    let baseline_drop = if size >= 12 { 0 } else { 1 };
     let ascent = get_font_metrics(font, size).ascent;
     let mut pen = Pen::new(memory, gworlds, PPC_MAIN_GWORLD);
     pen.rect((t, l, b + 1, r + 1), grey(227));
-    for (item, text, top, height, separator, enabled) in items {
+    let mut band = None;
+    for (item, text, top, height, separator, enabled, mark) in items {
         if top + height <= t + 1 || top >= b {
             continue;
         }
@@ -6081,26 +6151,60 @@ fn ppc_draw_platinum_popup(
         let chosen = item == selected && enabled;
         if chosen {
             pen.rect((top.max(t + 1), l + 2, (top + height).min(b - 1), r - 1), rgb(0, 114, 181));
-            pen.vline(l + 1, top.max(t + 1), (top + height - 1).min(b - 1), rgb(133, 133, 161));
+            band = Some((top.max(t + 1), (top + height - 1).min(b - 1)));
         }
         let color = if chosen {
             PPC_RGB_WHITE
         } else if enabled {
             PPC_RGB_BLACK
         } else {
-            PpcRgbColor { red: 0x9494, green: 0x9494, blue: 0x9494 }
+            pen.screen_color(grey(148))
         };
-        pen.text_font((l + 17, top + ascent + 1), &text, color, font, size);
+        if mark != 0 {
+            let back = if chosen { (0, 114, 181) } else { (227, 227, 227) };
+            let ink = if chosen { (255, 255, 255) } else if enabled { (0, 0, 0) } else { (148, 148, 148) };
+            let mark_top = top + (height - 6) / 2;
+            if let Some(mask) = ppc_popup_mark_mask(mark) {
+                for (dy, row) in mask.iter().enumerate() {
+                    for (dx, &alpha) in row.iter().enumerate() {
+                        if alpha == 0 {
+                            continue;
+                        }
+                        let mix = |a: u8, b: u8| -> u8 {
+                            ((u16::from(a) * (255 - u16::from(alpha)) + u16::from(b) * u16::from(alpha)) / 255) as u8
+                        };
+                        // Mac OS 8.5's colours where a straight mix lands on a
+                        // different palette entry: the white mark's edges on
+                        // the blue band and the black lozenge's dark grey.
+                        let shade = match (chosen, alpha) {
+                            (true, 148) => rgb(148, 148, 181),
+                            (true, 244) => grey(244),
+                            (false, 213) if enabled => rgb(37, 37, 49),
+                            _ => rgb(mix(back.0, ink.0), mix(back.1, ink.1), mix(back.2, ink.2)),
+                        };
+                        pen.dot(l + 4 + dx as i16, mark_top + dy as i16, shade);
+                    }
+                }
+            } else {
+                pen.text_font((l + 4, top + ascent + baseline_drop), &[mark], color, font, size);
+            }
+        }
+        pen.text_font((l + text_inset, top + ascent + baseline_drop), &text, color, font, size);
     }
     // The frame and its bevels, drawn over the rows' ends.
     pen.hline(t + 1, l + 1, r - 2, grey(255));
     pen.vline(l + 1, t + 1, b - 2, grey(255));
-    pen.hline(b - 1, l + 1, r - 1, grey(102));
-    pen.vline(r - 1, t + 1, b - 1, grey(102));
+    pen.hline(b - 1, l + 1, r - 1, grey(178));
+    pen.vline(r - 1, t + 1, b - 1, grey(178));
     pen.hline(t, l, r, grey(0));
     pen.hline(b, l, r, grey(0));
     pen.vline(l, t, b, grey(0));
     pen.vline(r, t, b, grey(0));
     pen.vline(r + 1, t + 1, b + 1, grey(60));
     pen.hline(b + 1, l + 1, r + 1, grey(60));
+    // The chosen item's band covers the bevels' ends.
+    if let Some((band_top, band_bottom)) = band {
+        pen.vline(l + 1, band_top, band_bottom, rgb(133, 133, 161));
+        pen.vline(r - 1, band_top, band_bottom, rgb(0, 0, 191));
+    }
 }

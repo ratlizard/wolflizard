@@ -173,6 +173,21 @@ impl<'a> Pen<'a> {
         }
     }
 
+    /// The colour-table colour that shows as `shade` on the screen, for a
+    /// text colour: text resolves its colour against the table before the
+    /// display's gamma, so the screen's grey 148 would otherwise come out
+    /// as the entry that shows as 178.
+    pub(super) fn screen_color(&mut self, shade: Shade) -> PpcRgbColor {
+        match self.resolved.get(&shade) {
+            Some(found) => found.0,
+            None => {
+                let found = resolve(self.memory, self.gworlds, self.port, shade);
+                self.resolved.insert(shade, found);
+                found.0
+            }
+        }
+    }
+
     pub(super) fn dot(&mut self, h: i16, v: i16, shade: Shade) {
         self.rect((v, h, v + 1, h + 1), shade);
     }

@@ -18,7 +18,11 @@ pub(super) fn dispatch_appearance_import(
         | PpcImportDispatcherTarget::UnregisterAppearanceClient => {
             // The runtime selects one appearance for the process and its
             // existing UI adapters already draw using that appearance.
-            // Registration does not change this policy.
+            // Registration does not change this policy, except that a
+            // registered client's pop-up menus take Mac OS 8.5's look.
+            super::menu::ppc_set_appearance_client(
+                binding.dispatcher_target == PpcImportDispatcherTarget::RegisterAppearanceClient,
+            );
             Some(PpcImportAction::Return(ppc_i16_result(PPC_NO_ERR)))
         }
         PpcImportDispatcherTarget::IsThemeInColor => {

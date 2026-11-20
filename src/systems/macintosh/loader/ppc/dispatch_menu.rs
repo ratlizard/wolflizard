@@ -446,6 +446,7 @@ pub(super) fn dispatch_menu_import(context: PpcMenuDispatchContext<'_>) -> Optio
                 cpu.gpr[5] as u16 as i16,
                 cpu.gpr[6] as u16 as i16,
             );
+            super::menu::ppc_set_popup_open(true);
             ppc_step_menu_tracking(
                 cpu,
                 process_memory_manager,
@@ -1140,6 +1141,7 @@ pub(super) fn dispatch_menu_import(context: PpcMenuDispatchContext<'_>) -> Optio
         }
         PpcImportDispatcherTarget::MenuSelect => {
             let _params = crate::menu_manager::evaluate_menu_select_parameters(cpu.gpr[3]);
+            super::menu::ppc_set_popup_open(false);
             ppc_step_menu_tracking(
                 cpu,
                 process_memory_manager,

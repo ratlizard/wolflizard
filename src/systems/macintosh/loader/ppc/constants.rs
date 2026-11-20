@@ -319,6 +319,8 @@ pub const PPC_QD_TEXT_FONT_DEFAULT: i16 = 0;
 pub const PPC_QD_TEXT_MODE_SRC_OR: i16 = 1;
 pub const PPC_QD_TEXT_SIZE_SYSTEM: i16 = 0;
 pub(crate) const PPC_QD_PEN_MODE_PAT_COPY: i16 = 8;
+/// QuickDraw's arithmetic blend mode (Imaging With QuickDraw (1994), p. 4-38).
+pub(crate) const PPC_QD_PEN_MODE_BLEND: i16 = 32;
 pub(crate) const PPC_CGRAF_PORT_PN_LOC_OFFSET: u32 = 48;
 pub(crate) const PPC_CGRAF_PORT_PN_SIZE_OFFSET: u32 = 52;
 pub(crate) const PPC_CGRAF_PORT_PN_MODE_OFFSET: u32 = 56;

@@ -676,6 +676,35 @@ pub(crate) fn ppc_menu_resource_data<'a>(
     Some(&resources.get(index)?.data)
 }
 
+thread_local! {
+    /// The low-memory system font, SysFontFam and SysFontSize, as
+    /// LMSetSysFontFam and LMSetSysFontSize leave them. Cythera sets both
+    /// around PopUpMenuSelect so its Do menu is drawn in the window's font
+    /// (Geneva 9 on Mac OS 8.5), then puts them back.
+    static SYS_FONT: std::cell::Cell<(i16, i16)> = const { std::cell::Cell::new((0, 0)) };
+}
+
+/// LMSetSysFontFam (`family`) or LMSetSysFontSize.
+pub(crate) fn ppc_set_sys_font(family: bool, value: i16) {
+    SYS_FONT.with(|cell| {
+        let (fam, size) = cell.get();
+        cell.set(if family { (value, size) } else { (fam, value) });
+    });
+}
+
+/// The font a menu is laid out and drawn in when it is not the system font:
+/// while it is set, a menu takes Mac OS 8.5's look (`ppc_draw_platinum_popup`).
+fn ppc_popup_window_font() -> Option<(i16, i16)> {
+    let (fam, size) = SYS_FONT.with(std::cell::Cell::get);
+    (fam != 0).then_some((fam, if size == 0 { 12 } else { size }))
+}
+
+/// A line of the pop-up's window font: ascent, descent and leading.
+fn ppc_popup_font_line((font, size): (i16, i16)) -> i16 {
+    let metrics = get_font_metrics(font, size);
+    (metrics.ascent + metrics.descent + metrics.leading).max(1)
+}
+
 pub(crate) fn ppc_menu_item_appearance(
     memory: &mut PpcSectionMem,
     menu_handle: u32,
@@ -732,6 +761,8 @@ pub(crate) fn ppc_menu_item_appearance(
     PpcTrackedMenuItemAppearance {
         height: if is_separator {
             STANDARD_MENU_SEPARATOR_HEIGHT
+        } else if let (Some(font), StandardMenuIconKind::None) = (ppc_popup_window_font(), icon_kind) {
+            ppc_popup_font_line(font)
         } else {
             icon_kind.row_height(QuickDrawTextStyle::from_bits(style))
         },
@@ -842,7 +873,10 @@ pub(crate) fn ppc_calc_menu_size_with_resources(
             .map(|appearance| appearance.icon_kind.width())
             .unwrap_or(0);
         Some(StandardMenuItemWidth {
-            text: standard_menu_text_advance(&text),
+            text: match ppc_popup_window_font() {
+                Some((font, size)) => ppc_text_bytes_advance_for_font(&text, font, size),
+                None => standard_menu_text_advance(&text),
+            },
             icon,
             command,
         })
@@ -1807,6 +1841,20 @@ pub(crate) fn ppc_popup_menu_layout_with_resources(
         request.requested_item,
     )?;
 
+    if ppc_popup_window_font().is_some() {
+        // Mac OS 8.5's pop-up: the frame lies a pixel outside the item rows,
+        // and the inside is the widest item plus 27 (measured from
+        // Cythera's Do menu); menuWidth here is the widest item plus 32.
+        let menu_width = i16::try_from(memory.read_u16_be(menu + 2)?).ok()?;
+        return Some((
+            layout.left - 1,
+            layout.top - 1,
+            menu_width - 3,
+            layout.height + 2,
+            layout.highlighted_item,
+            layout.content_top,
+        ));
+    }
     Some((
         layout.left,
         layout.top,
@@ -2877,6 +2925,10 @@ fn ppc_draw_tracked_menu_in_open_port(
     >,
     selected: i16,
 ) {
+    if let Some(font) = ppc_popup_window_font() {
+        ppc_draw_platinum_popup(memory, gworlds, state, selected, font);
+        return;
+    }
     let Some((front, background, black)) =
         ppc_draw_tracked_menu_chrome(memory, gworlds, screen_clut, menu_colors, kind, state)
     else {
@@ -5978,4 +6030,77 @@ pub(crate) fn ppc_ensure_help_menu(
             0,
         );
     }
+}
+
+/// A pop-up control's menu in Mac OS 8.5's look, measured from Cythera's Do
+/// menu under SheepShaver: a black frame with a shadow a pixel right and
+/// below, a white edge inside it above and to the left and grey 102 below
+/// and to the right, grey 227 behind the items, the window font's lines
+/// with the text 17 pixels in, and the chosen item in blue (0, 114, 181)
+/// with white text.
+fn ppc_draw_platinum_popup(
+    memory: &mut PpcSectionMem,
+    gworlds: &[PpcGWorldRecord],
+    state: &impl TrackedMenuPaneView<
+        MenuRef = u32,
+        Surface = Option<MenuTrackingSurface>,
+        Pixel = u16,
+        Appearance = PpcTrackedMenuItemAppearance,
+    >,
+    selected: i16,
+    (font, size): (i16, i16),
+) {
+    use super::platinum::{grey, rgb, Pen};
+    let (l, t) = (state.popup_left(), state.popup_top());
+    let (w, h) = (state.popup_width(), state.popup_height());
+    let (r, b) = (l + w - 1, t + h - 1);
+    let items: Vec<(i16, Vec<u8>, i16, i16, bool, bool)> = (1..=i16::try_from(state.item_appearances().len()).unwrap_or(0))
+        .filter_map(|item| {
+            let (address, len) = ppc_menu_item(memory, state.menu_handle(), item)?;
+            let text = ppc_memory_read_bytes(memory, address + 1, u32::from(len)).unwrap_or_default();
+            let top = state.content_top().saturating_add(ppc_tracked_menu_item_offset(state, item));
+            let height = ppc_tracked_menu_item_height(state, item);
+            let separator = ppc_menu_item_is_separator(memory, state.menu_handle(), item);
+            let enabled = ppc_menu_item_is_selectable(memory, state.menu_handle(), item);
+            Some((item, text, top, height, separator, enabled))
+        })
+        .collect();
+    let ascent = get_font_metrics(font, size).ascent;
+    let mut pen = Pen::new(memory, gworlds, PPC_MAIN_GWORLD);
+    pen.rect((t, l, b + 1, r + 1), grey(227));
+    for (item, text, top, height, separator, enabled) in items {
+        if top + height <= t + 1 || top >= b {
+            continue;
+        }
+        if separator {
+            let mid = top + height / 2;
+            pen.hline(mid - 1, l + 1, r - 1, grey(161));
+            pen.hline(mid, l + 1, r - 1, grey(255));
+            continue;
+        }
+        let chosen = item == selected && enabled;
+        if chosen {
+            pen.rect((top.max(t + 1), l + 2, (top + height).min(b - 1), r - 1), rgb(0, 114, 181));
+            pen.vline(l + 1, top.max(t + 1), (top + height - 1).min(b - 1), rgb(133, 133, 161));
+        }
+        let color = if chosen {
+            PPC_RGB_WHITE
+        } else if enabled {
+            PPC_RGB_BLACK
+        } else {
+            PpcRgbColor { red: 0x9494, green: 0x9494, blue: 0x9494 }
+        };
+        pen.text_font((l + 17, top + ascent + 1), &text, color, font, size);
+    }
+    // The frame and its bevels, drawn over the rows' ends.
+    pen.hline(t + 1, l + 1, r - 2, grey(255));
+    pen.vline(l + 1, t + 1, b - 2, grey(255));
+    pen.hline(b - 1, l + 1, r - 1, grey(102));
+    pen.vline(r - 1, t + 1, b - 1, grey(102));
+    pen.hline(t, l, r, grey(0));
+    pen.hline(b, l, r, grey(0));
+    pen.vline(l, t, b, grey(0));
+    pen.vline(r, t, b, grey(0));
+    pen.vline(r + 1, t + 1, b + 1, grey(60));
+    pen.hline(b + 1, l + 1, r + 1, grey(60));
 }

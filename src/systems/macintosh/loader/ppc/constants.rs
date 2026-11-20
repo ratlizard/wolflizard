@@ -288,6 +288,10 @@ pub(crate) const PPC_MAIN_VIS_RGN_HANDLE: u32 = 0x02f0_0b00;
 pub(crate) const PPC_MAIN_VIS_RGN: u32 = 0x02f0_0c00;
 pub(crate) const PPC_MAIN_CLIP_RGN_HANDLE: u32 = 0x02f0_0d00;
 pub(crate) const PPC_MAIN_CLIP_RGN: u32 = 0x02f0_0e00;
+/// Room for the Window Manager port's clipRgn, which lies outside the
+/// application heap and so cannot be resized: everything up to the gamma
+/// table. ClipAbove writes a region of any shape there before a WDEF draws.
+pub(crate) const PPC_MAIN_CLIP_RGN_CAPACITY: u32 = 0x200;
 pub(crate) const PPC_MAIN_GAMMA_TABLE: u32 = 0x02f0_1000;
 pub(crate) const PPC_MAIN_GAMMA_TABLE_SIZE: u32 = 12 + 256;
 pub(crate) const PPC_PORT_LIST_HANDLE: u32 = 0x02f0_1300;

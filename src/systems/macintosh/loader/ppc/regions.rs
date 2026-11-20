@@ -946,6 +946,21 @@ pub(super) fn ppc_write_region_storage(
             PPC_PARAM_ERR
         };
     }
+    // The Window Manager port's clipRgn is a fixed record too. ClipAbove
+    // writes the window's structure less the windows in front of it there,
+    // which is a rectangle only when nothing overlaps; until 20 November
+    // 2026 any other shape failed to resize it (nilHandleErr) and the WDEF
+    // drew unclipped, so a map frame drew over a drawer's plaque in front.
+    if rgn_handle == PPC_MAIN_CLIP_RGN_HANDLE
+        && memory.read_u32_be(rgn_handle) == Some(PPC_MAIN_CLIP_RGN)
+        && storage.len() <= PPC_MAIN_CLIP_RGN_CAPACITY as usize
+    {
+        return if memory.write_bytes(PPC_MAIN_CLIP_RGN, storage).is_some() {
+            PPC_NO_ERR
+        } else {
+            PPC_PARAM_ERR
+        };
+    }
     let result = ppc_allocator_view_resize_handle(
         allocator,
         memory,

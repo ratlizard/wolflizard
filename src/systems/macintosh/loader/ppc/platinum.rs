@@ -301,36 +301,46 @@ pub(super) fn ppc_platinum_slider_value_at(
     (i32::from(min) + (position * range + travel / 2) / travel) as i16
 }
 
-/// The dotted outline a slider without live feedback drags in place of its
-/// thumb while the button is held, as DragControl's gray outline follows the
-/// pointer: one pixel in two along a thumb-sized rectangle whose left edge is
-/// `thumb_left`, pinned to the track. The thumb itself stays where it was
-/// until the button is released.
-pub(super) fn ppc_draw_platinum_slider_outline(
+/// The ghost a slider without live feedback drags in place of its thumb
+/// while the button is held, as Mac OS 8.5 draws it (measured from Cythera's
+/// Preferences window under SheepShaver): an opaque grey thumb, its grips and
+/// the track's dark lines showing in it, centred on the pointer and pinned to
+/// the track. The thumb itself stays where it was until the button is
+/// released. The corners, 227 here, are left as they are.
+pub(super) fn ppc_draw_platinum_slider_ghost(
     memory: &mut PpcSectionMem,
     gworlds: &[PpcGWorldRecord],
     owner: u32,
     (t, l, _b, r): (i16, i16, i16, i16),
     pointer_h: i16,
 ) {
+    const GHOST: [[u8; 13]; 16] = [
+        [227, 161, 161, 161, 161, 161, 161, 161, 161, 161, 161, 161, 227],
+        [161, 241, 255, 255, 255, 255, 255, 255, 255, 255, 255, 227, 161],
+        [161, 255, 227, 227, 227, 227, 227, 227, 227, 227, 227, 203, 161],
+        [161, 255, 227, 227, 227, 227, 227, 227, 227, 227, 227, 203, 161],
+        [161, 255, 227, 255, 227, 255, 227, 255, 227, 227, 227, 203, 161],
+        [102, 227, 191, 227, 133, 227, 133, 227, 133, 191, 191, 161, 102],
+        [161, 255, 227, 255, 191, 255, 191, 255, 191, 227, 227, 203, 161],
+        [161, 255, 227, 255, 191, 255, 191, 255, 191, 227, 227, 203, 161],
+        [161, 255, 227, 255, 191, 255, 191, 255, 191, 227, 227, 203, 161],
+        [102, 227, 191, 227, 133, 227, 133, 227, 133, 191, 191, 161, 102],
+        [161, 255, 227, 255, 191, 255, 191, 255, 191, 227, 227, 203, 161],
+        [161, 255, 227, 227, 191, 227, 191, 227, 191, 227, 227, 203, 161],
+        [161, 255, 227, 227, 227, 227, 227, 227, 227, 227, 227, 203, 161],
+        [161, 255, 227, 227, 227, 227, 227, 227, 227, 227, 227, 203, 161],
+        [161, 227, 203, 203, 203, 203, 203, 203, 203, 203, 203, 203, 161],
+        [227, 161, 161, 161, 161, 161, 161, 161, 161, 161, 161, 161, 227],
+    ];
     let track = ppc_platinum_slider_track(l, r);
     let x = (pointer_h - PPC_PLATINUM_THUMB_WIDTH / 2).clamp(track.start, track.start + track.travel);
     let mut pen = Pen::new(memory, gworlds, owner);
-    let (right, bottom) = (x + PPC_PLATINUM_THUMB_WIDTH - 1, t + THUMB_HEIGHT - 1);
-    for h in x..=right {
-        if (h + t) % 2 == 0 {
-            pen.dot(h, t, grey(BLACK));
-        }
-        if (h + bottom) % 2 == 0 {
-            pen.dot(h, bottom, grey(BLACK));
-        }
-    }
-    for v in t + 1..bottom {
-        if (x + v) % 2 == 0 {
-            pen.dot(x, v, grey(BLACK));
-        }
-        if (right + v) % 2 == 0 {
-            pen.dot(right, v, grey(BLACK));
+    for (dy, row) in GHOST.iter().enumerate() {
+        for (dx, &value) in row.iter().enumerate() {
+            let corner = (dy == 0 || dy == 15) && (dx == 0 || dx == 12);
+            if !corner {
+                pen.dot(x + dx as i16, t + dy as i16, grey(value));
+            }
         }
     }
 }
@@ -417,7 +427,7 @@ pub(super) fn ppc_draw_platinum_control(
         1 => draw_check_box(&mut pen, rect, &title, value != 0),
         160 | 161 => draw_group_box(&mut pen, rect, &title),
         p if super::appearance_controls::ppc_is_slider_proc_id(p) => {
-            draw_slider(&mut pen, rect, value, min, max)
+            draw_slider(&mut pen, rect, value, min, max, hilite == 129)
         }
         _ => return None,
     }
@@ -510,31 +520,44 @@ fn draw_push_button(
     }
 }
 
-/// A push button held down: the same outline, a dark grey face with its
-/// bevels turned over (dark above and to the left, lighter below and to the
-/// right) and a white title, as Mac OS 8's Platinum look shows a pressed
-/// button. Not measured from a capture.
+/// A push button held down, as Mac OS 8.5 draws it (measured from Cythera's
+/// Preferences window under SheepShaver): the same black outline with its
+/// cut corners, a face of grey 133 inside a bevel that runs from 102 at the
+/// top and left to 161 at the bottom and right, and a white title.
 fn draw_pressed_push_button(pen: &mut Pen<'_>, (t, l, b, r): (i16, i16, i16, i16), title: &[u8]) {
-    let (face, dark, light) = (grey(102), grey(60), grey(136));
-    pen.rect((t + 1, l + 1, b - 1, r - 1), face);
+    let (g60, g102, g118, g133, g148, g161) =
+        (grey(60), grey(102), grey(118), grey(133), grey(148), grey(161));
+    pen.rect((t + 1, l + 1, b - 1, r - 1), g133);
+    // The outline and its corners.
     pen.hline(t, l + 3, r - 4, grey(BLACK));
     pen.hline(b - 1, l + 3, r - 4, grey(BLACK));
     pen.vline(l, t + 3, b - 4, grey(BLACK));
     pen.vline(r - 1, t + 3, b - 4, grey(BLACK));
-    pen.dot(l + 1, t + 1, grey(BLACK));
-    pen.dot(r - 2, t + 1, grey(BLACK));
-    pen.dot(l + 1, b - 2, grey(BLACK));
-    pen.dot(r - 2, b - 2, grey(BLACK));
-    for (h, v) in [(l + 1, t), (l + 2, t), (l, t + 1), (l, t + 2), (r - 2, t), (r - 3, t), (r - 1, t + 1), (r - 1, t + 2), (l, b - 2), (l, b - 3), (l + 1, b - 1), (l + 2, b - 1), (r - 1, b - 2), (r - 1, b - 3), (r - 2, b - 1), (r - 3, b - 1)] {
+    for (h, v) in [(l + 1, t), (l, t + 1), (r - 2, t), (r - 1, t + 1), (l, b - 2), (l + 1, b - 1), (r - 1, b - 2), (r - 2, b - 1)] {
         pen.dot(h, v, grey(BACKGROUND));
     }
-    for (h, v) in [(l + 2, t), (l, t + 2), (r - 3, t), (r - 1, t + 2), (l, b - 3), (l + 2, b - 1), (r - 1, b - 3), (r - 3, b - 1)] {
-        pen.dot(h, v, dark);
+    for (h, v) in [(l + 1, t + 1), (r - 2, t + 1), (l + 1, b - 2), (r - 2, b - 2)] {
+        pen.dot(h, v, grey(BLACK));
     }
-    pen.hline(t + 1, l + 2, r - 3, dark);
-    pen.vline(l + 1, t + 2, b - 3, dark);
-    pen.hline(b - 2, l + 2, r - 3, light);
-    pen.vline(r - 2, t + 2, b - 3, light);
+    for (h, v) in [(l + 2, t), (l, t + 2), (r - 3, t), (r - 1, t + 2), (l, b - 3), (l + 2, b - 1), (r - 1, b - 3), (r - 3, b - 1)] {
+        pen.dot(h, v, g60);
+    }
+    // The bevel: dark above and to the left, light below and to the right.
+    pen.hline(t + 1, l + 2, r - 3, g102);
+    pen.vline(l + 1, t + 2, b - 3, g102);
+    pen.hline(t + 2, l + 2, r - 4, g118);
+    pen.dot(l + 2, t + 2, g102);
+    pen.vline(l + 2, t + 3, b - 4, g118);
+    pen.dot(r - 3, t + 2, g133);
+    pen.dot(r - 2, t + 2, g148);
+    pen.vline(r - 3, t + 3, b - 3, g148);
+    pen.vline(r - 2, t + 3, b - 3, g161);
+    pen.dot(r - 4, b - 4, g148);
+    pen.hline(b - 3, l + 3, r - 4, g148);
+    pen.dot(l + 2, b - 3, g133);
+    pen.dot(r - 3, b - 3, g161);
+    pen.hline(b - 2, l + 3, r - 3, g161);
+    pen.dot(l + 2, b - 2, g148);
     if !title.is_empty() {
         let (advance, ascent, descent) = title_metrics(title);
         let h = l + (r - l - advance) / 2;
@@ -691,6 +714,7 @@ fn draw_slider(
     value: i16,
     min: i16,
     max: i16,
+    held: bool,
 ) {
     let (g60, g191) = (grey(60), grey(191));
     pen.rect((t, l, b.min(t + THUMB_HEIGHT), r), grey(BACKGROUND));
@@ -712,13 +736,25 @@ fn draw_slider(
 
     let track = ppc_platinum_slider_track(l, r);
     let x = track.start + ppc_platinum_thumb_offset(track.travel, value, min, max);
-    let (light, fill, edge, shine, grip) = (
-        rgb(203, 230, 252),
-        rgb(181, 221, 252),
-        rgb(133, 133, 161),
-        grey(241),
-        rgb(0, 114, 181),
-    );
+    // A thumb held for dragging is drawn each colour a step darker (Mac OS
+    // 8.5, measured under SheepShaver).
+    let (light, fill, edge, shine, grip) = if held {
+        (
+            rgb(181, 221, 252),
+            rgb(133, 133, 161),
+            rgb(0, 114, 181),
+            rgb(203, 230, 252),
+            rgb(0, 0, 130),
+        )
+    } else {
+        (
+            rgb(203, 230, 252),
+            rgb(181, 221, 252),
+            rgb(133, 133, 161),
+            grey(241),
+            rgb(0, 114, 181),
+        )
+    };
     pen.hline(t, x + 1, x + 11, grey(BLACK));
     pen.hline(t + 15, x + 1, x + 11, grey(BLACK));
     pen.vline(x, t + 1, t + 14, grey(BLACK));

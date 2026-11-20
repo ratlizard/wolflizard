@@ -1569,6 +1569,8 @@ pub enum PpcImportDispatcherTarget {
     Rave(super::PpcRaveFunction),
     ReturnError(i16),
     ReturnNoErr,
+    /// Returns this 32-bit value.
+    ReturnU32(u32),
     ReturnOne,
     NoOpPreserve,
     UnresolvedWeak,
@@ -4579,6 +4581,23 @@ pub(crate) fn dispatcher_target_for_import(
         }
         ("InterfaceLib" | "NavigationLib", "NavGetDefaultDialogOptions") => {
             PpcImportDispatcherTarget::NavGetDefaultDialogOptions
+        }
+        // NavServicesCanRun returns a Boolean: Navigation Services can run,
+        // so Cythera takes its NavGetFile and NavPutFile path as Mac OS 8.5
+        // does.
+        ("InterfaceLib" | "NavigationLib", "NavServicesCanRun") => {
+            PpcImportDispatcherTarget::ReturnError(1)
+        }
+        // NavLibraryVersion returns a NumVersion; Mac OS 8.5 shipped
+        // Navigation Services 1.1. Cythera tests that this import resolved
+        // before it calls NavServicesCanRun.
+        ("InterfaceLib" | "NavigationLib", "NavLibraryVersion") => {
+            PpcImportDispatcherTarget::ReturnU32(0x0110_8000)
+        }
+        ("InterfaceLib" | "NavigationLib", "NavGetFile") => {
+            PpcImportDispatcherTarget::StandardFileCompatibility(
+                PpcStandardFileOperation::NavGetFile,
+            )
         }
         ("InterfaceLib" | "NavigationLib", "NavPutFile") => {
             PpcImportDispatcherTarget::StandardFileCompatibility(

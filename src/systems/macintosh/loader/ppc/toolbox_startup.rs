@@ -64,6 +64,8 @@ pub struct PpcToolboxStartupState {
     pub(super) standard_file_get_filtering: Option<PpcStandardFileFilteringState>,
     pub(super) standard_file_get_tracking: Option<PpcStandardFileGetTrackingState>,
     pub(super) standard_file_put_tracking: Option<PpcStandardFilePutTrackingState>,
+    /// A NavGetFile or NavPutFile window, drawn and tracked by `navigation`.
+    pub(super) navigation_dialog: Option<super::navigation::PpcNavigationDialogState>,
     pub text_edit_initialized: bool,
     pub(crate) printing_error: i16,
     /// SetWindowContentColor colours, keyed by window.
@@ -203,6 +205,7 @@ impl Default for PpcToolboxStartupState {
             standard_file_get_filtering: None,
             standard_file_get_tracking: None,
             standard_file_put_tracking: None,
+            navigation_dialog: None,
             text_edit_initialized: false,
             printing_error: 0,
             window_content_colors: std::collections::BTreeMap::new(),
@@ -360,6 +363,7 @@ impl PpcToolboxStartupState {
                     .iter()
                     .map(|tracking| tracking.bounds),
             )
+            .chain(self.navigation_dialog.iter().map(|dialog| dialog.bounds))
             .collect()
     }
 

@@ -3111,9 +3111,22 @@ pub(crate) fn ppc_draw_text_chars(
     let chars: Vec<char> = chars.into_iter().collect();
     // Resolved at the first smoothed glyph (crate::quickdraw::fonts::smoothed).
     let mut text_blend: Option<Option<PpcTextBlend>> = None;
+    // Mac OS 8.5 left text drawn into an offscreen GWorld unsmoothed:
+    // Cythera's credits and conversation, drawn in Argos A Nouveau 14 into
+    // its 8-bit work worlds and copied to the window, show only the text's
+    // own colour on the real Mac (SheepShaver, 19 November 2026), where the
+    // same font drawn into a window is smoothed. An offscreen is a surface
+    // whose pixels are not the screen's.
+    let screen_base = gworlds
+        .iter()
+        .find(|record| record.port == PPC_MAIN_GWORLD)
+        .map(|record| record.base_addr);
+    let offscreen = screen_base.is_some_and(|base| base != front_buffer.base_addr);
     for ch in chars {
         let local_h = local_h + ppc_char_extra_pixels(packed_extra, text_size, nonspaces);
-        let found = crate::quickdraw::fonts::get_smoothed_glyph(text_font, face.size, ch)
+        let found = (!offscreen)
+            .then(|| crate::quickdraw::fonts::get_smoothed_glyph(text_font, face.size, ch))
+            .flatten()
             .or_else(|| get_glyph(text_font, face.size, ch));
         if let Some((glyph, data)) = found {
             // A smoothed glyph's partial pixels are blended in srcCopy and

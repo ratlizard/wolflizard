@@ -1101,6 +1101,17 @@ pub(crate) fn dispatch_supported_import(
     ) {
         return Some(action);
     }
+    if binding.dispatcher_target == PpcImportDispatcherTarget::ISpConfigure {
+        return Some(input_config::ppc_dispatch_isp_configure(
+            cpu,
+            memory,
+            toolbox_startup,
+            gworlds,
+            event_queue,
+            input_sprocket,
+            input_sprocket_virtual_elements,
+        ));
+    }
     if let Some(action) = dispatch_inputsprocket::dispatch_inputsprocket_import(
         dispatch_inputsprocket::PpcInputSprocketDispatchContext {
             drivers: &mut toolbox_startup.input_sprocket_drivers,

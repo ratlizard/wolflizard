@@ -76,6 +76,23 @@ fn ppc_lists_take_guest_edits(
     list_manager: &mut ProcessListManagerState,
 ) {
     for handle in list_manager.handles() {
+        // rView (offset 0) too: Cythera's TListBox Hide, Show and MoveList
+        // move a list with OffsetRect on (**list).rView where it lies, then
+        // carry on with LSize and LUpdate, as a Mac lets them. The
+        // character window's inventory was drawn where the list had been
+        // made, 150 pixels right of where Mac OS 8.5 draws it.
+        let guest_view = memory
+            .read_u32_be(handle)
+            .filter(|ptr| *ptr != 0)
+            .and_then(|ptr| ppc_read_rect(memory, ptr));
+        if let Some(view) = guest_view {
+            list_manager.with_record_mut(handle, |record| {
+                if record.view_rect != view {
+                    record.view_rect = view;
+                    ppc_list_recompute_visible(record);
+                }
+            });
+        }
         let Some(noted) = list_manager.guest_image(handle).cloned() else {
             continue;
         };

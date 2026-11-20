@@ -3362,13 +3362,20 @@ impl SizeWindowParameters {
         self.update
     }
 
-    pub const fn clamped_dimensions(&self) -> (u32, u32) {
+    /// Macintosh Toolbox Essentials (1992), 4-105: SizeWindow "does nothing
+    /// if the values of w and h are 0"; one of them 0 is a size like any
+    /// other. Cythera sizes its closed drawers 0 high, and its drawer WDEF
+    /// then makes the structure 16 taller than the content rather than 17,
+    /// so a height of 1 in place of 0 put each closed drawer's plaque a row
+    /// above Mac OS 8.5's.
+    pub const fn clamped_dimensions(&self) -> Option<(u32, u32)> {
         let width = self.width as u16 as u32;
         let height = self.height as u16 as u32;
-        (
-            if width == 0 { 1 } else { width },
-            if height == 0 { 1 } else { height },
-        )
+        if width == 0 && height == 0 {
+            None
+        } else {
+            Some((width, height))
+        }
     }
 }
 
@@ -5247,10 +5254,12 @@ mod tests {
         assert_eq!(size.width(), 320);
         assert_eq!(size.height(), 240);
         assert!(!size.update());
-        assert_eq!(size.clamped_dimensions(), (320, 240));
+        assert_eq!(size.clamped_dimensions(), Some((320, 240)));
 
         let size_zero = evaluate_size_window_parameters(0x1000, 0, 0, true).unwrap();
-        assert_eq!(size_zero.clamped_dimensions(), (1, 1));
+        assert_eq!(size_zero.clamped_dimensions(), None);
+        let flat = evaluate_size_window_parameters(0x1000, 319, 0, true).unwrap();
+        assert_eq!(flat.clamped_dimensions(), Some((319, 0)));
 
         // MoveWindow
         assert_eq!(evaluate_move_window_parameters(0, 100, 150, true), None);

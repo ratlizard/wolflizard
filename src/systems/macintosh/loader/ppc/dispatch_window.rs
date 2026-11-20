@@ -3460,7 +3460,7 @@ pub(super) fn ppc_size_window(
         cpu.gpr[5] as u16 as i16,
         cpu.gpr[6] != 0,
     )?;
-    let (width, height) = params.clamped_dimensions();
+    let (width, height) = params.clamped_dimensions()?;
     ppc_size_window_dimensions(memory, gworlds, params.window_ptr(), width, height)
 }
 

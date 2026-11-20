@@ -4915,6 +4915,35 @@ const PPC_DIALOG_ITEM_STYLE_HANDLE_OFFSET: u32 = crate::dialog_manager::DIALOG_I
 const PPC_DIALOG_COLOR_TABLE_HANDLE_OFFSET: u32 =
     crate::dialog_manager::DIALOG_COLOR_TABLE_HANDLE_OFFSET;
 
+/// Whether the dialog's port names a font or size of its own: the Dialog
+/// Manager draws static and edit text in the port's font (Macintosh Toolbox
+/// Essentials (1992), p. 6-30), and an application such as Cythera sets it
+/// after GetNewDialog (FaceADialog's SetText).
+fn ppc_dialog_port_has_font(memory: &mut PpcSectionMem, dialog: u32) -> bool {
+    memory.read_u16_be(dialog + PPC_CGRAF_PORT_TX_FONT_OFFSET).unwrap_or(0) != 0
+        || memory.read_u16_be(dialog + PPC_CGRAF_PORT_TX_SIZE_OFFSET).unwrap_or(0) != 0
+}
+
+/// The dialog port's text font, size and style, for an item with no item
+/// colour table entry of its own; 0 for either stands for the system's.
+fn ppc_dialog_port_text_style(
+    memory: &mut PpcSectionMem,
+    dialog: u32,
+    foreground: PpcRgbColor,
+) -> PpcDialogItemTextStyle {
+    let font = memory.read_u16_be(dialog + PPC_CGRAF_PORT_TX_FONT_OFFSET).unwrap_or(0) as i16;
+    let size = memory.read_u16_be(dialog + PPC_CGRAF_PORT_TX_SIZE_OFFSET).unwrap_or(0) as i16;
+    let face = memory.read_u8(dialog + PPC_CGRAF_PORT_TX_FACE_OFFSET).unwrap_or(0);
+    PpcDialogItemTextStyle {
+        font: if font == 0 { PPC_QD_TEXT_FONT_DEFAULT } else { font },
+        size: if size == 0 { PPC_QD_TEXT_SIZE_SYSTEM } else { size },
+        face,
+        mode: PPC_QD_TEXT_MODE_SRC_OR,
+        foreground,
+        background: None,
+    }
+}
+
 #[derive(Clone, Copy, Debug)]
 struct PpcDialogItemTextStyle {
     font: i16,
@@ -5257,7 +5286,17 @@ fn ppc_draw_dialog_items(
                     item.handle,
                     true,
                 );
-                if ppc_ui_theme(gworlds) == UiThemeId::ClassicSystem7 {
+                // A control the application's own CDEF draws gets no outline
+                // from the fork: Cythera's CDEF 1000 buttons ring themselves in
+                // blend mode, and on 8.5 the default OK of Add Memo shows that
+                // ring alone.
+                let application_drawn = controls
+                    .iter()
+                    .find(|record| record.handle == item.handle)
+                    .is_some_and(|record| {
+                        !matches!(crate::control_manager::standard_control_kind(record.proc_id).0, 0 | 1 | 2)
+                    });
+                if ppc_ui_theme(gworlds) == UiThemeId::ClassicSystem7 && !application_drawn {
                     if let Some(outline) = evaluate_dialog_item_default_button_outline(
                         (index + 1) as i16,
                         default_item as i16,
@@ -5293,22 +5332,30 @@ fn ppc_draw_dialog_items(
                         index,
                         ppc_theme_rgb(palette.frame_dark),
                     )
-                    .unwrap_or(PpcDialogItemTextStyle {
-                        font: PPC_QD_TEXT_FONT_DEFAULT,
-                        size: PPC_QD_TEXT_SIZE_SYSTEM,
-                        face: 0,
-                        mode: PPC_QD_TEXT_MODE_SRC_OR,
-                        foreground: ppc_theme_rgb(palette.frame_dark),
-                        background: None,
+                    .unwrap_or_else(|| {
+                        ppc_dialog_port_text_style(memory, dialog, ppc_theme_rgb(palette.frame_dark))
                     });
-                    let _ = ppc_paint_rect_bounds(
-                        memory,
-                        gworlds,
-                        dialog,
-                        item.rect,
-                        style.background.unwrap_or(background),
-                        None,
-                    );
+                    // Text (1993), p. 2-88, and Toolbox Essentials, p. 6-142:
+                    // an item's text is erased with the port's background,
+                    // which in a colour port is bkPixPat. Cythera gives its
+                    // dialogs the parchment there (FaceADialog), and 8.5 shows
+                    // the Add Memo field and its label on it.
+                    let back_pix_pat = memory
+                        .read_u32_be(dialog.wrapping_add(PPC_CGRAF_PORT_BK_PIXPAT_OFFSET))
+                        .unwrap_or(0);
+                    let patterned = style.background.is_none()
+                        && back_pix_pat != 0
+                        && ppc_fill_rect_with_pix_pat(memory, gworlds, dialog, item.rect, back_pix_pat);
+                    if !patterned {
+                        let _ = ppc_paint_rect_bounds(
+                            memory,
+                            gworlds,
+                            dialog,
+                            item.rect,
+                            style.background.unwrap_or(background),
+                            None,
+                        );
+                    }
                     // The item rectangle is dialog-local. Drawing through its
                     // port preserves visRgn/clipRgn, including occluding windows.
                     style.background = None;
@@ -5327,12 +5374,19 @@ fn ppc_draw_dialog_items(
                     // rectangle. Clear this manager-owned edit item before
                     // repainting so focus changes cannot retain a previous
                     // selection or duplicate glyphs in the field.
-                    let _ = ppc_fill_front_rect(
-                        memory,
-                        front,
-                        rect,
-                        ppc_theme_rgb(palette.window_background),
-                    );
+                    let back_pix_pat = memory
+                        .read_u32_be(dialog.wrapping_add(PPC_CGRAF_PORT_BK_PIXPAT_OFFSET))
+                        .unwrap_or(0);
+                    if back_pix_pat == 0
+                        || !ppc_fill_rect_with_pix_pat(memory, gworlds, dialog, item.rect, back_pix_pat)
+                    {
+                        let _ = ppc_fill_front_rect(
+                            memory,
+                            front,
+                            rect,
+                            ppc_theme_rgb(palette.window_background),
+                        );
+                    }
                     let outer = edit_text_frame_rect(rect);
                     let _ = ppc_frame_front_rect(
                         memory,
@@ -5399,6 +5453,9 @@ fn ppc_draw_dialog_items(
                         style.foreground = color;
                         style.background = None;
                     }
+                    ppc_draw_styled_dialog_text(memory, gworlds, text_rect, &text, style, None);
+                } else if ppc_dialog_port_has_font(memory, dialog) {
+                    let style = ppc_dialog_port_text_style(memory, dialog, color);
                     ppc_draw_styled_dialog_text(memory, gworlds, text_rect, &text, style, None);
                 } else {
                     ppc_draw_dialog_text(memory, gworlds, text_rect, &text, color);

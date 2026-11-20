@@ -1571,6 +1571,8 @@ pub enum PpcImportDispatcherTarget {
     ReturnNoErr,
     /// Returns this 32-bit value.
     ReturnU32(u32),
+    /// LMSetSysFontFam (true) or LMSetSysFontSize (false).
+    SetSysFont(bool),
     ReturnOne,
     NoOpPreserve,
     UnresolvedWeak,
@@ -3672,12 +3674,13 @@ pub(crate) fn dispatcher_target_for_import(
         // a port's fields were changed directly. Drawing here reads the port's
         // fields at each call, so there is nothing to refresh.
         ("InterfaceLib", "PortChanged") => PpcImportDispatcherTarget::PortChanged,
-        // Nothing here reads the system font globals, and LastSPExtra only
-        // invalidates the Font Manager's width cache; Cythera sets all three
-        // around PopUpMenuSelect to draw a pop-up in the current font.
-        ("InterfaceLib", "LMSetSysFontFam" | "LMSetSysFontSize" | "LMSetLastSPExtra") => {
-            PpcImportDispatcherTarget::NoOpPreserve
-        }
+        // Cythera sets the system font globals around PopUpMenuSelect to draw
+        // a pop-up in the current font, which the menu then uses
+        // (`menu::ppc_set_sys_font`). LastSPExtra only invalidates the Font
+        // Manager's width cache.
+        ("InterfaceLib", "LMSetSysFontFam") => PpcImportDispatcherTarget::SetSysFont(true),
+        ("InterfaceLib", "LMSetSysFontSize") => PpcImportDispatcherTarget::SetSysFont(false),
+        ("InterfaceLib", "LMSetLastSPExtra") => PpcImportDispatcherTarget::NoOpPreserve,
         ("InterfaceLib" | "AppearanceLib" | "CarbonLib", "ClearMenuBar" | "clearmenubar") => {
             PpcImportDispatcherTarget::ClearMenuBar
         }

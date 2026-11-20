@@ -3642,6 +3642,10 @@ pub(crate) fn dispatch_supported_import(
         }
         PpcImportDispatcherTarget::ReturnNoErr => Some(PpcImportAction::Return(0)),
         PpcImportDispatcherTarget::ReturnU32(value) => Some(PpcImportAction::Return(value)),
+        PpcImportDispatcherTarget::SetSysFont(family) => {
+            super::menu::ppc_set_sys_font(family, cpu.gpr[3] as u16 as i16);
+            Some(PpcImportAction::ReturnPreserve)
+        }
         PpcImportDispatcherTarget::PPCOpenSync => {
             // PPCToolbox.h: PPCOpenPBRec.portRefNum at offset 38.
             let _ = memory.write_u16_be(cpu.gpr[3].wrapping_add(38), 1);

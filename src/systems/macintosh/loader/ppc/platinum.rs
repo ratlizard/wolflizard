@@ -238,6 +238,13 @@ pub(super) fn ppc_draw_platinum_dialog_frame(
         return false;
     };
     let mut pen = Pen::new(memory, gworlds, PPC_MAIN_GWORLD);
+    draw_modal_frame_around(&mut pen, (t, l, b, r));
+    pen.wrote
+}
+
+/// Mac OS 8.5's modal dialog frame around a content rectangle (global
+/// coordinates, the bottom and right excluded).
+pub(super) fn draw_modal_frame_around(pen: &mut Pen<'_>, (t, l, b, r): (i16, i16, i16, i16)) {
     // A black line three pixels out, and a shadow one pixel beyond it on
     // the right and below, starting two pixels in from the corner.
     pen.hline(t - 3, l - 3, r + 2, grey(BLACK));
@@ -259,7 +266,6 @@ pub(super) fn ppc_draw_platinum_dialog_frame(
     pen.vline(r, t, b, grey(178));
     pen.dot(r, t - 1, grey(203));
     pen.dot(l - 1, b, grey(203));
-    pen.wrote
 }
 
 /// Where a Platinum slider's thumb runs: its left edge from five pixels in

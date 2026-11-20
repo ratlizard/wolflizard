@@ -311,25 +311,33 @@ impl Default for PpcInputSprocketKeyboardDefaults {
     }
 }
 
-/// Per-element keyboard binding (one key for buttons, two for axes).
+/// Per-element keyboard binding (one key for buttons, two for axes, four
+/// for a direction pad: up, down, left, right).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct PpcInputSprocketKeyboardBinding {
-    pub keycodes: [u8; 2],
+    pub keycodes: [u8; 4],
     pub len: u8,
 }
 
 impl PpcInputSprocketKeyboardBinding {
     pub(crate) fn axis(low: u8, high: u8) -> Self {
         Self {
-            keycodes: [low, high],
+            keycodes: [low, high, 0, 0],
             len: 2,
         }
     }
 
     pub(crate) fn button(key: u8) -> Self {
         Self {
-            keycodes: [key, 0],
+            keycodes: [key, 0, 0, 0],
             len: 1,
+        }
+    }
+
+    pub(crate) fn dpad(up: u8, down: u8, left: u8, right: u8) -> Self {
+        Self {
+            keycodes: [up, down, left, right],
+            len: 4,
         }
     }
 }
@@ -3516,16 +3524,33 @@ pub(crate) fn ppc_isp_input_simple_state_with_binding(
                 return fallback_state;
             }
             let mut state = 0;
-            if input.any_key_down(&[PPC_KEY_UP, PPC_KEY_NUMPAD_UP]) {
+            // A binding set in the Configure Inputs window names the four
+            // keys; otherwise the arrows and the keypad's arrows drive it.
+            let dpad_binding = keyboard_binding.filter(|b| b.len == 4);
+            let keys: [&[u8]; 4] = match dpad_binding {
+                Some(ref binding) => [
+                    &binding.keycodes[0..1],
+                    &binding.keycodes[1..2],
+                    &binding.keycodes[2..3],
+                    &binding.keycodes[3..4],
+                ],
+                None => [
+                    &[PPC_KEY_UP, PPC_KEY_NUMPAD_UP],
+                    &[PPC_KEY_DOWN, PPC_KEY_NUMPAD_DOWN],
+                    &[PPC_KEY_LEFT, PPC_KEY_NUMPAD_LEFT],
+                    &[PPC_KEY_RIGHT, PPC_KEY_NUMPAD_RIGHT],
+                ],
+            };
+            if input.any_key_down(keys[0]) {
                 state |= PPC_ISP_DPAD_UP;
             }
-            if input.any_key_down(&[PPC_KEY_RIGHT, PPC_KEY_NUMPAD_RIGHT]) {
+            if input.any_key_down(keys[3]) {
                 state |= PPC_ISP_DPAD_RIGHT;
             }
-            if input.any_key_down(&[PPC_KEY_DOWN, PPC_KEY_NUMPAD_DOWN]) {
+            if input.any_key_down(keys[1]) {
                 state |= PPC_ISP_DPAD_DOWN;
             }
-            if input.any_key_down(&[PPC_KEY_LEFT, PPC_KEY_NUMPAD_LEFT]) {
+            if input.any_key_down(keys[2]) {
                 state |= PPC_ISP_DPAD_LEFT;
             }
             if state == 0 {
@@ -3536,7 +3561,15 @@ pub(crate) fn ppc_isp_input_simple_state_with_binding(
         }
         // Stateful virtual delta elements are read through their owned record.
         PPC_ISP_ELEMENT_KIND_DELTA => fallback_state,
-        _ => fallback_state,
+        // A need of a kind not modelled here (Cythera's carry labels such
+        // as 'sfir' in their kind) that has been given a key in the
+        // Configure Inputs window acts as a button on that key.
+        _ => match keyboard_binding.filter(|b| b.len == 1) {
+            Some(binding) if input_sprocket.keyboard_active && input.key_down(binding.keycodes[0]) => {
+                PPC_ISP_BUTTON_PRESSED
+            }
+            _ => fallback_state,
+        },
     }
 }
 

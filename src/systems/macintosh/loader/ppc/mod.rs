@@ -126,6 +126,7 @@ mod dispatch_collection;
 mod dispatch_drag;
 mod appearance_controls;
 mod navigation;
+mod input_config;
 mod platinum;
 pub use appearance_controls::PpcAppearanceControlOperation;
 mod dispatch_color_tables;

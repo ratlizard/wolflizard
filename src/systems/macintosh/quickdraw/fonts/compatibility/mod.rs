@@ -25,15 +25,19 @@ const CHARCOAL12_WID_MAX: i16 = 12;
 const GENEVA10_FRAME: (i16, i16, i16) = (10, 2, 1);
 const GENEVA10_WID_MAX: i16 = 11;
 // Cythera's Argos A Nouveau (`sfnt` 7289 in Cythera Data), known by its head
-// table's checkSumAdjustment, at 18 points: ascent 13, descent 5, leading 1.
+// table's checkSumAdjustment, at 18 points: ascent 13, descent 6, leading 0.
 // Cythera draws its window titles and its To Do and Journal plaques in it at
 // 18 points and places them from the ascent. Its hhea ascent, 13.21, rounded
 // up put every one a row below Mac OS 8.5's (25 October 2026). The descent
-// and leading fill out TextEdit's line height of 19 on Mac OS 8.5. Its other
+// and leading fill out TextEdit's line height of 19 on Mac OS 8.5. The split
+// between them is from the Character Archetype list (20 November 2026):
+// TListBox::LDEFDraw puts the baseline at (top + bottom + ascent - descent)
+// / 2, and Mac OS 8.5 draws the names a row above where a descent of 5 put
+// them. Its other
 // sizes are unmeasured: TextEdit's baselines alone did not separate ascent
 // from leading, and so do not settle them.
 const ARGOS_CHECKSUM_ADJUSTMENT: u32 = 0x5bfb_fdbb;
-const ARGOS_FRAMES: [(i16, (i16, i16, i16)); 1] = [(18, (13, 5, 1))];
+const ARGOS_FRAMES: [(i16, (i16, i16, i16)); 1] = [(18, (13, 6, 0))];
 
 /// The line a game's own outline font has on Mac OS 8.5 at a size, where it
 /// has been measured.

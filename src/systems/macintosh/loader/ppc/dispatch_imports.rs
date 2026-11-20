@@ -3792,6 +3792,7 @@ pub(crate) fn dispatch_supported_import(
             Some(PpcImportAction::Return(ppc_i16_result(error)))
         }
         PpcImportDispatcherTarget::ReturnNoErr => Some(PpcImportAction::Return(0)),
+        PpcImportDispatcherTarget::ReturnU32(value) => Some(PpcImportAction::Return(value)),
         PpcImportDispatcherTarget::PPCOpenSync => {
             // PPCToolbox.h: PPCOpenPBRec.portRefNum at offset 38.
             let _ = memory.write_u16_be(cpu.gpr[3].wrapping_add(38), 1);

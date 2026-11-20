@@ -245,7 +245,7 @@ fn start_nav_put_file(loaded: &mut PpcLoadedApp, options: u32, reply: u32) {
     loaded.cpu.gpr[9] = 0;
     let probe = loaded.run_with_hle_imports(64);
     assert!(matches!(probe.result, PpcRunResult::CycleLimit { .. }));
-    assert!(loaded.toolbox_startup.standard_file_put_tracking.is_some());
+    assert!(loaded.toolbox_startup.navigation_dialog.is_some());
 }
 
 fn key_event(message: u32) -> PpcQueuedEvent {
@@ -260,7 +260,7 @@ fn key_event(message: u32) -> PpcQueuedEvent {
 }
 
 #[test]
-fn nav_put_file_uses_the_put_dialog_and_returns_an_fsspec_selection() {
+fn nav_put_file_opens_the_navigation_window_and_returns_an_fsspec_selection() {
     assert_eq!(
         dispatcher_target_for_import("CarbonLib", "NavPutFile"),
         PpcImportDispatcherTarget::StandardFileCompatibility(PpcStandardFileOperation::NavPutFile)
@@ -268,6 +268,21 @@ fn nav_put_file_uses_the_put_dialog_and_returns_an_fsspec_selection() {
     assert_eq!(
         dispatcher_target_for_import("CarbonLib", "NavGetDefaultDialogOptions"),
         PpcImportDispatcherTarget::NavGetDefaultDialogOptions
+    );
+    // Mac OS 8.5's Navigation Services 1.1 is present, so an application
+    // that tests NavLibraryVersion and NavServicesCanRun takes the
+    // NavGetFile and NavPutFile path.
+    assert_eq!(
+        dispatcher_target_for_import("NavigationLib", "NavLibraryVersion"),
+        PpcImportDispatcherTarget::ReturnU32(0x0110_8000)
+    );
+    assert_eq!(
+        dispatcher_target_for_import("NavigationLib", "NavServicesCanRun"),
+        PpcImportDispatcherTarget::ReturnError(1)
+    );
+    assert_eq!(
+        dispatcher_target_for_import("NavigationLib", "NavGetFile"),
+        PpcImportDispatcherTarget::StandardFileCompatibility(PpcStandardFileOperation::NavGetFile)
     );
     let options = PPC_DATA_BASE + 0x4000;
     let reply = PPC_DATA_BASE + 0x5000;

@@ -27,19 +27,19 @@ use super::*;
 /// measured.
 pub(super) const PPC_PLATINUM_MODAL_DIALOG_PROC: i16 = 1042;
 
-const BACKGROUND: u8 = 227;
-const WHITE: u8 = 255;
-const BLACK: u8 = 0;
+pub(super) const BACKGROUND: u8 = 227;
+pub(super) const WHITE: u8 = 255;
+pub(super) const BLACK: u8 = 0;
 
 /// A colour as Mac OS 8.5 showed it on the screen.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-struct Shade(u8, u8, u8);
+pub(super) struct Shade(u8, u8, u8);
 
-fn grey(value: u8) -> Shade {
+pub(super) fn grey(value: u8) -> Shade {
     Shade(value, value, value)
 }
 
-fn rgb(r: u8, g: u8, b: u8) -> Shade {
+pub(super) fn rgb(r: u8, g: u8, b: u8) -> Shade {
     Shade(r, g, b)
 }
 
@@ -133,7 +133,7 @@ pub(super) fn ppc_platinum_modal_structure_bounds(
 }
 
 /// Paints single pixels and lines in one port, with inclusive ends.
-struct Pen<'a> {
+pub(super) struct Pen<'a> {
     memory: &'a mut PpcSectionMem,
     gworlds: &'a [PpcGWorldRecord],
     port: u32,
@@ -142,7 +142,7 @@ struct Pen<'a> {
 }
 
 impl<'a> Pen<'a> {
-    fn new(memory: &'a mut PpcSectionMem, gworlds: &'a [PpcGWorldRecord], port: u32) -> Self {
+    pub(super) fn new(memory: &'a mut PpcSectionMem, gworlds: &'a [PpcGWorldRecord], port: u32) -> Self {
         Self {
             memory,
             gworlds,
@@ -152,7 +152,7 @@ impl<'a> Pen<'a> {
         }
     }
 
-    fn rect(&mut self, (top, left, bottom, right): (i16, i16, i16, i16), shade: Shade) {
+    pub(super) fn rect(&mut self, (top, left, bottom, right): (i16, i16, i16, i16), shade: Shade) {
         if bottom > top && right > left {
             let (color, index) = match self.resolved.get(&shade) {
                 Some(found) => *found,
@@ -173,32 +173,44 @@ impl<'a> Pen<'a> {
         }
     }
 
-    fn dot(&mut self, h: i16, v: i16, shade: Shade) {
+    pub(super) fn dot(&mut self, h: i16, v: i16, shade: Shade) {
         self.rect((v, h, v + 1, h + 1), shade);
     }
 
     /// A horizontal run from `h0` to `h1`, both included.
-    fn hline(&mut self, v: i16, h0: i16, h1: i16, shade: Shade) {
+    pub(super) fn hline(&mut self, v: i16, h0: i16, h1: i16, shade: Shade) {
         self.rect((v, h0, v + 1, h1 + 1), shade);
     }
 
     /// A vertical run from `v0` to `v1`, both included.
-    fn vline(&mut self, h: i16, v0: i16, v1: i16, shade: Shade) {
+    pub(super) fn vline(&mut self, h: i16, v0: i16, v1: i16, shade: Shade) {
         self.rect((v0, h, v1 + 1, h + 1), shade);
     }
 
-    fn text(&mut self, pen: (i16, i16), bytes: &[u8]) {
+    pub(super) fn text(&mut self, pen: (i16, i16), bytes: &[u8]) {
         self.text_in(pen, bytes, PPC_RGB_BLACK);
     }
 
-    fn text_in(&mut self, pen: (i16, i16), bytes: &[u8], color: PpcRgbColor) {
+    pub(super) fn text_in(&mut self, pen: (i16, i16), bytes: &[u8], color: PpcRgbColor) {
+        self.text_font(pen, bytes, color, crate::quickdraw::fonts::FONT_CHARCOAL, 12);
+    }
+
+    /// Text in any font and size, in `color`.
+    pub(super) fn text_font(
+        &mut self,
+        pen: (i16, i16),
+        bytes: &[u8],
+        color: PpcRgbColor,
+        font: i16,
+        size: i16,
+    ) {
         let _ = ppc_draw_text_bytes(
             self.memory,
             self.gworlds,
             self.port,
             pen,
-            crate::quickdraw::fonts::FONT_CHARCOAL,
-            12,
+            font,
+            size,
             PPC_QD_TEXT_MODE_SRC_OR,
             color,
             None,
@@ -439,21 +451,21 @@ pub(super) fn ppc_draw_platinum_control(
 /// measured layouts were read against: the system font's at 12 points, whose
 /// baseline sits twelve pixels below a group box's top and whose line centres
 /// on a button's height.
-fn title_metrics(title: &[u8]) -> (i16, i16, i16) {
+pub(super) fn title_metrics(title: &[u8]) -> (i16, i16, i16) {
     let advance =
         ppc_text_bytes_advance_for_font(title, crate::quickdraw::fonts::FONT_CHARCOAL, 12);
     (advance, 12, 3)
 }
 
 /// The baseline that centres a line of the system font in `top..bottom`.
-fn centred_baseline(top: i16, bottom: i16, ascent: i16, descent: i16) -> i16 {
+pub(super) fn centred_baseline(top: i16, bottom: i16, ascent: i16, descent: i16) -> i16 {
     (top + bottom) / 2 + (ascent - descent) / 2
 }
 
 /// A push button: a black outline with its corners cut by a pixel of dark
 /// grey each way, a light bevel inside it above and to the left and a dark
 /// one below and to the right, on the dialog background.
-fn draw_push_button(
+pub(super) fn draw_push_button(
     pen: &mut Pen<'_>,
     (t, l, b, r): (i16, i16, i16, i16),
     title: &[u8],
@@ -568,7 +580,7 @@ fn draw_pressed_push_button(pen: &mut Pen<'_>, (t, l, b, r): (i16, i16, i16, i16
 /// The default button's ring: three pixels wide, three pixels out from the
 /// button, with a black outer edge, and greys that run into the button's
 /// own corners.
-fn draw_default_ring(pen: &mut Pen<'_>, (t, l, b, r): (i16, i16, i16, i16)) {
+pub(super) fn draw_default_ring(pen: &mut Pen<'_>, (t, l, b, r): (i16, i16, i16, i16)) {
     let (g60, g148, g161, g191, g203, g215) = (
         grey(60),
         grey(148),

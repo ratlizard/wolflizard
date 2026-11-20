@@ -4158,13 +4158,16 @@ pub(crate) fn ppc_hilite_rect_bounds(
     let (back, hilite) = match front_buffer.depth {
         1 => return ppc_invert_rect_bounds(memory, gworlds, current_gworld, rect),
         2 | 4 | 8 => {
-            let (Some(back), Some(hilite)) = (
-                ppc_quickdraw_indexed_pixel_value(memory, front_buffer, back_color),
-                ppc_quickdraw_indexed_pixel_value(memory, front_buffer, hilite_color),
-            ) else {
-                return false;
-            };
-            (back, hilite)
+            // The surface's own colour table, not the standard one: Cythera's
+            // character window draws its lists into an offscreen world with
+            // the game's palette, where the standard table's index for the
+            // highlight blue is a red.
+            let clut = ppc_quickdraw_surface_clut(memory, surface, front_buffer.depth);
+            let entries = ppc_indexed_depth_entry_count(front_buffer.depth).unwrap_or(1);
+            (
+                u16::from(ppc_rgb_color_to_index_in_clut(back_color, &clut, entries)),
+                u16::from(ppc_rgb_color_to_index_in_clut(hilite_color, &clut, entries)),
+            )
         }
         16 => (
             ppc_rgb_color_to_rgb555(back_color),

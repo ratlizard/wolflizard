@@ -221,6 +221,7 @@ pub(crate) fn ppc_line_to(
         color,
         explicit_index,
         None,
+        None,
     )
 }
 
@@ -230,6 +231,12 @@ pub(crate) fn ppc_line_to(
 /// 3-6--3-8); without it the line is solid foreground. Cythera draws the
 /// outline of a drawer being dragged with FrameRect and LineTo in patXor and
 /// draws it again to take it away.
+///
+/// In blend mode (32) each pen pixel mixes the foreground with what is there,
+/// weighted by `op_color` (Imaging With QuickDraw (1994), p. 4-38: "dest =
+/// source*weight/65,536 + destination*(1-weight/65,536)"). Cythera's `Bevel`
+/// and `DeBevel` draw the character window's slot outlines that way, half
+/// and half, and 8.5 shows them as darkened and lightened parchment.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn ppc_line_to_with_pen(
     memory: &mut PpcSectionMem,
@@ -240,6 +247,7 @@ pub(crate) fn ppc_line_to_with_pen(
     color: PpcRgbColor,
     explicit_index: Option<u8>,
     pen: Option<(PpcRgbColor, &[u8; 8])>,
+    op_color: Option<PpcRgbColor>,
 ) -> bool {
     let Some(surface) = ppc_live_quickdraw_surface(memory, gworlds, current_gworld) else {
         return false;
@@ -314,6 +322,12 @@ pub(crate) fn ppc_line_to_with_pen(
             .map_or(PPC_QD_PEN_MODE_PAT_COPY, |mode| mode as i16);
         (back_pixel, *pattern, pen_mode)
     });
+    let blend_clut = match (pen, op_color) {
+        (Some((_, _, PPC_QD_PEN_MODE_BLEND)), Some(weight)) if front_buffer.depth == 8 => {
+            Some((ppc_quickdraw_surface_clut(memory, surface, 8), weight))
+        }
+        _ => None,
+    };
     let mut wrote = false;
     for point in points {
         if !ppc_local_point_in_port_regions(
@@ -322,6 +336,30 @@ pub(crate) fn ppc_line_to_with_pen(
             vis_storage.as_deref(),
             clip_storage.as_deref(),
         ) {
+            continue;
+        }
+        if let (Some((clut, weight)), Some((_, pattern, _))) = (&blend_clut, pen) {
+            let port_x = point.0 + i32::from(surface.left);
+            let port_y = point.1 + i32::from(surface.top);
+            if pattern[(port_y & 7) as usize] & (0x80 >> (port_x & 7)) == 0 {
+                continue;
+            }
+            let Some(dst) = ppc_quickdraw_read_pixel(memory, front_buffer, point) else {
+                continue;
+            };
+            let back = clut[usize::from(dst) & 0xff];
+            let mix = |fore: u16, back: u16, weight: u16| -> u16 {
+                ((u32::from(fore) * u32::from(weight)
+                    + u32::from(back) * (65_535 - u32::from(weight)))
+                    / 65_535) as u16
+            };
+            let mixed = PpcRgbColor {
+                red: mix(color.red, back[0], weight.red),
+                green: mix(color.green, back[1], weight.green),
+                blue: mix(color.blue, back[2], weight.blue),
+            };
+            let value = u16::from(ppc_rgb_color_to_index_in_clut(mixed, clut, 256));
+            wrote |= ppc_quickdraw_write_raw_pixel(memory, front_buffer, point, value);
             continue;
         }
         let pixel = match pen {

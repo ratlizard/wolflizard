@@ -363,10 +363,15 @@ pub(super) fn dispatch_control_import(
 }
 
 thread_local! {
-    /// The slider whose drag outline is showing, and the pointer's horizontal
-    /// position it was drawn at.
-    static SLIDER_OUTLINE: std::cell::Cell<Option<(u32, i16)>> = const { std::cell::Cell::new(None) };
+    /// The slider whose drag ghost is showing, and the pointer's horizontal
+    /// position it was drawn at, None while the pointer is too far away.
+    static SLIDER_OUTLINE: std::cell::Cell<Option<(u32, Option<i16>)>> = const { std::cell::Cell::new(None) };
 }
+
+/// How far outside a slider the pointer may go and keep its ghost. Mac OS 8.5
+/// kept it 15 pixels below the control and dropped it 40 below; the figure
+/// between is not measured.
+const GHOST_SLOP: i16 = 24;
 
 pub(super) fn ppc_set_control_title(
     cpu: &PpcCpu,
@@ -1336,7 +1341,7 @@ pub(super) fn ppc_dispatch_legacy_control(
                         };
                         // A slider made without kControlSliderLiveFeedback
                         // (variation bit 0) keeps its thumb and value while
-                        // the button is held and drags an outline instead.
+                        // the button is held and drags a ghost of it instead.
                         let live = controls
                             .iter()
                             .find(|record| record.handle == cpu.gpr[3])
@@ -1346,8 +1351,16 @@ pub(super) fn ppc_dispatch_legacy_control(
                             && super::platinum::ppc_window_is_platinum(memory, owner)
                             && rect.3 - rect.1 >= rect.2 - rect.0
                         {
-                            let previous = SLIDER_OUTLINE.with(|cell| cell.replace(Some((cpu.gpr[3], pointer.1))));
-                            if previous != Some((cpu.gpr[3], pointer.1)) {
+                            // Far from the slider the ghost goes and a
+                            // release leaves the value as it was.
+                            let near = pointer.0 >= rect.0 - GHOST_SLOP
+                                && pointer.0 < rect.2 + GHOST_SLOP
+                                && pointer.1 >= rect.1 - GHOST_SLOP
+                                && pointer.1 < rect.3 + GHOST_SLOP;
+                            let shown = near.then_some(pointer.1);
+                            let previous = SLIDER_OUTLINE.with(|cell| cell.replace(Some((cpu.gpr[3], shown))));
+                            if previous != Some((cpu.gpr[3], shown)) {
+                                let _ = memory.write_u8(control + PPC_CONTROL_HILITE_OFFSET, 129);
                                 let _ = ppc_draw_control(
                                     memory,
                                     handles,
@@ -1357,14 +1370,25 @@ pub(super) fn ppc_dispatch_legacy_control(
                                     current_resource_refnum,
                                     cpu.gpr[3],
                                 );
-                                super::platinum::ppc_draw_platinum_slider_outline(
-                                    memory, gworlds, owner, rect, pointer.1,
-                                );
+                                if let Some(h) = shown {
+                                    super::platinum::ppc_draw_platinum_slider_ghost(
+                                        memory, gworlds, owner, rect, h,
+                                    );
+                                }
                             }
                             return Some(PpcImportAction::Yield(u64::MAX));
                         }
-                        let outlined = SLIDER_OUTLINE.with(|cell| cell.take()).is_some();
-                        if outlined || memory.read_u16_be(control + PPC_CONTROL_VALUE_OFFSET) != Some(value as u16) {
+                        let outlined = SLIDER_OUTLINE.with(|cell| cell.take());
+                        let value = match outlined {
+                            Some((_, None)) => memory
+                                .read_u16_be(control + PPC_CONTROL_VALUE_OFFSET)
+                                .unwrap_or(0) as i16,
+                            _ => value,
+                        };
+                        if outlined.is_some() {
+                            let _ = memory.write_u8(control + PPC_CONTROL_HILITE_OFFSET, 0);
+                        }
+                        if outlined.is_some() || memory.read_u16_be(control + PPC_CONTROL_VALUE_OFFSET) != Some(value as u16) {
                             let _ = memory.write_u16_be(control + PPC_CONTROL_VALUE_OFFSET, value as u16);
                             let _ = ppc_draw_control(
                                 memory,
@@ -4477,8 +4501,8 @@ fn ppc_draw_appearance_control(
         // frame, no fill, in the font and justification its
         // ControlFontStyleRec asks for (flags 1 font, 2 face, 4 size, 0x40
         // just; Universal Interfaces 3.4.2 Controls.h). Cythera's slider
-        // labels ask for the small system font, centred; Mac OS 8.5 draws
-        // that font as Geneva 9 (measured from its Preferences window).
+        // labels ask for the small system font, centred, which Mac OS 8.5
+        // draws in Geneva 10.
         288 => {
             if !title.is_empty() {
                 let (mut font, mut size, mut just) =
@@ -4488,8 +4512,11 @@ fn ppc_draw_appearance_control(
                 {
                     if flags & 0x0001 != 0 {
                         match style_font {
-                            // kControlFontSmallSystemFont and its bold.
-                            -2 | -3 => (font, size) = (3, 9),
+                            // kControlFontSmallSystemFont and its bold:
+                            // Geneva 10 in Mac OS 8.5, whose "Better
+                            // Quality" label breaks where Geneva 10's widths
+                            // break it (measured under SheepShaver).
+                            -2 | -3 => (font, size) = (3, 10),
                             f if f > 0 => font = f,
                             _ => {}
                         }

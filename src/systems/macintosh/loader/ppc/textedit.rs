@@ -1792,7 +1792,20 @@ pub(super) fn ppc_draw_wrapped_text(
         }
         let bytes = &text[line.start..line.visible_end];
         let width = ppc_text_bytes_advance_for_font(bytes, font, text_size);
-        let x = crate::text_edit::aligned_line_left(left, right, width, alignment, 1);
+        // TextEdit starts a line a pixel in from the box's left edge, and a
+        // centred line is centred in what is left (Mac OS 8.5's static text,
+        // measured under SheepShaver).
+        // The width it centres includes the space a line was broken after.
+        let x = if alignment == 1 {
+            let spaced = ppc_text_bytes_advance_for_font(
+                &text[line.start..line.next.min(text.len())],
+                font,
+                text_size,
+            );
+            crate::text_edit::aligned_line_left(left + 1, right, spaced, alignment, 1)
+        } else {
+            crate::text_edit::aligned_line_left(left, right, width, alignment, 1)
+        };
         let _ = ppc_draw_text_bytes(
             memory,
             gworlds,

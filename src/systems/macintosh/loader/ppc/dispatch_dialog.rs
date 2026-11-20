@@ -5363,7 +5363,17 @@ fn ppc_draw_dialog_items(
                     item.handle,
                     true,
                 );
-                if ppc_ui_theme(gworlds) == UiThemeId::ClassicSystem7 {
+                // A control the application's own CDEF draws gets no outline
+                // from the fork: Cythera's CDEF 1000 buttons ring themselves in
+                // blend mode, and on 8.5 the default OK of Add Memo shows that
+                // ring alone.
+                let application_drawn = controls
+                    .iter()
+                    .find(|record| record.handle == item.handle)
+                    .is_some_and(|record| {
+                        !matches!(crate::control_manager::standard_control_kind(record.proc_id).0, 0 | 1 | 2)
+                    });
+                if ppc_ui_theme(gworlds) == UiThemeId::ClassicSystem7 && !application_drawn {
                     if let Some(outline) = evaluate_dialog_item_default_button_outline(
                         (index + 1) as i16,
                         default_item as i16,
@@ -5410,14 +5420,27 @@ fn ppc_draw_dialog_items(
                         foreground: ppc_theme_rgb(palette.frame_dark),
                         background: None,
                     });
-                    let _ = ppc_paint_rect_bounds(
-                        memory,
-                        gworlds,
-                        dialog,
-                        item.rect,
-                        style.background.unwrap_or(background),
-                        None,
-                    );
+                    // Text (1993), p. 2-88, and Toolbox Essentials, p. 6-142:
+                    // an item's text is erased with the port's background,
+                    // which in a colour port is bkPixPat. Cythera gives its
+                    // dialogs the parchment there (FaceADialog), and 8.5 shows
+                    // the Add Memo field and its label on it.
+                    let back_pix_pat = memory
+                        .read_u32_be(dialog.wrapping_add(PPC_CGRAF_PORT_BK_PIXPAT_OFFSET))
+                        .unwrap_or(0);
+                    let patterned = style.background.is_none()
+                        && back_pix_pat != 0
+                        && ppc_fill_rect_with_pix_pat(memory, gworlds, dialog, item.rect, back_pix_pat);
+                    if !patterned {
+                        let _ = ppc_paint_rect_bounds(
+                            memory,
+                            gworlds,
+                            dialog,
+                            item.rect,
+                            style.background.unwrap_or(background),
+                            None,
+                        );
+                    }
                     // The item rectangle is dialog-local. Drawing through its
                     // port preserves visRgn/clipRgn, including occluding windows.
                     style.background = None;
@@ -5436,12 +5459,19 @@ fn ppc_draw_dialog_items(
                     // rectangle. Clear this manager-owned edit item before
                     // repainting so focus changes cannot retain a previous
                     // selection or duplicate glyphs in the field.
-                    let _ = ppc_fill_front_rect(
-                        memory,
-                        front,
-                        rect,
-                        ppc_theme_rgb(palette.window_background),
-                    );
+                    let back_pix_pat = memory
+                        .read_u32_be(dialog.wrapping_add(PPC_CGRAF_PORT_BK_PIXPAT_OFFSET))
+                        .unwrap_or(0);
+                    if back_pix_pat == 0
+                        || !ppc_fill_rect_with_pix_pat(memory, gworlds, dialog, item.rect, back_pix_pat)
+                    {
+                        let _ = ppc_fill_front_rect(
+                            memory,
+                            front,
+                            rect,
+                            ppc_theme_rgb(palette.window_background),
+                        );
+                    }
                     let outer = edit_text_frame_rect(rect);
                     let _ = ppc_frame_front_rect(
                         memory,

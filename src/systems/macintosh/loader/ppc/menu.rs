@@ -6202,9 +6202,17 @@ fn ppc_draw_platinum_popup(
     pen.vline(r, t, b, grey(0));
     pen.vline(r + 1, t + 1, b + 1, grey(60));
     pen.hline(b + 1, l + 1, r + 1, grey(60));
-    // The chosen item's band covers the bevels' ends.
+    // The chosen item's band covers the bevels' ends. On the first item it
+    // also covers the top bevel, in the left edge's colour with a blue
+    // corner (Cythera's Journal menu on 8.5).
     if let Some((band_top, band_bottom)) = band {
         pen.vline(l + 1, band_top, band_bottom, rgb(133, 133, 161));
-        pen.vline(r - 1, band_top, band_bottom, rgb(0, 0, 191));
+        if band_top == t + 1 {
+            pen.hline(t + 1, l + 1, r - 2, rgb(133, 133, 161));
+            pen.dot(r - 1, t + 1, rgb(0, 114, 181));
+            pen.vline(r - 1, band_top + 1, band_bottom, rgb(0, 0, 191));
+        } else {
+            pen.vline(r - 1, band_top, band_bottom, rgb(0, 0, 191));
+        }
     }
 }

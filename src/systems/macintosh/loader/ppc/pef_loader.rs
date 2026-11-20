@@ -935,7 +935,7 @@ fn load_pef_application_with_optional_disk_fragment(
     memory.add_region(PPC_MAIN_VIS_RGN_HANDLE, vec![0u8; 4]);
     memory.add_region(PPC_MAIN_VIS_RGN, vec![0u8; 10]);
     memory.add_region(PPC_MAIN_CLIP_RGN_HANDLE, vec![0u8; 4]);
-    memory.add_region(PPC_MAIN_CLIP_RGN, vec![0u8; 10]);
+    memory.add_region(PPC_MAIN_CLIP_RGN, vec![0u8; PPC_MAIN_CLIP_RGN_CAPACITY as usize]);
     // Universal Interfaces 3.4 Video.h defines GammaTbl as a six-word
     // header followed by formula bytes and channel data. cscGetGamma fills
     // this device-owned table from the display's current transfer each time

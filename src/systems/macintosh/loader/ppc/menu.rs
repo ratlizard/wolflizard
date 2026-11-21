@@ -705,6 +705,11 @@ pub(crate) fn ppc_set_popup_open(open: bool) {
     POPUP_OPEN.with(|cell| cell.set(open && APPEARANCE_CLIENT.with(std::cell::Cell::get)));
 }
 
+/// Whether the process has registered as an Appearance client.
+pub(crate) fn ppc_appearance_client() -> bool {
+    APPEARANCE_CLIENT.with(std::cell::Cell::get)
+}
+
 /// RegisterAppearanceClient (`true`) or UnregisterAppearanceClient.
 pub(crate) fn ppc_set_appearance_client(registered: bool) {
     APPEARANCE_CLIENT.with(|cell| cell.set(registered));

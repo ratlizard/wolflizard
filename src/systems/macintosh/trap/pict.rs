@@ -195,6 +195,40 @@ static STANDARD_MAC_8BPP_CLUT: OnceLock<[[u16; 3]; 256]> = OnceLock::new();
 
 const SRC_TO_DST_TABLE_CACHE_LIMIT: usize = 16;
 
+// The screen's palette and the entries the Palette Manager has reserved on
+// it (pmAnimated, or ReserveEntry). The Color Manager leaves reserved
+// entries out of a device's inverse table, so a color is never matched to
+// an entry an application has set aside for animation. Cythera reserves
+// 224..252 that way, and its In Use figure's blue, nearest to 233, shows on
+// Mac OS 8.5 as entry 119. The PowerPC dispatcher publishes the main
+// device's state here; a palette equal to the screen's is matched without
+// the reserved entries.
+static RESERVED_MATCH: Mutex<Option<([[u16; 3]; 256], [bool; 256])>> = Mutex::new(None);
+
+pub(crate) fn set_reserved_match_entries(clut: &[[u16; 3]; 256], reserved: &[bool; 256]) {
+    let Ok(mut current) = RESERVED_MATCH.lock() else {
+        return;
+    };
+    let next = reserved.iter().any(|&flag| flag).then_some((*clut, *reserved));
+    if *current != next {
+        *current = next;
+        if let Some(cache) = SRC_TO_DST_TABLE_CACHE.get() {
+            if let Ok(mut entries) = cache.lock() {
+                entries.clear();
+            }
+        }
+    }
+}
+
+fn reserved_match_entries(clut: &[[u16; 3]; 256]) -> [bool; 256] {
+    match RESERVED_MATCH.lock().ok().as_deref() {
+        Some(Some((screen, reserved))) if screen == clut && !reserved.iter().all(|&f| f) => {
+            *reserved
+        }
+        _ => [false; 256],
+    }
+}
+
 #[derive(Clone)]
 struct SrcToDstTableCacheEntry {
     src_clut: Vec<[u16; 3]>,
@@ -5211,18 +5245,23 @@ pub(crate) fn closest_clut_index(r: u16, g: u16, b: u16, clut: &[[u16; 3]; 256])
         }
     }
 
-    // Use full 16-bit precision for the distance calculation.
-    // The Mac Color Manager's MakeITable quantizes to 5-bit bins for the
-    // lookup table index, but the actual nearest-match is computed from
-    // full-precision color values.
+    // Use full 16-bit precision for the distance calculation, summing the
+    // absolute difference of each component as MakeITable's error does
+    // (references/executor/src/quickdraw/qColorMgr.cpp). Against Mac OS
+    // 8.5's smoothed Charcoal in Cythera's Journal pop-up the sum picks the
+    // entry 8.5 shows at 454 of 500 blended pixels, the squared distance at
+    // 441. Reserved entries are left out, as the inverse table leaves them.
     // Imaging With QuickDraw 1994, p. 4-82
+    let reserved = reserved_match_entries(clut);
     let mut best_idx = 0u8;
     let mut best_dist = i64::MAX;
     for (idx, entry) in clut.iter().enumerate() {
-        let dr = i64::from(r) - i64::from(entry[0]);
-        let dg = i64::from(g) - i64::from(entry[1]);
-        let db = i64::from(b) - i64::from(entry[2]);
-        let d = dr * dr + dg * dg + db * db;
+        if reserved[idx] {
+            continue;
+        }
+        let d = (i64::from(r) - i64::from(entry[0])).abs()
+            + (i64::from(g) - i64::from(entry[1])).abs()
+            + (i64::from(b) - i64::from(entry[2])).abs();
         if d < best_dist {
             best_dist = d;
             best_idx = idx as u8;
@@ -5281,8 +5320,9 @@ impl<'a> DirectColorMatcher<'a> {
             Some(node)
         }
 
+        let reserved = reserved_match_entries(clut);
         let mut nodes = Vec::with_capacity(256);
-        let mut indices: [u8; 256] = std::array::from_fn(|index| index as u8);
+        let mut indices: Vec<u8> = (0..=255u8).filter(|&i| !reserved[i as usize]).collect();
         let root = build(&mut indices, 0, clut, &mut nodes).unwrap();
         let gray = std::array::from_fn(|value| {
             let channel = value as u16 * 257;
@@ -5319,7 +5359,7 @@ impl<'a> DirectColorMatcher<'a> {
         let dr = i64::from(rgb[0]) - i64::from(color[0]);
         let dg = i64::from(rgb[1]) - i64::from(color[1]);
         let db = i64::from(rgb[2]) - i64::from(color[2]);
-        let candidate = (dr * dr + dg * dg + db * db, node.index);
+        let candidate = (dr.abs() + dg.abs() + db.abs(), node.index);
         if candidate < *best {
             *best = candidate;
         }
@@ -5333,7 +5373,7 @@ impl<'a> DirectColorMatcher<'a> {
         if let Some(near) = near {
             self.search(near, rgb, best);
         }
-        if delta * delta <= best.0 {
+        if delta.abs() <= best.0 {
             if let Some(far) = far {
                 self.search(far, rgb, best);
             }

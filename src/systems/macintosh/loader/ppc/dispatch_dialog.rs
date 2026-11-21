@@ -5718,8 +5718,64 @@ fn ppc_draw_dialog_items(
             );
         }
     }
+    ppc_draw_dialog_caret(memory, handles, gworlds, dialog);
     let _ = memory.write_u8(dialog + PPC_CWINDOW_VISIBLE_OFFSET, 1);
     true
+}
+
+/// The insertion point of the dialog's current editText item. The items
+/// above draw its text without TextEdit, so nothing else draws the caret.
+/// TextEdit inverts a one-pixel line, a line high, at the insertion point
+/// (Text (1993), p. 2-11), which on Mac OS 8.5 shows the inverse of what is
+/// under it. The caret is drawn steadily, as `ppc_te_draw` draws it.
+fn ppc_draw_dialog_caret(
+    memory: &mut PpcSectionMem,
+    handles: &[PpcHandleRecord],
+    gworlds: &[PpcGWorldRecord],
+    dialog: u32,
+) {
+    if memory.read_u16_be(dialog + DIALOG_EDIT_FIELD_OFFSET) == Some(u16::MAX) {
+        return;
+    }
+    let Some(te_handle) = memory.read_u32_be(dialog + DIALOG_TEXT_HANDLE_OFFSET) else {
+        return;
+    };
+    let Some(te_ptr) = ppc_te_record_ptr(memory, te_handle) else {
+        return;
+    };
+    let read = |memory: &mut PpcSectionMem, offset: u32| memory.read_u16_be(te_ptr + offset).unwrap_or(0);
+    let sel_start = read(memory, PPC_TE_SEL_START_OFFSET);
+    if read(memory, PPC_TE_ACTIVE_OFFSET) == 0 || sel_start != read(memory, PPC_TE_SEL_END_OFFSET) {
+        return;
+    }
+    let Some(dest) = ppc_read_rect(memory, te_ptr + PPC_TE_DEST_RECT_OFFSET) else {
+        return;
+    };
+    let line_height = read(memory, PPC_TE_LINE_HEIGHT_OFFSET) as i16;
+    if line_height <= 0 {
+        return;
+    }
+    let text = ppc_te_text_bytes(memory, handles, te_handle).unwrap_or_default();
+    let sel = usize::from(sel_start).min(text.len());
+    let n_lines = usize::from(read(memory, PPC_TE_N_LINES_OFFSET)).max(1);
+    let mut line = 0;
+    let mut line_start = 0;
+    for index in 1..n_lines {
+        let start = usize::from(read(memory, PPC_TE_LINE_STARTS_OFFSET + index as u32 * 2));
+        if start > sel {
+            break;
+        }
+        line = index;
+        line_start = start.min(sel);
+    }
+    let font = read(memory, PPC_TE_TX_FONT_OFFSET) as i16;
+    let size = read(memory, PPC_TE_TX_SIZE_OFFSET) as i16;
+    let face = memory.read_u8(te_ptr + PPC_TE_TX_FACE_OFFSET).unwrap_or(0);
+    let width = ppc_text_width_bytes(font, size, face, &text[line_start..sel]);
+    let x = dest.1.saturating_add(width).saturating_sub(i16::from(sel > line_start));
+    let top = dest.0.saturating_add(line_height.saturating_mul(line as i16));
+    let caret = (top, x, top.saturating_add(line_height), x.saturating_add(1));
+    let _ = ppc_invert_rect_bounds(memory, gworlds, dialog, caret);
 }
 
 fn ppc_dialog_item_at_global_point(

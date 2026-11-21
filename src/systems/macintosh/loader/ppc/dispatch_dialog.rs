@@ -3014,23 +3014,38 @@ fn ppc_live_menu_bar_height(memory: &mut PpcSectionMem) -> i32 {
     i32::from(memory.read_u16_be(PPC_MBAR_HEIGHT_ADDR).unwrap_or(20) as i16).max(0)
 }
 
+fn ppc_dialog_auto_position(
+    memory: &mut PpcSectionMem,
+    position: u16,
+    gworlds: &[PpcGWorldRecord],
+) -> super::dispatch_defproc::PendingAutoPosition {
+    let screen = gworlds.iter().find(|record| record.port == PPC_MAIN_GWORLD);
+    super::dispatch_defproc::PendingAutoPosition {
+        position,
+        screen_width: screen.map_or(ppc_main_screen_width(), |record| record.width) as i32,
+        screen_height: screen.map_or(ppc_main_screen_height(), |record| record.height) as i32,
+        menu_bar_height: ppc_live_menu_bar_height(memory),
+    }
+}
+
+/// The dialog's place by a dBox frame. A window with an application WDEF is
+/// placed again by the structure region the WDEF computes
+/// (`ppc_note_dialog_auto_position`).
 fn ppc_position_dialog_bounds(
     memory: &mut PpcSectionMem,
     bounds: (i16, i16, i16, i16),
     position: u16,
     gworlds: &[PpcGWorldRecord],
 ) -> (i16, i16, i16, i16) {
-    let screen = gworlds.iter().find(|record| record.port == PPC_MAIN_GWORLD);
-    let screen_width = screen.map_or(ppc_main_screen_width(), |record| record.width) as i32;
-    let screen_height = screen.map_or(ppc_main_screen_height(), |record| record.height) as i32;
+    let placement = ppc_dialog_auto_position(memory, position, gworlds);
     crate::dialog_manager::evaluate_dialog_position_bounds(
         bounds,
         position,
         Some(crate::dialog_manager::dialog_dbox_frame_rect(bounds)),
         None,
-        screen_width,
-        screen_height,
-        ppc_live_menu_bar_height(memory),
+        placement.screen_width,
+        placement.screen_height,
+        placement.menu_bar_height,
     )
 }
 
@@ -3330,6 +3345,10 @@ fn ppc_new_alert_dialog(
         window_list,
     );
     let _ = memory.write_u32_be(items_slot, saved_items_slot);
+    if dialog != 0 {
+        let placement = ppc_dialog_auto_position(memory, position, gworlds);
+        super::dispatch_defproc::ppc_note_dialog_auto_position(dialog, placement);
+    }
     let dialog = if dialog != 0
         && !ppc_initialize_dialog_items(
             process_memory_manager,
@@ -3495,6 +3514,10 @@ fn ppc_get_new_dialog(
         window_list,
     );
     let _ = memory.write_u32_be(items_slot, saved_items_slot);
+    if dialog != 0 {
+        let placement = ppc_dialog_auto_position(memory, template.position, gworlds);
+        super::dispatch_defproc::ppc_note_dialog_auto_position(dialog, placement);
+    }
     // Item styles require a matching dialog color table. The style table
     // follows the DITL ID, whereas the color table follows the DLOG ID.
     let has_color_table = ppc_vfs_resource_index(

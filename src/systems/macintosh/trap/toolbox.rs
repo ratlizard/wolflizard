@@ -1460,12 +1460,15 @@ pub(crate) fn styled_line_break_offsets(
             Some(b' ' | b'\t' | b'\r' | b'\n')
         )
     };
+    // A line exactly as wide as textWidth does not fit: Mac OS 8.5 breaks
+    // Cythera's opening story (Argos 22 in 544 pixels) before "bedroom",
+    // whose last pixel would end the line at 544.
     let run_width = width_of(text_start, text_end);
-    if run_width <= available {
+    if run_width < available {
         return (2, text_end, run_width);
     }
     let mut fit = text_start;
-    while fit < text_end && width_of(text_start, fit + 1) <= available {
+    while fit < text_end && width_of(text_start, fit + 1) < available {
         fit += 1;
     }
     // A space that does not fit still ends the line it follows.

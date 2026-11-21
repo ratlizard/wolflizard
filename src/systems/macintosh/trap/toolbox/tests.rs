@@ -19526,7 +19526,9 @@ fn scriptutil_styledlinebreak_first_long_word_breaks_on_character_boundary() {
     let offset_ptr = 0x366010u32;
     let text = b"ABCDEFGHIJ";
     bus.write_bytes(text_ptr, text);
-    let available = disp.scriptutil_measure_text_range_width(&bus, text_ptr, 0, 3);
+    // One pixel past three characters: a line exactly as wide as the width
+    // does not fit.
+    let available = disp.scriptutil_measure_text_range_width(&bus, text_ptr, 0, 3) + 1;
 
     write_styled_line_break_frame(
         &mut bus,
@@ -19547,7 +19549,7 @@ fn scriptutil_styledlinebreak_first_long_word_breaks_on_character_boundary() {
 
     assert_eq!(bus.read_byte(sp + 32), 1); // smBreakChar
     assert_eq!(bus.read_long(offset_ptr), 3);
-    assert_eq!(bus.read_long(width_ptr), 0);
+    assert_eq!(bus.read_long(width_ptr), 1 << 16);
     assert_eq!(cpu.read_reg(Register::A7), sp + 32);
 }
 
@@ -23289,14 +23291,22 @@ assert_eq!(line_break("xx abcdef", 6, 9, 1, false), (0, 3, 0));
 
 #[test]
 fn styled_line_break_splits_a_word_only_where_it_begins_the_line() {
-assert_eq!(line_break("a special bond", 10, 14, 2, true), (1, 12, 2));
+assert_eq!(line_break("a special bond", 10, 14, 3, true), (1, 12, 2));
 assert_eq!(line_break("abcdef", 3, 6, 1, false), (1, 4, 1));
 assert_eq!(line_break("abcdef", 3, 6, 0, true), (1, 4, 1));
 }
 
 #[test]
 fn styled_line_break_keeps_spaces_with_the_line_they_end() {
-assert_eq!(line_break("abc  def", 0, 8, 3, true), (0, 5, 5));
+assert_eq!(line_break("abc  def", 0, 8, 4, true), (0, 5, 5));
 assert_eq!(line_break("ab cd ef", 0, 8, 6, true), (0, 6, 6));
 assert_eq!(line_break("ab cd", 0, 5, 9, true), (2, 5, 5));
+}
+
+#[test]
+fn styled_line_break_rejects_a_line_exactly_as_wide_as_the_width() {
+// Mac OS 8.5 breaks Cythera's opening story before a word whose last
+// pixel would reach the width exactly.
+assert_eq!(line_break("ab cd ef", 0, 8, 5, true), (0, 3, 3));
+assert_eq!(line_break("ab cd", 0, 5, 5, true), (0, 3, 3));
 }

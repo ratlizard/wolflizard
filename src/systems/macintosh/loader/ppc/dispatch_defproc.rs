@@ -182,6 +182,8 @@ thread_local! {
     static APP_WDEF_WINDOWS: RefCell<std::collections::HashMap<u32, i16>> =
         RefCell::new(std::collections::HashMap::new());
     static PENDING_WDEF_DRAWS: RefCell<Vec<(u32, u32)>> = const { RefCell::new(Vec::new()) };
+    static AUTO_POSITIONS: RefCell<std::collections::HashMap<u32, PendingAutoPosition>> =
+        RefCell::new(std::collections::HashMap::new());
     static PENDING_HIT_TEST: RefCell<Option<PendingHitTest>> = const { RefCell::new(None) };
     /// Lists whose LDEF is the refCon shell.
     static APP_LDEF_LISTS: RefCell<std::collections::HashSet<u32>> =
@@ -204,8 +206,68 @@ pub(super) fn ppc_app_wdef_window_proc_id(window: u32) -> Option<i16> {
     APP_WDEF_WINDOWS.with(|windows| windows.borrow().get(&window).copied())
 }
 
+/// A dialog placed by its template's positioning code, waiting for its
+/// window's structure region: the position word, the screen's width and
+/// height and the menu bar's height.
+#[derive(Clone, Copy)]
+pub(super) struct PendingAutoPosition {
+    pub(super) position: u16,
+    pub(super) screen_width: i32,
+    pub(super) screen_height: i32,
+    pub(super) menu_bar_height: i32,
+}
+
+/// Record a dialog that its template places automatically. The Dialog
+/// Manager places the window by its structure region (Macintosh Toolbox
+/// Essentials (1992), p. 6-152), which an application WDEF computes only at
+/// wCalcRgns, after the dialog is made; the window is placed once more then.
+pub(super) fn ppc_note_dialog_auto_position(window: u32, pending: PendingAutoPosition) {
+    if crate::dialog_manager::normalize_dialog_position_method(pending.position).is_some() {
+        AUTO_POSITIONS.with(|map| map.borrow_mut().insert(window, pending));
+    }
+}
+
+/// After an application WDEF has computed a window's regions: if the window
+/// waits for automatic placement, place it by the structure region the WDEF
+/// computed, and return whether it moved (its regions are then stale).
+fn ppc_place_by_app_structure(memory: &mut PpcSectionMem, window: u32) -> bool {
+    let Some(pending) = AUTO_POSITIONS.with(|map| map.borrow_mut().remove(&window)) else {
+        return false;
+    };
+    let rgn = |memory: &mut PpcSectionMem, offset: u32| {
+        memory
+            .read_u32_be(window.wrapping_add(offset))
+            .and_then(|handle| ppc_read_rgn_bbox(memory, handle))
+            .filter(|rect| rect.0 < rect.2 && rect.1 < rect.3)
+    };
+    let (Some(structure), Some(content)) = (rgn(memory, 114), rgn(memory, 118)) else {
+        return false;
+    };
+    let placed = crate::dialog_manager::evaluate_dialog_position_bounds(
+        content,
+        pending.position,
+        Some(structure),
+        None,
+        pending.screen_width,
+        pending.screen_height,
+        pending.menu_bar_height,
+    );
+    if placed.0 == content.0 && placed.1 == content.1 {
+        return false;
+    }
+    if ppc_trace_defproc_enabled() {
+        eprintln!(
+            "[PPC-DEFPROC] auto-position window=${window:08X} structure={structure:?} content={content:?} -> ({}, {})",
+            placed.0, placed.1
+        );
+    }
+    super::dispatch_window::ppc_move_window_coordinates(memory, &mut [], window, placed.1, placed.0)
+        .is_some()
+}
+
 /// Forget a disposed window; true when it had an application WDEF.
 pub(super) fn ppc_forget_app_wdef_window(window: u32) -> bool {
+    AUTO_POSITIONS.with(|map| map.borrow_mut().remove(&window));
     PENDING_WDEF_DRAWS.with(|pending| pending.borrow_mut().retain(|(w, _)| *w != window));
     APP_WDEF_WINDOWS.with(|windows| windows.borrow_mut().remove(&window).is_some())
 }
@@ -290,6 +352,16 @@ fn ppc_next_def_proc_call(cpu: &mut PpcCpu, memory: &mut PpcSectionMem) -> Optio
             let state = stack.last_mut()?;
             if let Some((address, value)) = state.restore.take() {
                 let _ = memory.write_u32_be(address, value);
+                // The call that returned computed a window's regions: a
+                // dialog waiting for placement moves by them, and has its
+                // regions computed again where it now is.
+                let done = state.calls[state.next - 1];
+                if done.port.is_none()
+                    && done.args[2] == WDEF_CALC_REGIONS
+                    && ppc_place_by_app_structure(memory, done.args[1])
+                {
+                    state.calls.insert(state.next, done);
+                }
             }
             if state.next >= state.calls.len() {
                 let state = stack.pop().expect("state present");

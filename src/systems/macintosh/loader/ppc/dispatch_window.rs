@@ -63,6 +63,10 @@ pub(crate) struct PpcDragWindowTrackingState {
     pub(crate) bounds: (i16, i16, i16, i16),
     pub(crate) outline: (i16, i16, i16, i16),
     pub(crate) saved_pixels: crate::memory::SavedPixels<(i32, i32, u16)>,
+    /// The structures of the visible windows in front of the dragged one,
+    /// which the outline does not cross: DragWindow draws it clipped by
+    /// ClipAbove (Macintosh Toolbox Essentials (1992), p. 4-95).
+    pub(crate) above: Vec<(i16, i16, i16, i16)>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -88,6 +92,11 @@ pub(crate) struct PpcDragGrayRgnTrackingState {
     pub(crate) slop: (i16, i16, i16, i16),
     pub(crate) outline: Option<(i16, i16, i16, i16)>,
     pub(crate) saved_pixels: crate::memory::SavedPixels<(i32, i32, u16)>,
+    /// The current port's clipRgn at the call, which bounds the outline
+    /// (0 for none): DragGrayRgn draws in the current port (Macintosh
+    /// Toolbox Essentials (1992), p. 4-96), and Cythera clips it to leave
+    /// out the windows in front.
+    pub(crate) clip: u32,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -7493,19 +7502,61 @@ fn ppc_restore_drag_outline(
     }
 }
 
-/// Save what lies under `outline` and draw it in a gray (alternate black
-/// and white) dotted line.
+/// Save what lies under `outline` and draw it in the gray pattern in XOR
+/// mode, which inverts every other pixel (Macintosh Toolbox Essentials
+/// (1992), p. 4-96, DragGrayRgn), those where x + y is odd, leaving out
+/// what lies in `above` and, given a clip region and the port's origin
+/// (local = global + origin), what lies outside the region. With `thick`,
+/// the line is two pixels thick, inward, as Mac OS 8.5 draws it for an
+/// Appearance client (Cythera's map window, dragged through DragGrayRgn).
 fn ppc_draw_drag_outline(
     memory: &mut PpcSectionMem,
-    screen_clut: &[[u16; 3]; 256],
+    _screen_clut: &[[u16; 3]; 256],
     front_buffer: PpcFrontBuffer,
     outline: (i16, i16, i16, i16),
+    above: &[(i16, i16, i16, i16)],
+    clip: Option<(u32, (i16, i16))>,
+    thick: bool,
 ) -> crate::memory::SavedPixels<(i32, i32, u16)> {
     let mut saved_pixels: crate::memory::SavedPixels<(i32, i32, u16)> =
         ppc_drag_outline_points(front_buffer, outline)
             .into_iter()
+            .chain(
+                thick
+                    .then(|| {
+                        let inner = (
+                            outline.0.saturating_add(1),
+                            outline.1.saturating_add(1),
+                            outline.2.saturating_sub(1),
+                            outline.3.saturating_sub(1),
+                        );
+                        ppc_drag_outline_points(front_buffer, inner)
+                    })
+                    .unwrap_or_default(),
+            )
+            .filter(|&(x, y)| {
+                !above.iter().any(|rect| {
+                    y >= i32::from(rect.0)
+                        && x >= i32::from(rect.1)
+                        && y < i32::from(rect.2)
+                        && x < i32::from(rect.3)
+                })
+            })
+            .collect::<Vec<_>>()
+            .into_iter()
             .filter_map(|(x, y)| {
-                ppc_quickdraw_read_pixel(memory, front_buffer, (x, y)).map(|pixel| (x, y, pixel))
+                let inside = clip.is_none_or(|(rgn, origin)| {
+                    ppc_point_in_region(
+                        memory,
+                        rgn,
+                        (y as i16).wrapping_add(origin.0),
+                        (x as i16).wrapping_add(origin.1),
+                    )
+                });
+                inside
+                    .then(|| ppc_quickdraw_read_pixel(memory, front_buffer, (x, y)))
+                    .flatten()
+                    .map(|pixel| (x, y, pixel))
             })
             .collect::<Vec<_>>()
             .into();
@@ -7513,19 +7564,15 @@ fn ppc_draw_drag_outline(
         let (x, y, _) = saved_pixels[index];
         ppc_capture_saved_detail(memory, front_buffer, (x, y), &mut saved_pixels, index);
     }
-    let (Some(black), Some(white)) = (
-        ppc_physical_screen_color_pixel(front_buffer, PPC_RGB_BLACK, screen_clut),
-        ppc_physical_screen_color_pixel(front_buffer, PPC_RGB_WHITE, screen_clut),
-    ) else {
-        return saved_pixels;
+    let mask: u16 = match front_buffer.depth {
+        depth @ (1 | 2 | 4 | 8) => (1u16 << depth) - 1,
+        16 => 0x7fff,
+        _ => return saved_pixels,
     };
-    for (x, y, _) in saved_pixels.iter().copied() {
-        let pixel = if (x + y).rem_euclid(2) == 0 {
-            black
-        } else {
-            white
-        };
-        let _ = ppc_quickdraw_write_raw_pixel(memory, front_buffer, (x, y), pixel);
+    for (x, y, pixel) in saved_pixels.iter().copied() {
+        if (x + y).rem_euclid(2) == 1 {
+            let _ = ppc_quickdraw_write_raw_pixel(memory, front_buffer, (x, y), pixel ^ mask);
+        }
     }
     saved_pixels
 }
@@ -7550,7 +7597,16 @@ pub(super) fn ppc_refresh_drag_window_outline(
     }
     ppc_restore_drag_window_outline(memory, state);
     state.outline = outline;
-    state.saved_pixels = ppc_draw_drag_outline(memory, screen_clut, state.front_buffer, outline);
+    state.saved_pixels =
+        ppc_draw_drag_outline(
+            memory,
+            screen_clut,
+            state.front_buffer,
+            outline,
+            &state.above,
+            None,
+            super::menu::ppc_appearance_client(),
+        );
 }
 
 /// DragGrayRgn's result for the pointer at `mouse` (local): the offset of
@@ -7647,6 +7703,9 @@ pub(super) fn ppc_dispatch_drag_gray_rgn(
                 slop,
                 outline: None,
                 saved_pixels: Vec::new().into(),
+                clip: memory
+                    .read_u32_be(current_gworld.wrapping_add(PPC_CGRAF_PORT_CLIP_RGN_OFFSET))
+                    .unwrap_or(0),
             }
         }
     };
@@ -7665,7 +7724,15 @@ pub(super) fn ppc_dispatch_drag_gray_rgn(
         if outline != state.outline || state.saved_pixels.is_empty() {
             ppc_restore_drag_outline(memory, state.front_buffer, &state.saved_pixels);
             state.saved_pixels = match outline {
-                Some(rect) => ppc_draw_drag_outline(memory, screen_clut, state.front_buffer, rect),
+                Some(rect) => ppc_draw_drag_outline(
+                    memory,
+                    screen_clut,
+                    state.front_buffer,
+                    rect,
+                    &[],
+                    (state.clip != 0).then_some((state.clip, state.origin)),
+                    super::menu::ppc_appearance_client(),
+                ),
                 None => Vec::new().into(),
             };
             state.outline = outline;
@@ -7820,6 +7887,17 @@ pub(super) fn ppc_dispatch_drag_window(
     }
     let original_structure =
         ppc_window_structure_bounds(ppc_window_structure_proc_id(memory, call.window), original_content);
+    let in_front: Vec<u32> = window_list.with_ref(|windows| {
+        windows.iter().copied().take_while(|window| *window != call.window).collect()
+    });
+    let above = in_front
+        .into_iter()
+        .filter_map(|window| {
+            ppc_window_is_visible(memory, window)
+                .then(|| ppc_window_global_structure_bounds(memory, gworlds, window))
+                .flatten()
+        })
+        .collect();
     let mut state = PpcDragWindowTrackingState {
         call,
         front_buffer,
@@ -7828,6 +7906,7 @@ pub(super) fn ppc_dispatch_drag_window(
         bounds,
         outline: original_structure,
         saved_pixels: Vec::new().into(),
+        above,
     };
     ppc_refresh_drag_window_outline(
         memory,

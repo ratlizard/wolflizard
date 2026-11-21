@@ -2629,15 +2629,19 @@ fn ppc_styled_line_break_measures_with_port_font_size_and_face() {
     assert!(plain > 6 * input.len() as i32);
     assert!(i32::from(ppc_text_width_bytes(font, 12, bold_style, input)) > plain);
 
-    let (code, offset, remaining) = run_ppc_styled_line_break(font, 12, 0, input, plain);
-    assert_eq!((code, offset, remaining), (2, input.len() as u32, 0));
+    // A line exactly as wide as textWidth does not fit in the fork, as on
+    // Mac OS 8.5 (styled_line_break_offsets), so the run is given a pixel
+    // more than its plain width.
+    let available = plain + 1;
+    let (code, offset, remaining) = run_ppc_styled_line_break(font, 12, 0, input, available);
+    assert_eq!((code, offset, remaining), (2, input.len() as u32, 1));
 
     let (code, offset, remaining) =
-        run_ppc_styled_line_break(font, 12, bold_style, input, plain);
+        run_ppc_styled_line_break(font, 12, bold_style, input, available);
     let used = i32::from(ppc_text_width_bytes(font, 12, bold_style, b"OPERATION:  White "));
     assert_eq!(code, 0); // smBreakWord
     assert_eq!(offset, 18);
-    assert_eq!(remaining, (plain - used) as u32);
+    assert_eq!(remaining, (available - used) as u32);
 }
 
 #[test]

@@ -823,7 +823,7 @@ pub(super) fn ppc_plot_cicn_resource(
             let value = match resolved.iter().find(|(known, _)| *known == index) {
                 Some(&(_, value)) => value,
                 None => {
-                    let value = ppc_quickdraw_indexed_pixel_value(memory, front, color);
+                    let value = super::surface::ppc_quickdraw_icon_pixel_value(memory, front, color);
                     resolved.push((index, value));
                     value
                 }

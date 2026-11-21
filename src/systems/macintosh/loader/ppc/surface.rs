@@ -347,6 +347,35 @@ pub(crate) fn ppc_quickdraw_indexed_pixel_value(
     )))
 }
 
+/// The pixel value a color icon's color takes on an indexed surface. A Mac
+/// plots a 'cicn' through CopyBits, which finds each color in the device's
+/// inverse table: the color falls in a cell, and the cell holds the entry
+/// nearest the cell's center. Against Mac OS 8.5's Preferences window,
+/// whose speaker icons hold (9999, 9999, FFFF) and (6666, 6666, 9999), a
+/// 5-bit table measured from the cell center gives entries 114 and 217 as
+/// 8.5 does, where the nearest entry to the color itself gives 115 and 216.
+/// Smoothed text fits the nearest entry better, so only icons take this.
+pub(crate) fn ppc_quickdraw_icon_pixel_value(
+    memory: &mut PpcSectionMem,
+    front_buffer: PpcFrontBuffer,
+    color: PpcRgbColor,
+) -> Option<u16> {
+    if front_buffer.depth != 8 || front_buffer.base_addr != PPC_MAIN_SCREEN_BASE {
+        return ppc_quickdraw_indexed_pixel_value(memory, front_buffer, color);
+    }
+    let fallback = TrapDispatcher::standard_mac_8bpp_clut();
+    let clut =
+        ppc_read_ctable_clut(memory, PPC_MAIN_CTABLE_HANDLE, &fallback).unwrap_or(fallback);
+    let rgb = [color.red, color.green, color.blue];
+    if let Some(index) = clut.iter().position(|entry| *entry == rgb) {
+        return Some(index as u16);
+    }
+    let [red, green, blue] = rgb.map(|value| (value & 0xF800) | 0x0400);
+    Some(u16::from(crate::trap::pict::closest_clut_index(
+        red, green, blue, &clut,
+    )))
+}
+
 pub(crate) fn ppc_quickdraw_write_pixel(
     memory: &mut PpcSectionMem,
     front_buffer: PpcFrontBuffer,

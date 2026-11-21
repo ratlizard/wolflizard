@@ -6133,10 +6133,16 @@ fn ppc_draw_platinum_popup(
         })
         .collect();
     let text_inset = ppc_popup_text_inset(size);
-    let baseline_drop = if size >= 12 { 0 } else { 1 };
     let ascent = get_font_metrics(font, size).ascent;
     let mut pen = Pen::new(memory, gworlds, PPC_MAIN_GWORLD);
     pen.rect((t, l, b + 1, r + 1), grey(227));
+    // The bevels go under the items: on Mac OS 8.5 the last item's
+    // descenders draw over the bottom bevel (Cythera's Do menu, "Try All
+    // Keys"). The right bevel and the shadow start a row below the top.
+    pen.hline(t + 1, l + 1, r - 2, grey(255));
+    pen.vline(l + 1, t + 1, b - 2, grey(255));
+    pen.hline(b - 1, l + 1, r - 1, grey(178));
+    pen.vline(r - 1, t + 2, b - 1, grey(178));
     let mut band = None;
     for (item, text, top, height, separator, enabled, mark) in items {
         if top + height <= t + 1 || top >= b {
@@ -6144,8 +6150,8 @@ fn ppc_draw_platinum_popup(
         }
         if separator {
             let mid = top + height / 2;
-            pen.hline(mid - 1, l + 1, r - 1, grey(161));
-            pen.hline(mid, l + 1, r - 1, grey(255));
+            pen.hline(mid - 1, l + 2, r - 2, grey(161));
+            pen.hline(mid, l + 2, r - 2, grey(255));
             continue;
         }
         let chosen = item == selected && enabled;
@@ -6186,21 +6192,17 @@ fn ppc_draw_platinum_popup(
                     }
                 }
             } else {
-                pen.text_font((l + 4, top + ascent + baseline_drop), &[mark], color, font, size);
+                pen.text_font((l + 4, top + ascent), &[mark], color, font, size);
             }
         }
-        pen.text_font((l + text_inset, top + ascent + baseline_drop), &text, color, font, size);
+        pen.text_font((l + text_inset, top + ascent), &text, color, font, size);
     }
-    // The frame and its bevels, drawn over the rows' ends.
-    pen.hline(t + 1, l + 1, r - 2, grey(255));
-    pen.vline(l + 1, t + 1, b - 2, grey(255));
-    pen.hline(b - 1, l + 1, r - 1, grey(178));
-    pen.vline(r - 1, t + 1, b - 1, grey(178));
+    // The frame, drawn over the rows' ends.
     pen.hline(t, l, r, grey(0));
     pen.hline(b, l, r, grey(0));
     pen.vline(l, t, b, grey(0));
     pen.vline(r, t, b, grey(0));
-    pen.vline(r + 1, t + 1, b + 1, grey(60));
+    pen.vline(r + 1, t + 2, b + 1, grey(60));
     pen.hline(b + 1, l + 1, r + 1, grey(60));
     // The chosen item's band covers the bevels' ends. On the first item it
     // also covers the top bevel, in the left edge's colour with a blue

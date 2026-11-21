@@ -798,6 +798,20 @@ pub(crate) fn dispatch_supported_import(
             input,
         })
     {
+        // The direct-color matcher leaves out the screen's reserved
+        // entries, as a Mac's inverse table does.
+        let mut reserved = toolbox_startup.clut_reserved;
+        for allocation in &toolbox_startup.palette_allocations {
+            if allocation.gdevice != PPC_MAIN_GDEVICE {
+                continue;
+            }
+            for mapping in &allocation.entry_mappings {
+                if let Some(index) = mapping.animated_index() {
+                    reserved[usize::from(index)] = true;
+                }
+            }
+        }
+        crate::trap::pict::set_reserved_match_entries(screen_clut, &reserved);
         return Some(action);
     }
     if let Some(action) =

@@ -3044,9 +3044,11 @@ mod tests {
             shape_palette_index_for_rgb([0x6666, 0xFFFF, 0xFFFF], 4, &clut),
             0
         );
+        // Summed absolute difference, MakeITable's error, also picks white:
+        // 0x99 from it against 0xCD from cyan and 0xD8 from light gray.
         assert_eq!(
             crate::trap::pict::closest_clut_index(0x6666, 0xFFFF, 0xFFFF, &clut),
-            12
+            0
         );
     }
 
@@ -3056,7 +3058,7 @@ mod tests {
 
         assert_eq!(
             shape_palette_index_for_rgb([0x6666, 0xFFFF, 0xFFFF], 8, &clut),
-            12
+            0
         );
     }
 

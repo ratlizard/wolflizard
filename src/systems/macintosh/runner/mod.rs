@@ -3497,11 +3497,23 @@ impl FixtureRunner {
     }
 
     /// Return the screen depth to use when the selected executable is native
-    /// PowerPC. The architecture default is 16bpp; only an explicit call to
-    /// [`FixtureRunner::set_powerpc_screen_depth`] overrides it.
+    /// PowerPC. The default is the reference machine's, 8bpp; an explicit call
+    /// to [`FixtureRunner::set_powerpc_screen_depth`] overrides it.
+    ///
+    /// `SYSTEMLESS_POWERPC_SCREEN_DEPTH` (1, 2, 4, 8 or 16) stands in for an
+    /// explicit call when none was made, so a headless run can start deeper
+    /// than the reference machine's 8 bits, where Cythera puts up its
+    /// "This game runs faster in 256 colors" prompt (DLOG 140) at launch.
     pub(crate) fn configured_powerpc_screen_depth(&self) -> u32 {
+        let from_env = || {
+            std::env::var("SYSTEMLESS_POWERPC_SCREEN_DEPTH")
+                .ok()
+                .and_then(|value| value.trim().parse::<u16>().ok())
+                .filter(|depth| matches!(depth, 1 | 2 | 4 | 8 | 16))
+        };
         u32::from(
             self.powerpc_screen_depth_override
+                .or_else(from_env)
                 .unwrap_or(DEFAULT_POWERPC_SCREEN_DEPTH as u16),
         )
     }

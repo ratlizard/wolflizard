@@ -225,6 +225,27 @@ pub(crate) fn ppc_line_to(
     )
 }
 
+/// The source row or column CopyBits, CopyMask and CopyDeepMask read for the destination one `rel`
+/// from its rectangle's edge. Shrinking, or copying at the same size, takes
+/// `rel * source / destination`. Enlarging, QuickDraw on Mac OS 8.5 places
+/// source pixel `i` at destination `i * destination / source + t`, rounded
+/// down, and a destination pixel shows the last source pixel placed at or
+/// before it. Cythera's Do button, 24 by 36 copied into 25 by 37, repeats
+/// source row 10 and column 16 on 8.5, which needs `t` from 0.5417 to
+/// 0.5556 for the rows and from 0.5278 to 0.5556 for the columns; 35/64 is
+/// in both. The desktop's 64-to-96 enlargement repeats the even columns
+/// under this rule as under the plain one.
+pub(crate) fn ppc_stretch_source_offset(rel: i64, source: i64, destination: i64) -> i64 {
+    if destination <= source || source <= 0 {
+        return rel * source / destination.max(1);
+    }
+    // The largest i with i * destination / source + 35/64 < rel + 1, so
+    // i * destination * 64 < ((rel + 1) * 64 - 35) * source.
+    let limit = ((rel + 1) * 64 - 35) * source;
+    let step = destination * 64;
+    ((limit + step - 1) / step - 1).clamp(0, source - 1)
+}
+
 /// A line drawn with the port's pen. With `pen` (the background colour and
 /// the pen pattern) the port's pen mode combines each pattern bit with the
 /// destination, as FrameRect does (Imaging With QuickDraw (1994), pp.
@@ -6438,13 +6459,13 @@ pub(crate) fn ppc_copy_bits(
                 std::collections::HashMap::new();
             for dst_y in copy_top..copy_bottom {
                 let rel_y = i64::from(dst_y) - i64::from(dst_top);
-                let src_y = i64::from(src_top) + (rel_y * src_height) / dst_height;
+                let src_y = i64::from(src_top) + ppc_stretch_source_offset(rel_y, src_height, dst_height);
                 let Ok(src_y) = i32::try_from(src_y) else {
                     continue;
                 };
                 for dst_x in copy_left..copy_right {
                     let rel_x = i64::from(dst_x) - i64::from(dst_left);
-                    let src_x = i64::from(src_left) + (rel_x * src_width) / dst_width;
+                    let src_x = i64::from(src_left) + ppc_stretch_source_offset(rel_x, src_width, dst_width);
                     let Ok(src_x) = i32::try_from(src_x) else {
                         continue;
                     };
@@ -6798,10 +6819,10 @@ pub(crate) fn ppc_copy_mask(
             let coverage = (copy_top..copy_bottom)
                 .flat_map(|y| {
                     let mask_y = i64::from(mask_rect.0)
-                        + (i64::from(y) - i64::from(dst_rect.0)) * mask_height / dst_height;
+                        + ppc_stretch_source_offset(i64::from(y) - i64::from(dst_rect.0), mask_height, dst_height);
                     (copy_left..copy_right).map(move |x| {
                         let mask_x = i64::from(mask_rect.1)
-                            + (i64::from(x) - i64::from(dst_rect.1)) * mask_width / dst_width;
+                            + ppc_stretch_source_offset(i64::from(x) - i64::from(dst_rect.1), mask_width, dst_width);
                         (mask_x as i32, mask_y as i32)
                     })
                 })
@@ -6844,15 +6865,15 @@ pub(crate) fn ppc_copy_mask(
         let mut writes = Vec::new();
         for dst_y in copy_top..copy_bottom {
             let rel_y = i64::from(dst_y) - i64::from(dst_rect.0);
-            let src_y = i64::from(src_rect.0) + rel_y * src_height / dst_height;
-            let mask_y = i64::from(mask_rect.0) + rel_y * mask_height / dst_height;
+            let src_y = i64::from(src_rect.0) + ppc_stretch_source_offset(rel_y, src_height, dst_height);
+            let mask_y = i64::from(mask_rect.0) + ppc_stretch_source_offset(rel_y, mask_height, dst_height);
             let (Ok(src_y), Ok(mask_y)) = (i32::try_from(src_y), i32::try_from(mask_y)) else {
                 continue;
             };
             for dst_x in copy_left..copy_right {
                 let rel_x = i64::from(dst_x) - i64::from(dst_rect.1);
-                let src_x = i64::from(src_rect.1) + rel_x * src_width / dst_width;
-                let mask_x = i64::from(mask_rect.1) + rel_x * mask_width / dst_width;
+                let src_x = i64::from(src_rect.1) + ppc_stretch_source_offset(rel_x, src_width, dst_width);
+                let mask_x = i64::from(mask_rect.1) + ppc_stretch_source_offset(rel_x, mask_width, dst_width);
                 let (Ok(src_x), Ok(mask_x)) = (i32::try_from(src_x), i32::try_from(mask_x)) else {
                     continue;
                 };
@@ -7090,8 +7111,8 @@ pub(crate) fn ppc_copy_deep_mask_with(
         let mut writes = Vec::new();
         for dst_y in copy_top..copy_bottom {
             let rel_y = i64::from(dst_y) - i64::from(dst_rect.0);
-            let src_y = i64::from(src_rect.0) + rel_y * src_height / dst_height;
-            let mask_y = i64::from(mask_rect.0) + rel_y * mask_height / dst_height;
+            let src_y = i64::from(src_rect.0) + ppc_stretch_source_offset(rel_y, src_height, dst_height);
+            let mask_y = i64::from(mask_rect.0) + ppc_stretch_source_offset(rel_y, mask_height, dst_height);
             let (Ok(src_y), Ok(mask_y)) = (i32::try_from(src_y), i32::try_from(mask_y)) else {
                 continue;
             };
@@ -7102,8 +7123,8 @@ pub(crate) fn ppc_copy_deep_mask_with(
                     continue;
                 }
                 let rel_x = i64::from(dst_x) - i64::from(dst_rect.1);
-                let src_x = i64::from(src_rect.1) + rel_x * src_width / dst_width;
-                let mask_x = i64::from(mask_rect.1) + rel_x * mask_width / dst_width;
+                let src_x = i64::from(src_rect.1) + ppc_stretch_source_offset(rel_x, src_width, dst_width);
+                let mask_x = i64::from(mask_rect.1) + ppc_stretch_source_offset(rel_x, mask_width, dst_width);
                 let (Ok(src_x), Ok(mask_x)) = (i32::try_from(src_x), i32::try_from(mask_x)) else {
                     continue;
                 };

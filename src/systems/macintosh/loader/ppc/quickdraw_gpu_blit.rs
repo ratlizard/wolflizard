@@ -38,14 +38,14 @@ pub(super) fn sample_copy(
     let xs: Vec<i32> = (left..right)
         .map(|x| {
             (i64::from(sl)
-                + (i64::from(x) - i64::from(dl)) * i64::from(sr - sl) / i64::from(dr - dl))
+                + super::ppc_stretch_source_offset(i64::from(x) - i64::from(dl), i64::from(sr - sl), i64::from(dr - dl)))
                 as i32
         })
         .collect();
     let ys: Vec<i32> = (top..bottom)
         .map(|y| {
             (i64::from(st)
-                + (i64::from(y) - i64::from(dt)) * i64::from(sb - st) / i64::from(db - dt))
+                + super::ppc_stretch_source_offset(i64::from(y) - i64::from(dt), i64::from(sb - st), i64::from(db - dt)))
                 as i32
         })
         .collect();
@@ -186,14 +186,14 @@ pub(super) fn deep_mask_operation(
     let xs: Vec<i32> = (left..right)
         .map(|x| {
             (i64::from(sl)
-                + (i64::from(x) - i64::from(dl)) * i64::from(sr - sl) / i64::from(dr - dl))
+                + super::ppc_stretch_source_offset(i64::from(x) - i64::from(dl), i64::from(sr - sl), i64::from(dr - dl)))
                 as i32
         })
         .collect();
     let ys: Vec<i32> = (top..bottom)
         .map(|y| {
             (i64::from(st)
-                + (i64::from(y) - i64::from(dt)) * i64::from(sb - st) / i64::from(db - dt))
+                + super::ppc_stretch_source_offset(i64::from(y) - i64::from(dt), i64::from(sb - st), i64::from(db - dt)))
                 as i32
         })
         .collect();

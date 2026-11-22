@@ -75,6 +75,7 @@ impl super::TrapDispatcher {
     const LOWMEM_DRAG_PATTERN: u32 = 0x0A34;
     pub(super) const GRAY_DRAG_PATTERN: [u8; 8] = [0xAA, 0x55, 0xAA, 0x55, 0xAA, 0x55, 0xAA, 0x55];
     const WDEF_WDRAW_MSG: i16 = 0;
+    const WDEF_WHIT_MSG: i16 = 1;
     const WDEF_WCALC_RGNS_MSG: i16 = 2;
     const WDEF_WNEW_MSG: i16 = 3;
     const WDEF_FIRST_APPLICATION_RESOURCE_ID: i16 = 128;
@@ -993,6 +994,108 @@ impl super::TrapDispatcher {
                 calcvis_site
             }
         }
+    }
+
+    /// Sends an application WDEF its wHit message for a FindWindow that
+    /// landed on the window's frame, and puts the answer in FindWindow's
+    /// result. A real Window Manager asks the definition function where
+    /// every point falls (Inside Macintosh Volume I, pp. I-287 and I-299);
+    /// the trap cannot run guest code itself, so it returns into a stub that
+    /// calls the WDEF and maps wInContent..wInZoomOut (1..6) to inContent..
+    /// inZoomOut (3..8), and wNoHit to inDesk with no window. Without it the
+    /// 68K slice dragged Cythera's To Do plaque as a window of its own,
+    /// where the PowerPC slice, which asks the WDEF, opens the drawer.
+    fn arm_find_window_hit<C: CpuOps>(
+        &mut self,
+        cpu: &mut C,
+        bus: &mut MacMemoryBus,
+        window_ptr: u32,
+        point: u32,
+        result_addr: u32,
+        which_addr: u32,
+    ) -> bool {
+        let proc_id = self.window_proc_ids.get(&window_ptr).copied().unwrap_or(0);
+        if !Self::is_application_window_def_proc_id(proc_id) {
+            return false;
+        }
+        let def_handle = bus.read_long(window_ptr + Self::WINDOW_DEF_PROC_OFFSET);
+        let proc_addr = Self::window_def_proc_addr(bus, def_handle);
+        if !Self::window_def_entry_looks_callable(bus, proc_addr) {
+            return false;
+        }
+        if self.find_window_hit_trampoline == 0 {
+            self.find_window_hit_trampoline = bus.alloc(Self::WDEF_TRAMPOLINE_SIZE);
+            self.find_window_hit_scratch = bus.alloc(4);
+        }
+        let which_addr = if which_addr != 0 { which_addr } else { self.find_window_hit_scratch };
+        // The definition function reads the classic portBits.bounds of a
+        // color window, as arm_window_def_messages explains; expose them for
+        // the call and put the color fields back before returning.
+        let restore = if (bus.read_word(window_ptr + 6) & 0xC000) != 0 {
+            let pixmap = bus.read_long(bus.read_long(window_ptr + 2));
+            if pixmap != 0 {
+                let saved = (bus.read_long(window_ptr + 8), bus.read_long(window_ptr + 12));
+                bus.write_long(window_ptr + 8, bus.read_long(pixmap + 6));
+                bus.write_long(window_ptr + 12, bus.read_long(pixmap + 10));
+                Some(saved)
+            } else {
+                None
+            }
+        } else {
+            None
+        };
+        let t = self.find_window_hit_trampoline;
+        let mut at = t;
+        let mut word = |bus: &mut MacMemoryBus, at: &mut u32, value: u16| {
+            bus.write_word(*at, value);
+            *at += 2;
+        };
+        let long = |bus: &mut MacMemoryBus, at: &mut u32, value: u32| {
+            bus.write_long(*at, value);
+            *at += 4;
+        };
+        word(bus, &mut at, 0x48E7); // MOVEM.L D0-D3/A0-A3,-(SP)
+        word(bus, &mut at, 0xF0F0);
+        word(bus, &mut at, 0x2F3C); // MOVE.L #0,-(SP): the function result
+        long(bus, &mut at, 0);
+        word(bus, &mut at, 0x3F3C); // MOVE.W #varCode,-(SP)
+        word(bus, &mut at, (proc_id & 0xF) as u16);
+        word(bus, &mut at, 0x2F3C); // MOVE.L #theWindow,-(SP)
+        long(bus, &mut at, window_ptr);
+        word(bus, &mut at, 0x3F3C); // MOVE.W #wHit,-(SP)
+        word(bus, &mut at, Self::WDEF_WHIT_MSG as u16);
+        word(bus, &mut at, 0x2F3C); // MOVE.L #thePt,-(SP)
+        long(bus, &mut at, point);
+        word(bus, &mut at, 0x4EB9); // JSR proc
+        long(bus, &mut at, proc_addr);
+        word(bus, &mut at, 0x201F); // MOVE.L (SP)+,D0
+        word(bus, &mut at, 0x4A80); // TST.L D0
+        word(bus, &mut at, 0x670A); // BEQ.S noHit
+        word(bus, &mut at, 0x5440); // ADDQ.W #2,D0
+        word(bus, &mut at, 0x33C0); // MOVE.W D0,result
+        long(bus, &mut at, result_addr);
+        word(bus, &mut at, 0x600C); // BRA.S done
+        word(bus, &mut at, 0x4279); // noHit: CLR.W result
+        long(bus, &mut at, result_addr);
+        word(bus, &mut at, 0x42B9); // CLR.L whichWindow
+        long(bus, &mut at, which_addr);
+        word(bus, &mut at, 0x4CDF); // done: MOVEM.L (SP)+,D0-D3/A0-A3
+        word(bus, &mut at, 0x0F0F);
+        if let Some((graf_vars, color_fields)) = restore {
+            word(bus, &mut at, 0x23FC); // MOVE.L #grafVars,window+8
+            long(bus, &mut at, graf_vars);
+            long(bus, &mut at, window_ptr + 8);
+            word(bus, &mut at, 0x23FC); // MOVE.L #chExtra,window+12
+            long(bus, &mut at, color_fields);
+            long(bus, &mut at, window_ptr + 12);
+        }
+        word(bus, &mut at, 0x4E75); // RTS
+        debug_assert!(at - t <= Self::WDEF_TRAMPOLINE_SIZE);
+        let return_slot = cpu.read_reg(Register::A7).wrapping_sub(4);
+        bus.write_long(return_slot, cpu.read_reg(Register::PC));
+        cpu.write_reg(Register::A7, return_slot);
+        cpu.write_reg(Register::PC, t);
+        true
     }
 
     fn arm_window_def_messages<C: CpuOps>(
@@ -5259,6 +5362,14 @@ impl super::TrapDispatcher {
 
                 bus.write_word(sp + 8, part as u16);
                 cpu.write_reg(Register::A7, sp + 8);
+                let proc_id = self.window_proc_ids.get(&window_ptr).copied().unwrap_or(0);
+                if part == 4
+                    && !Self::window_is_document_proc(proc_id)
+                    && self.window_uses_custom_def_proc(bus, window_ptr)
+                {
+                    let point = (u32::from(pt_v as u16) << 16) | u32::from(pt_h as u16);
+                    let _ = self.arm_find_window_hit(cpu, bus, window_ptr, point, sp + 8, wnd_ptr_ptr);
+                }
                 Ok(())
             }
 

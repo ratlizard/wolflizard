@@ -2703,3 +2703,72 @@ fn driver_services_time_base_info_does_not_partially_write_invalid_outputs() {
         }
     }
 }
+
+#[test]
+fn font_manager_turns_smoothing_off_around_cytheras_credits() {
+    // TDisableAntiAliasText: Gestalt('qdtx') at least $0100, then
+    // FindSymbol in "FontManager", IsAntiAliasedTextEnabled(&min) and
+    // SetAntiAliasedTextEnabled(false, min) before the credits are drawn,
+    // SetAntiAliasedTextEnabled(true, min) after.
+    const OUTPUT: u32 = PPC_HEAP_BASE + 0x100;
+    let mut loaded = load_pef_application(&synthetic_pef_with_import(b"FindSymbol")).unwrap();
+    loaded.memory.add_region(OUTPUT, vec![0; 128]);
+    loaded
+        .cfm
+        .as_mut()
+        .unwrap()
+        .connections
+        .push(PpcCfmConnection {
+            references: 1,
+            container: None,
+            sections: Vec::new(),
+            id: 7,
+            library_name: "FontManager".into(),
+            main_addr: 0,
+            init_addr: 0,
+            term_addr: 0,
+            exports: vec![],
+        });
+    let mut vectors = Vec::new();
+    for (slot, name) in [b"IsAntiAliasedTextEnabled".as_slice(), b"SetAntiAliasedTextEnabled"]
+        .into_iter()
+        .enumerate()
+    {
+        let slot = slot as u32;
+        write_ppc_pstring(&mut loaded.memory, OUTPUT + 32, name);
+        loaded.cpu.pc = loaded.entry_pc;
+        loaded.cpu.lr = PPC_HALT_PC;
+        loaded.cpu.gpr[3] = 7;
+        loaded.cpu.gpr[4] = OUTPUT + 32;
+        loaded.cpu.gpr[5] = OUTPUT + slot * 4;
+        loaded.cpu.gpr[6] = OUTPUT + 16 + slot;
+        let probe = loaded.run_with_hle_imports(128);
+        assert_eq!(probe.unsupported_import_index, None);
+        assert_eq!(loaded.cpu.gpr[3], 0, "FindSymbol {:?}", String::from_utf8_lossy(name));
+        vectors.push(loaded.memory.read_u32_be(OUTPUT + slot * 4).unwrap());
+    }
+    let mut call = |loaded: &mut PpcLoadedApp, vector: u32, r3: u32, r4: u32| {
+        loaded.cpu.pc = loaded.memory.read_u32_be(vector).unwrap();
+        loaded.cpu.gpr[2] = loaded.memory.read_u32_be(vector + 4).unwrap();
+        loaded.cpu.lr = PPC_HALT_PC;
+        loaded.cpu.gpr[3] = r3;
+        loaded.cpu.gpr[4] = r4;
+        let probe = loaded.run_with_hle_imports(64);
+        assert_eq!(probe.unsupported_import_index, None);
+        loaded.cpu.gpr[3]
+    };
+    let min = OUTPUT + 24;
+    let before = crate::quickdraw::fonts::text_smoothing();
+    assert_eq!(call(&mut loaded, vectors[0], min, 0), u32::from(before.is_some()));
+    let saved = loaded.memory.read_u16_be(min).unwrap();
+    assert_eq!(call(&mut loaded, vectors[1], 0, u32::from(saved)), 0);
+    assert_eq!(crate::quickdraw::fonts::text_smoothing(), None);
+    assert_eq!(call(&mut loaded, vectors[0], 0, 0), 0);
+    assert_eq!(call(&mut loaded, vectors[1], 1, 9), 0);
+    assert_eq!(crate::quickdraw::fonts::text_smoothing(), Some(12), "a minimum below 12 is 12");
+    assert_eq!(call(&mut loaded, vectors[1], 1, 200), 0);
+    assert_eq!(crate::quickdraw::fonts::text_smoothing(), Some(12), "a minimum past 128 is 12");
+    assert_eq!(call(&mut loaded, vectors[1], 1, 18), 0);
+    assert_eq!(call(&mut loaded, vectors[0], min, 0), 1);
+    assert_eq!(loaded.memory.read_u16_be(min), Some(18));
+}

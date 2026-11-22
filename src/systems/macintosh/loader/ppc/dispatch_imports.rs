@@ -3660,6 +3660,29 @@ pub(crate) fn dispatch_supported_import(
             super::menu::ppc_set_sys_font(family, cpu.gpr[3] as u16 as i16);
             Some(PpcImportAction::ReturnPreserve)
         }
+        PpcImportDispatcherTarget::AntiAliasedText(true) => {
+            // OSStatus SetAntiAliasedTextEnabled(Boolean inEnable,
+            // SInt16 inMinFontSize): a minimum outside 1 to 128 means 12,
+            // and one below 12 is raised to 12 (TN1142, TN1149). It always
+            // returns noErr.
+            let enable = cpu.gpr[3] & 0xff != 0;
+            let size = cpu.gpr[4] as u16 as i16;
+            let size = if (1..=128).contains(&size) { size } else { 12 };
+            crate::quickdraw::fonts::set_text_smoothing(enable.then_some(size));
+            Some(PpcImportAction::Return(0))
+        }
+        PpcImportDispatcherTarget::AntiAliasedText(false) => {
+            // Boolean IsAntiAliasedTextEnabled(SInt16 *outMinFontSize): the
+            // minimum is written when smoothing is on and the pointer is not
+            // NULL (TN1142).
+            let smoothing = crate::quickdraw::fonts::text_smoothing();
+            if let Some(size) = smoothing {
+                if cpu.gpr[3] != 0 {
+                    let _ = memory.write_u16_be(cpu.gpr[3], size as u16);
+                }
+            }
+            Some(PpcImportAction::Return(u32::from(smoothing.is_some())))
+        }
         PpcImportDispatcherTarget::PPCOpenSync => {
             // PPCToolbox.h: PPCOpenPBRec.portRefNum at offset 38.
             let _ = memory.write_u16_be(cpu.gpr[3].wrapping_add(38), 1);

@@ -3123,29 +3123,16 @@ pub(crate) fn ppc_draw_text_chars(
     let mut nonspaces = 0i32;
     // Resolved at the first smoothed glyph (crate::quickdraw::fonts::smoothed).
     let mut text_blend: Option<Option<PpcTextBlend>> = None;
-    // Mac OS 8.5 smooths some text drawn into an offscreen GWorld and not
-    // other text. Cythera's credits, Argos A Nouveau 14 in colour into an
-    // 8-bit work world, show only the text's own colour on the real Mac
-    // (SheepShaver, 19 November 2026). The conversation, Argos 22 in black
-    // and grey into the same kind of world, and the Bind to Key dialog's
-    // radio labels, Argos 18 in black into a CDEF's 8-bit world, are smoothed
-    // there (22 November 2026): with them smoothed the dialog differs from
-    // 8.5 in 505 pixels where it differed in 1,165, and the conversation in
-    // 1,589 where it differed in 1,872. Both kinds of world come from
-    // NewGWorld at depth 8 with the same colour table, so the cut is the
-    // size, at 18 points, the smallest size seen smoothed offscreen. Why 8.5
-    // draws offscreen Argos 14 unsmoothed is not known. An offscreen is a
-    // surface whose pixels are not the screen's.
-    let screen_base = gworlds
-        .iter()
-        .find(|record| record.port == PPC_MAIN_GWORLD)
-        .map(|record| record.base_addr);
-    let offscreen = screen_base.is_some_and(|base| base != front_buffer.base_addr);
+    // Text drawn into an offscreen GWorld is smoothed as on the screen: the
+    // conversation, Argos 22 into an 8-bit work world, and the Bind to Key
+    // dialog's radio labels, Argos 18 into a CDEF's 8-bit world, are smoothed
+    // on Mac OS 8.5 (22 November 2026). The About credits, Argos 14 into the
+    // same kind of world, are not, because TScrollingCreditImageObject::Tick
+    // turns smoothing off around them with SetAntiAliasedTextEnabled
+    // (FontManager, dispatch_imports.rs).
     for ch in chars {
         let local_h = local_h + ppc_char_extra_pixels(packed_extra, text_size, nonspaces);
-        let found = (!offscreen || face.size >= 18)
-            .then(|| crate::quickdraw::fonts::get_smoothed_glyph(text_font, face.size, ch))
-            .flatten()
+        let found = crate::quickdraw::fonts::get_smoothed_glyph(text_font, face.size, ch)
             .or_else(|| get_glyph(text_font, face.size, ch));
         if let Some((glyph, data)) = found {
             // A smoothed glyph's partial pixels are blended in srcCopy and

@@ -13317,6 +13317,12 @@ impl super::TrapDispatcher {
                             state.draw_enabled = draw_it;
                         });
                         let list_ptr = Self::list_record_ptr(bus, list_handle);
+                        // A scroll bar the application's own CDEF draws
+                        // (Cythera's, procID 16016) is a guest call, armed
+                        // last (draw_control_or_defer_cdef). Drawn here it
+                        // fell through to the push-button fallback eleven
+                        // times a run.
+                        let mut cdef_calls = Vec::new();
                         if list_ptr != 0 {
                             for offset in [Self::LIST_VSCROLL_OFFSET, Self::LIST_HSCROLL_OFFSET] {
                                 let handle = bus.read_long(list_ptr + offset);
@@ -13330,11 +13336,14 @@ impl super::TrapDispatcher {
                                     // control visibility (IM IV-275). Mac OS 8.1
                                     // leaves contrlVis set until HideControl.
                                     bus.write_byte(control + 16, 255);
-                                    self.draw_control(cpu, bus, control);
+                                    cdef_calls.extend(
+                                        self.draw_control_or_defer_cdef(cpu, bus, handle, control),
+                                    );
                                 }
                             }
                         }
                         cpu.write_reg(Register::A7, sp + 8);
+                        self.arm_deferred_control_def_calls(cpu, bus, &cdef_calls);
                         Ok(())
                     }
 

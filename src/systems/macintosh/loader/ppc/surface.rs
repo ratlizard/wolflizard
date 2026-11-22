@@ -268,6 +268,12 @@ pub(crate) fn ppc_blend_text_pixel(
         blue: mix(blend.fore[2], back[2]),
     };
     let value = match &blend.clut {
+        // An 8-bit surface matches the blend as an arithmetic mode does. On
+        // the Revert alert and the To Do and Journal plaques this leaves 1,208
+        // pixels unlike Mac OS 8.5's where the nearest entry left 1,316.
+        Some(clut) if blend.entries == 256 => u16::from(
+            crate::trap::pict::arithmetic_mode_clut_index([color.red, color.green, color.blue], clut),
+        ),
         Some(clut) => u16::from(ppc_rgb_color_to_index_in_clut(color, clut, blend.entries)),
         None => ppc_rgb_color_to_rgb555(color),
     };
@@ -354,7 +360,8 @@ pub(crate) fn ppc_quickdraw_indexed_pixel_value(
 /// whose speaker icons hold (9999, 9999, FFFF) and (6666, 6666, 9999), a
 /// 5-bit table measured from the cell center gives entries 114 and 217 as
 /// 8.5 does, where the nearest entry to the color itself gives 115 and 216.
-/// Smoothed text fits the nearest entry better, so only icons take this.
+/// Blended colours, smoothed text among them, take the 4-bit cells of
+/// `arithmetic_mode_clut_index` instead.
 pub(crate) fn ppc_quickdraw_icon_pixel_value(
     memory: &mut PpcSectionMem,
     front_buffer: PpcFrontBuffer,

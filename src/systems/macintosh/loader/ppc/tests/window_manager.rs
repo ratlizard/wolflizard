@@ -3802,6 +3802,83 @@ fn calc_vis_behind_leaves_windows_in_front_out_of_the_visible_region() {
     assert!(ppc_point_in_region(&mut loaded.memory, vis_rgn, 260, 300));
 }
 
+/// A draw into a window behind keeps the pixels of the windows in front
+/// and puts them back afterwards. A round window in front keeps its circle
+/// and not its bounding box: Cythera's strange device had the world map
+/// put back in its corners after every copy into the map window behind it.
+#[test]
+fn a_draw_behind_a_round_window_keeps_only_the_circle() {
+    let pef = synthetic_pef_with_import(b"CalcVisBehind");
+    let mut loaded = load_pef_application(&pef).unwrap();
+    let mut last_mem_error = loaded.last_mem_error();
+    let bounds_ptr = PPC_DATA_BASE + 0x1000;
+    loaded.memory.add_region(bounds_ptr, vec![0; 8]);
+    let mut windows = Vec::new();
+    for (bounds, behind) in [((40, 0, 400, 600), 0), ((100, 100, 228, 228), u32::MAX)] {
+        let (top, left, bottom, right) = bounds;
+        ppc_write_rect(&mut loaded.memory, bounds_ptr, top, left, bottom, right).unwrap();
+        let mut window_cpu = loaded.cpu.clone();
+        window_cpu.gpr[3] = 0;
+        window_cpu.gpr[4] = bounds_ptr;
+        window_cpu.gpr[6] = 1;
+        window_cpu.gpr[7] = 2;
+        window_cpu.gpr[8] = behind;
+        let window = ppc_new_cwindow(
+            &window_cpu,
+            None,
+            &mut loaded.memory,
+            test_heap_cursor!(loaded),
+            test_heap_limit!(loaded),
+            &mut last_mem_error,
+            test_handles!(loaded),
+            &mut loaded.gworlds,
+            &mut loaded.window_list,
+        );
+        assert_ne!(window, 0);
+        windows.push(window);
+    }
+    let (back, front) = (windows[0], windows[1]);
+    // The front window's structure, as an application WDEF builds it: a
+    // circle 128 across in the same box.
+    let rows: Vec<Vec<i16>> = (100..228i32)
+        .map(|v| {
+            let dy = v - 164;
+            let half = ((64 * 64 - dy * dy).max(0) as f64).sqrt() as i32;
+            vec![(164 - half) as i16, (164 + half).max(165 - half) as i16]
+        })
+        .collect();
+    let circle = ppc_region_storage_from_rows(100, &rows).unwrap();
+    let structure = loaded
+        .memory
+        .read_u32_be(front + PPC_CWINDOW_STRUCTURE_RGN_OFFSET)
+        .unwrap();
+    assert_eq!(
+        ppc_write_region_storage(
+            None,
+            &mut loaded.memory,
+            test_heap_cursor!(loaded),
+            test_heap_limit!(loaded),
+            &mut last_mem_error,
+            test_handles!(loaded),
+            structure,
+            &circle,
+        ),
+        PPC_NO_ERR
+    );
+    assert_eq!(ppc_read_rgn_bbox(&mut loaded.memory, structure), Some((100, 100, 228, 228)));
+
+    let kept = super::super::dispatch_window::ppc_front_window_occlusion_pixels(
+        &mut loaded.memory,
+        &loaded.gworlds,
+        &loaded.window_list,
+        back,
+    )
+    .unwrap();
+    let has = |x: i32, y: i32| kept.pixels.iter().any(|&(px, py, _)| px == x && py == y);
+    assert!(has(164, 164), "the circle's center is kept");
+    assert!(!has(102, 102), "the box's corner belongs to the window behind");
+}
+
 #[test]
 fn region_operations_can_change_the_gray_region() {
     let pef = synthetic_pef_with_import(b"UnionRgn");

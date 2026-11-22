@@ -8172,6 +8172,90 @@ fn lupdate_redraws_the_list_scrollbar_beside_rview() {
     }
 }
 
+/// LDoDraw(TRUE) shows a list's scroll bars again. One that the
+/// application's own CDEF draws, as Cythera's are (procID 16016), is a
+/// guest call armed on the way out; drawn here instead it fell through to
+/// the push-button fallback, eleven times a run.
+#[test]
+fn ldodraw_hands_an_application_scrollbar_to_its_cdef() {
+    let (mut disp, mut cpu, mut bus) = setup();
+    let sp = TEST_SP;
+    let screen_base = 0x300000u32;
+    let row_bytes = 256u32;
+    let window_ptr = 0x210000u32;
+    let view_rect_ptr = 0x350000u32;
+    let data_bounds_ptr = 0x350100u32;
+
+    disp.set_screen_mode_for_test(screen_base, row_bytes, 256, 192, 8);
+    bus.write_long(0x0824, screen_base);
+    bus.write_word(crate::memory::globals::addr::MBAR_HEIGHT, 0);
+    disp.init_cgraf_window(
+        &mut bus, &mut cpu, window_ptr, screen_base, 20, 30, 120, 190, "", 0, true, false,
+        false, 0,
+    );
+    for (offset, value) in [(0, 10), (2, 10), (4, 50), (6, 90)] {
+        bus.write_word(view_rect_ptr + offset, value);
+    }
+    for (offset, value) in [(0, 0), (2, 0), (4, 8), (6, 1)] {
+        bus.write_word(data_bounds_ptr + offset, value);
+    }
+
+    cpu.write_reg(Register::A7, sp);
+    bus.write_word(sp, 0x0044); // LNew
+    bus.write_word(sp + 2, 0x0100); // scrollVert = TRUE
+    bus.write_word(sp + 4, 0); // scrollHoriz = FALSE
+    bus.write_word(sp + 6, 0); // hasGrow = FALSE
+    bus.write_word(sp + 8, 0); // drawIt = FALSE
+    bus.write_long(sp + 10, window_ptr);
+    bus.write_word(sp + 14, 0);
+    bus.write_word(sp + 16, 10);
+    bus.write_word(sp + 18, 80);
+    bus.write_long(sp + 20, data_bounds_ptr);
+    bus.write_long(sp + 24, view_rect_ptr);
+    bus.write_long(sp + 28, 0);
+    disp.dispatch_toolbox(true, 0x1E7, &mut cpu, &mut bus)
+        .unwrap()
+        .unwrap();
+    let list_handle = bus.read_long(sp + 28);
+    let list_ptr = bus.read_long(list_handle);
+    let scroll_handle = bus.read_long(list_ptr + TrapDispatcher::LIST_VSCROLL_OFFSET);
+    let scroll_ptr = bus.read_long(scroll_handle);
+    disp.control_manager.set_proc_id(scroll_ptr, 16016);
+    // A def proc whose first word the callable test accepts: JMP abs.L.
+    let def_proc = bus.alloc(8);
+    bus.write_word(def_proc, 0x4EF9);
+    let def_handle = bus.alloc(4);
+    bus.write_long(def_handle, def_proc);
+    bus.write_long(scroll_ptr + 24, def_handle);
+
+    // The strip the scroll bar covers, (29,120)-(71,136) on the screen.
+    for y in 29u32..71 {
+        for x in 120u32..136 {
+            bus.write_byte(screen_base + y * row_bytes + x, 0x7F);
+        }
+    }
+    let caller_pc = 0x0040_0000;
+    cpu.write_reg(Register::PC, caller_pc);
+    cpu.write_reg(Register::A7, sp);
+    bus.write_word(sp, 0x002C); // LDoDraw(TRUE)
+    bus.write_long(sp + 2, list_handle);
+    bus.write_word(sp + 6, 0x0100);
+    disp.dispatch_toolbox(true, 0x1E7, &mut cpu, &mut bus)
+        .unwrap()
+        .unwrap();
+
+    let drawn = (29u32..71)
+        .flat_map(|y| (120u32..136).map(move |x| (y, x)))
+        .filter(|&(y, x)| bus.read_byte(screen_base + y * row_bytes + x) != 0x7F)
+        .count();
+    assert_eq!(drawn, 0, "the fork drew the game's scroll bar itself");
+    assert_ne!(
+        cpu.read_reg(Register::PC),
+        caller_pc,
+        "LDoDraw armed no call of the scroll bar's CDEF"
+    );
+}
+
 // Pack0 / List Manager ($A9E7) — LAddRow selector $0008
 // IM:IV 1986 p. IV-271: returns first added row and increases dataBounds.bottom.
 #[test]

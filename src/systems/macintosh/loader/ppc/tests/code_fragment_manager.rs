@@ -2769,7 +2769,7 @@ fn font_manager_turns_smoothing_off_around_cytheras_credits() {
         assert_eq!(loaded.cpu.gpr[3], 0, "FindSymbol {:?}", String::from_utf8_lossy(name));
         vectors.push(loaded.memory.read_u32_be(OUTPUT + slot * 4).unwrap());
     }
-    let mut call = |loaded: &mut PpcLoadedApp, vector: u32, r3: u32, r4: u32| {
+    let call = |loaded: &mut PpcLoadedApp, vector: u32, r3: u32, r4: u32| {
         loaded.cpu.pc = loaded.memory.read_u32_be(vector).unwrap();
         loaded.cpu.gpr[2] = loaded.memory.read_u32_be(vector + 4).unwrap();
         loaded.cpu.lr = PPC_HALT_PC;

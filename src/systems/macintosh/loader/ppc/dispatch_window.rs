@@ -2538,12 +2538,26 @@ pub(super) fn ppc_front_window_occlusion_pixels(
             ppc_window_is_visible(memory, candidate)
         })
     });
+    // Each window in front keeps the pixels of its structure region, not of
+    // the region's bounding box: the corners of a round window belong to the
+    // windows behind it. Cythera's strange device is round, and saving its
+    // whole rectangle put the world map back in its corners after every
+    // copy into the map window, so they still showed it after the party
+    // walked into Cademia, where Mac OS 8.5 draws Cademia up to the circle.
+    // The menu bar, and a window with no region yet, are rectangles.
     let fronts = occluders
         .into_iter()
-        .filter_map(|front| ppc_window_global_structure_bounds(memory, gworlds, front))
-        .chain(menu_bar)
+        .filter_map(|front| {
+            let bounds = ppc_window_global_structure_bounds(memory, gworlds, front)?;
+            let storage = memory
+                .read_u32_be(front.wrapping_add(PPC_CWINDOW_STRUCTURE_RGN_OFFSET))
+                .and_then(|rgn| ppc_region_storage(memory, rgn))
+                .filter(|storage| ppc_region_storage_bbox(storage) == Some(bounds));
+            Some((bounds, storage))
+        })
+        .chain(menu_bar.map(|bounds| (bounds, None)))
         .collect::<Vec<_>>();
-    for front_structure in fronts {
+    for (front_structure, front_region) in fronts {
         let overlap = (
             target_structure.0.max(front_structure.0).max(0),
             target_structure.1.max(front_structure.1).max(0),
@@ -2559,8 +2573,22 @@ pub(super) fn ppc_front_window_occlusion_pixels(
         if overlap.0 >= overlap.2 || overlap.1 >= overlap.3 {
             continue;
         }
+        let region_rows = front_region
+            .as_deref()
+            .and_then(|storage| ppc_region_rows_for_band(storage, overlap.0, overlap.2));
         for y in i32::from(overlap.0)..i32::from(overlap.2) {
+            let spans = region_rows
+                .as_ref()
+                .and_then(|rows| rows.get((y - i32::from(overlap.0)) as usize));
             for x in i32::from(overlap.1)..i32::from(overlap.3) {
+                if let Some(spans) = spans {
+                    let inside = spans
+                        .chunks_exact(2)
+                        .any(|span| x >= i32::from(span[0]) && x < i32::from(span[1]));
+                    if !inside {
+                        continue;
+                    }
+                }
                 if let Some(pixel) = ppc_quickdraw_read_pixel(memory, front_buffer, (x, y)) {
                     pixels.push((x, y, pixel));
                 }

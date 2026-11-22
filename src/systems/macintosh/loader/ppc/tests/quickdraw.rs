@@ -5965,6 +5965,47 @@ fn offset_full_clip_region_preserves_unbounded_extent() {
     assert!(!ppc_empty_rgn(&mut loaded.memory, PPC_MAIN_CLIP_RGN_HANDLE));
 }
 
+/// ClipAbove for Cythera's map window with the strange device's round window
+/// in front: 352 rows, a circle 128 across cut out of the left edge. The
+/// region is about 1.5 KB and has to fit the Window Manager port's clipRgn,
+/// which lies outside the heap; the 512 bytes it had refused it.
+#[test]
+fn window_manager_clip_holds_a_window_with_a_round_one_in_front() {
+    let mut loaded = load_pef_application(&synthetic_pef_with_import(b"OffsetRgn")).unwrap();
+    let mut last_mem_error = 0;
+    let (top, left, right) = (52i16, 396i16, 748i16);
+    let (cv, ch, radius) = (234i32, 385i32, 64i32);
+    let rows: Vec<Vec<i16>> = (0..352)
+        .map(|row| {
+            let v = i32::from(top) + row;
+            let dy = v - cv;
+            if dy.abs() >= radius {
+                return vec![left, right];
+            }
+            let half = ((radius * radius - dy * dy) as f64).sqrt() as i32;
+            let cut = (ch + half).max(i32::from(left)) as i16;
+            vec![cut, right]
+        })
+        .collect();
+    let storage = ppc_region_storage_from_rows(top, &rows).unwrap();
+    assert!(storage.len() > 512, "the region is {} bytes", storage.len());
+
+    assert_eq!(
+        ppc_write_region_storage(
+            None,
+            &mut loaded.memory,
+            test_heap_cursor!(loaded),
+            test_heap_limit!(loaded),
+            &mut last_mem_error,
+            test_handles!(loaded),
+            PPC_MAIN_CLIP_RGN_HANDLE,
+            &storage,
+        ),
+        PPC_NO_ERR
+    );
+    assert_eq!(ppc_region_storage(&mut loaded.memory, PPC_MAIN_CLIP_RGN_HANDLE), Some(storage));
+}
+
 #[test]
 fn set_origin_preserves_window_screen_position() {
     let mut loaded = load_pef_application(&synthetic_pef_with_import(b"SetOrigin")).unwrap();

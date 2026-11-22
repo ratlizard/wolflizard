@@ -249,6 +249,7 @@ pub(crate) fn ppc_draw_pict_bytes_clipped(
         bus.write_bytes(pict_base, data);
         bus.write_bytes(screen_base, &indexed);
         bus.begin_uncapped_write_probe();
+        let _smoothing = pict::PictureTextSmoothing::enable();
         let (rendered, _) = pict::draw_picture(
             &mut bus,
             pict_base + u32::try_from(pict_offset).unwrap_or(0),

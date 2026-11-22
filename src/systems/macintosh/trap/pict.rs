@@ -5084,6 +5084,27 @@ fn draw_picture_line(
 /// plotted through `write_pixel` after the picture→dst coord transform so
 /// scaling + clipping match the shape-opcode paths.
 #[allow(clippy::too_many_arguments)]
+thread_local! {
+    static PICTURE_TEXT_SMOOTHING: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// Smooths the text of pictures drawn while it lives. The PowerPC picture
+/// renderer holds one, since text there is smoothed as Mac OS 8.5 smooths it;
+/// the 68K slice smooths no text, so its pictures keep one-bit glyphs.
+pub(crate) struct PictureTextSmoothing(bool);
+
+impl PictureTextSmoothing {
+    pub(crate) fn enable() -> Self {
+        Self(PICTURE_TEXT_SMOOTHING.with(|flag| flag.replace(true)))
+    }
+}
+
+impl Drop for PictureTextSmoothing {
+    fn drop(&mut self) {
+        PICTURE_TEXT_SMOOTHING.with(|flag| flag.set(self.0));
+    }
+}
+
 fn draw_picture_text(
     bus: &mut MacMemoryBus,
     screen_mode: (u32, u32, u16, u16, u16),
@@ -5122,7 +5143,8 @@ fn draw_picture_text(
     // pixels blend the text colour into the pixel there, matched as an
     // arithmetic mode matches, at an unscaled 8-bit destination in srcCopy
     // or srcOr with no style.
-    let smooth_text = pixel_size == 8
+    let smooth_text = PICTURE_TEXT_SMOOTHING.with(std::cell::Cell::get)
+        && pixel_size == 8
         && scale_x == 1.0
         && scale_y == 1.0
         && text_face == 0

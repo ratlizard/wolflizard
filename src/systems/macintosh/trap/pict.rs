@@ -229,6 +229,34 @@ fn reserved_match_entries(clut: &[[u16; 3]; 256]) -> [bool; 256] {
     }
 }
 
+/// The entry an arithmetic transfer mode stores for `rgb` on an 8-bit
+/// device. QuickDraw matches the result of blend and its kin through the
+/// device's inverse table, whose cells here are 4 bits a component, and
+/// each entry of the palette stands in the cell holding it, so the match
+/// is between cells, not between colours: the lowest entry whose cell is
+/// nearest the colour's cell by summed absolute difference, leaving out
+/// entries reserved for animation. Against Mac OS 8.5's default ring on
+/// Cythera's Revert alert, which `Bevel` draws in blend mode twice, white
+/// over parchment, this gives 658 of 660 pixels and the nearest entry to
+/// the colour 273: over entry 131, 8.5 shows 165, which this picks, where
+/// the nearest entry is 177.
+pub(crate) fn arithmetic_mode_clut_index(rgb: [u16; 3], clut: &[[u16; 3]; 256]) -> u8 {
+    let reserved = reserved_match_entries(clut);
+    let cell = rgb.map(|value| i32::from(value >> 12));
+    let mut best = (i32::MAX, 0u8);
+    for (index, entry) in clut.iter().enumerate() {
+        if reserved[index] {
+            continue;
+        }
+        let distance: i32 =
+            entry.iter().zip(cell).map(|(value, cell)| (i32::from(value >> 12) - cell).abs()).sum();
+        if distance < best.0 {
+            best = (distance, index as u8);
+        }
+    }
+    best.1
+}
+
 #[derive(Clone)]
 struct SrcToDstTableCacheEntry {
     src_clut: Vec<[u16; 3]>,

@@ -358,7 +358,10 @@ pub(crate) fn ppc_line_to_with_pen(
                 green: mix(color.green, back[1], weight.green),
                 blue: mix(color.blue, back[2], weight.blue),
             };
-            let value = u16::from(ppc_rgb_color_to_index_in_clut(mixed, clut, 256));
+            let value = u16::from(crate::trap::pict::arithmetic_mode_clut_index(
+                [mixed.red, mixed.green, mixed.blue],
+                clut,
+            ));
             wrote |= ppc_quickdraw_write_raw_pixel(memory, front_buffer, point, value);
             continue;
         }

@@ -1748,6 +1748,8 @@ pub struct TrapDispatcher {
     /// Address of the lazily-allocated trampoline template used by the
     /// Window Manager to call a guest WDEF procedure.
     pub(crate) window_def_trampoline: u32,
+    pub(crate) find_window_hit_trampoline: u32,
+    pub(crate) find_window_hit_scratch: u32,
     /// The return addresses of the `_CalcVis` a WDEF chain's last trampoline
     /// calls after a wCalcRgns. The CalcVis handler recomputes every window's
     /// visRgn when it is called from one of them, because an application WDEF
@@ -4335,6 +4337,8 @@ impl TrapDispatcher {
             device_loop_trampoline: 0,
             list_def_trampoline: 0,
             window_def_trampoline: 0,
+            find_window_hit_trampoline: 0,
+            find_window_hit_scratch: 0,
             window_def_calcvis_sites: HashSet::new(),
             window_def_pending_erase: HashSet::new(),
             control_def_trampoline: 0,

@@ -6115,9 +6115,20 @@ pub(crate) fn ppc_copy_bits(
         // destination's. A rectangular result narrows the copy and keeps the
         // row path; anything else becomes (part of) the mask.
         if ppc_trace_defproc_enabled() {
+            let bbox = |memory: &mut PpcSectionMem, offset: u32| {
+                memory
+                    .read_u32_be(current_gworld.wrapping_add(offset))
+                    .and_then(|rgn| ppc_read_rgn_bbox(memory, rgn))
+            };
+            let (vis, clip) = (
+                bbox(memory, PPC_CGRAF_PORT_VIS_RGN_OFFSET),
+                bbox(memory, PPC_CGRAF_PORT_CLIP_RGN_OFFSET),
+            );
             eprintln!(
-                "[PPC-CLIP] CopyBits dst=${dst_bits_ptr:08X} port=${current_gworld:08X} match={}",
-                dst_bits_ptr == current_gworld.wrapping_add(2)
+                "[PPC-CLIP] CopyBits dst=${dst_bits_ptr:08X} port=${current_gworld:08X} match={} rect=({dst_top}, {dst_left}, {dst_bottom}, {dst_right}) vis={vis:?} clip={clip:?} mode={mode} dst_base=${:08X} src_base=${:08X}",
+                dst_bits_ptr == current_gworld.wrapping_add(2),
+                dst_bits.base_addr,
+                src_bits.base_addr,
             );
         }
         if dst_bits_ptr == current_gworld.wrapping_add(2) && current_gworld != 0 {

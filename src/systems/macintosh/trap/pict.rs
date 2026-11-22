@@ -1071,6 +1071,7 @@ pub fn draw_picture(
                     fg_idx,
                     bg_idx,
                     tx_mode,
+                    device_clut,
                 );
                 if is_v2 && !(1 + len).is_multiple_of(2) {
                     pos += 1;
@@ -1106,6 +1107,7 @@ pub fn draw_picture(
                     fg_idx,
                     bg_idx,
                     tx_mode,
+                    device_clut,
                 );
                 if is_v2 && !len.is_multiple_of(2) {
                     pos += 1;
@@ -1141,6 +1143,7 @@ pub fn draw_picture(
                     fg_idx,
                     bg_idx,
                     tx_mode,
+                    device_clut,
                 );
                 if is_v2 && !len.is_multiple_of(2) {
                     pos += 1;
@@ -1178,6 +1181,7 @@ pub fn draw_picture(
                     fg_idx,
                     bg_idx,
                     tx_mode,
+                    device_clut,
                 );
                 if is_v2 && !(1 + len).is_multiple_of(2) {
                     pos += 1;
@@ -4732,6 +4736,7 @@ fn draw_picture_text(
     fg_idx: u8,
     bg_idx: u8,
     tx_mode: i16,
+    device_clut: &[[u16; 3]; 256],
 ) {
     let (screen_base, screen_rb, screen_w, screen_h, pixel_size) = screen_mode;
     let screen_w = screen_w as i32;
@@ -4740,9 +4745,25 @@ fn draw_picture_text(
     let styled_advance = |advance: i32| advance + i32::from(text_face & 0x01 != 0);
     let inv_sx = if scale_x > 0.0 { 1.0 / scale_x } else { 1.0 };
     let inv_sy = if scale_y > 0.0 { 1.0 / scale_y } else { 1.0 };
+    // Mac OS 8.5 smooths text a picture plays back as it smooths text drawn
+    // directly: Cythera's note window records its text, Argos 14 in srcOr,
+    // into a picture and draws that, and 8.5 shows the text with blended
+    // edges (SheepShaver, 22 November 2026). A smoothed glyph's partial
+    // pixels blend the text colour into the pixel there, matched as an
+    // arithmetic mode matches, at an unscaled 8-bit destination in srcCopy
+    // or srcOr with no style.
+    let smooth_text = pixel_size == 8
+        && scale_x == 1.0
+        && scale_y == 1.0
+        && text_face == 0
+        && matches!(tx_mode & 0x3F, 0 | 1);
     for i in 0..len {
         let ch = bus.read_byte(text_ptr + i) as char;
-        if let Some((glyph, data)) = crate::quickdraw::text::get_glyph(font_id, font_size, ch) {
+        let smoothed = smooth_text
+            .then(|| crate::quickdraw::fonts::get_smoothed_glyph(font_id, font_size, ch))
+            .flatten();
+        let found = smoothed.or_else(|| crate::quickdraw::text::get_glyph(font_id, font_size, ch));
+        if let Some((glyph, data)) = found {
             let gx0 = cur_h + glyph.origin_x as i32;
             let gy0 = pen_v as i32 + glyph.origin_y as i32;
             let gw = glyph.width as usize;
@@ -4750,7 +4771,9 @@ fn draw_picture_text(
             for row in 0..gh {
                 for col in 0..gw {
                     let idx = glyph.data_offset + row * gw + col;
-                    if idx >= data.len() || data[idx] < 128 {
+                    let coverage = data.get(idx).copied().unwrap_or(0);
+                    let partial = smoothed.is_some() && coverage != 0 && coverage != 255;
+                    if coverage == 0 || (!partial && coverage < 128) {
                         continue;
                     }
                     let pic_y = gy0 + row as i32;
@@ -4796,7 +4819,17 @@ fn draw_picture_text(
                                 bus.write_byte(addr, old ^ fg_idx);
                             }
                                         3 => bus.write_byte(addr, bg_idx),
-                                        _ => bus.write_byte(addr, fg_idx),
+                                        _ if partial => {
+                                let back = device_clut[usize::from(bus.read_byte(addr))];
+                                let fore = device_clut[usize::from(fg_idx)];
+                                let mix = |fore: u16, back: u16| -> u16 {
+                                    let (fore, back, c) = (i64::from(fore), i64::from(back), i64::from(coverage));
+                                    (back + ((fore - back) * c + if fore >= back { 127 } else { -127 }) / 255) as u16
+                                };
+                                let rgb = [mix(fore[0], back[0]), mix(fore[1], back[1]), mix(fore[2], back[2])];
+                                bus.write_byte(addr, arithmetic_mode_clut_index(rgb, device_clut));
+                            }
+                            _ => bus.write_byte(addr, fg_idx),
                         }
                     } else {
                         write_pixel_clipped(

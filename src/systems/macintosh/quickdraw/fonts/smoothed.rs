@@ -26,6 +26,7 @@
 //!   outline to smooth.
 //! - A game's own TrueType fonts, and the bundled substitute outlines, are
 //!   smoothed from their outlines (`outline::rasterize_smoothed`).
+use std::cell::Cell;
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicI16, Ordering};
 use std::sync::{LazyLock, Mutex};
@@ -36,14 +37,26 @@ use super::{override_format, FontFace, Glyph, FONT_CHARCOAL};
 /// environment has been read.
 static MIN_SIZE: AtomicI16 = AtomicI16::new(-1);
 
+thread_local! {
+    /// The setting a guest made with SetAntiAliasedTextEnabled, in place of
+    /// the environment's: the minimum size, or 0 for off. A guest draws on
+    /// the thread that runs it, so two guests side by side, as in the tests,
+    /// do not see each other's setting.
+    static GUEST_MIN_SIZE: Cell<Option<i16>> = const { Cell::new(None) };
+}
+
 /// Turn smoothing on from `min_size` points (raised to 12, as Mac OS 8.5's
-/// SetAntiAliasedTextEnabled does), or off with None.
+/// SetAntiAliasedTextEnabled does), or off with None, for the guest on this
+/// thread.
 pub fn set_text_smoothing(min_size: Option<i16>) {
-    MIN_SIZE.store(min_size.map_or(0, |size| size.max(12)), Ordering::Release);
+    GUEST_MIN_SIZE.with(|cell| cell.set(Some(min_size.map_or(0, |size| size.max(12)))));
 }
 
 /// The minimum smoothed size, or None when smoothing is off.
 pub fn text_smoothing() -> Option<i16> {
+    if let Some(min) = GUEST_MIN_SIZE.with(Cell::get) {
+        return (min > 0).then_some(min);
+    }
     let mut min = MIN_SIZE.load(Ordering::Acquire);
     if min < 0 {
         min = match std::env::var("SYSTEMLESS_TEXT_SMOOTHING").ok().as_deref() {

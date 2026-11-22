@@ -383,3 +383,17 @@ fn gestalt_drag_reports_native_manager_and_images_without_floating_extensions() 
     assert_eq!(loaded.cpu.gpr[3], 0);
     assert_eq!(loaded.memory.read_u32_be(output), Some(13));
 }
+
+#[test]
+fn quickdraw_text_version_is_mac_os_8_5s() {
+    // gestaltAllegroQDText, which Cythera's TDisableAntiAliasText needs
+    // before it looks up FontManager's anti-aliased text routines.
+    let mut loaded = load_pef_application(&synthetic_pef_with_import(b"Gestalt")).unwrap();
+    let response_ptr = PPC_HEAP_BASE;
+    loaded.memory.add_region(response_ptr, vec![0; 4]);
+    loaded.cpu.gpr[3] = u32::from_be_bytes(*b"qdtx");
+    loaded.cpu.gpr[4] = response_ptr;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::Gestalt);
+    assert_eq!(loaded.cpu.gpr[3], ppc_i16_result(PPC_NO_ERR));
+    assert_eq!(loaded.memory.read_u32_be(response_ptr), Some(0x0100));
+}

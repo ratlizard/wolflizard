@@ -343,6 +343,12 @@ pub fn evaluate_gestalt_selector(
                 b"qd3d" => Some(GestaltQueryResult::ok(1)),
                 // QuickDraw 3D release version ($01608000).
                 b"q3v " => Some(GestaltQueryResult::ok(GESTALT_QD3D_VERSION)),
+                // gestaltQDTextVersion ('qdtx') -> gestaltAllegroQDText
+                // ($0100), the QuickDraw Text of Mac OS 8.5 (Technical Note
+                // TN1142), whose anti-aliased text routines FontManager
+                // exports. The 68K slice stands for 7.6 and 8.1, which
+                // answer gestaltOriginalQDText or nothing.
+                b"qdtx" => Some(GestaltQueryResult::ok(0x0100)),
                 _ => None,
             },
         },

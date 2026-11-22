@@ -1575,6 +1575,9 @@ pub enum PpcImportDispatcherTarget {
     ReturnU32(u32),
     /// LMSetSysFontFam (true) or LMSetSysFontSize (false).
     SetSysFont(bool),
+    /// FontManager's SetAntiAliasedTextEnabled (true) or
+    /// IsAntiAliasedTextEnabled (false).
+    AntiAliasedText(bool),
     ReturnOne,
     NoOpPreserve,
     UnresolvedWeak,
@@ -4611,6 +4614,17 @@ pub(crate) fn dispatcher_target_for_import(
         // does.
         ("InterfaceLib" | "NavigationLib", "NavServicesCanRun") => {
             PpcImportDispatcherTarget::ReturnError(1)
+        }
+        // Mac OS 8.5's QuickDraw Text turns anti-aliased text on and off
+        // through these two, exported from the FontManager fragment in the
+        // System file (Technical Notes TN1142 and TN1149). Cythera looks
+        // them up with FindSymbol and turns smoothing off while it draws the
+        // About credits.
+        ("FontManager", "IsAntiAliasedTextEnabled") => {
+            PpcImportDispatcherTarget::AntiAliasedText(false)
+        }
+        ("FontManager", "SetAntiAliasedTextEnabled") => {
+            PpcImportDispatcherTarget::AntiAliasedText(true)
         }
         // NavLibraryVersion returns a NumVersion; Mac OS 8.5 shipped
         // Navigation Services 1.1. Cythera tests that this import resolved

@@ -1022,7 +1022,8 @@ impl super::TrapDispatcher {
     /// every point falls (Inside Macintosh Volume I, pp. I-287 and I-299);
     /// the trap cannot run guest code itself, so it returns into a stub that
     /// calls the WDEF and maps wInContent..wInZoomOut (1..6) to inContent..
-    /// inZoomOut (3..8), and wNoHit to inDesk with no window. Without it the
+    /// inZoomOut (3..8). On wNoHit the search goes on behind the window, and
+    /// the stub gives the answer `fallback` holds for that. Without it the
     /// 68K slice dragged Cythera's To Do plaque as a window of its own,
     /// where the PowerPC slice, which asks the WDEF, opens the drawer.
     fn arm_find_window_hit<C: CpuOps>(
@@ -1033,6 +1034,7 @@ impl super::TrapDispatcher {
         point: u32,
         result_addr: u32,
         which_addr: u32,
+        fallback: (i16, u32),
     ) -> bool {
         let proc_id = self.window_proc_ids.get(&window_ptr).copied().unwrap_or(0);
         if !Self::is_application_window_def_proc_id(proc_id) {
@@ -1094,10 +1096,12 @@ impl super::TrapDispatcher {
         word(bus, &mut at, 0x5440); // ADDQ.W #2,D0
         word(bus, &mut at, 0x33C0); // MOVE.W D0,result
         long(bus, &mut at, result_addr);
-        word(bus, &mut at, 0x600C); // BRA.S done
-        word(bus, &mut at, 0x4279); // noHit: CLR.W result
+        word(bus, &mut at, 0x6012); // BRA.S done
+        word(bus, &mut at, 0x33FC); // noHit: MOVE.W #part,result
+        word(bus, &mut at, fallback.0 as u16);
         long(bus, &mut at, result_addr);
-        word(bus, &mut at, 0x42B9); // CLR.L whichWindow
+        word(bus, &mut at, 0x23FC); // MOVE.L #window,whichWindow
+        long(bus, &mut at, fallback.1);
         long(bus, &mut at, which_addr);
         word(bus, &mut at, 0x4CDF); // done: MOVEM.L (SP)+,D0-D3/A0-A3
         word(bus, &mut at, 0x0F0F);
@@ -2897,8 +2901,22 @@ impl super::TrapDispatcher {
         pt_h: i16,
         mbar_h: i16,
     ) -> (i16, u32) {
+        self.find_window_at_point_skipping(bus, pt_v, pt_h, mbar_h, None)
+    }
+
+    /// [`Self::find_window_at_point`] with one window left out: the answer
+    /// FindWindow gives when that window's WDEF reports wNoHit and the
+    /// search goes on to the windows behind it.
+    fn find_window_at_point_skipping(
+        &self,
+        bus: &MacMemoryBus,
+        pt_v: i16,
+        pt_h: i16,
+        mbar_h: i16,
+        skip: Option<u32>,
+    ) -> (i16, u32) {
         for window_ptr in self.window_list.windows() {
-            if !self.window_visible(bus, window_ptr) {
+            if Some(window_ptr) == skip || !self.window_visible(bus, window_ptr) {
                 continue;
             }
             if self
@@ -5589,7 +5607,17 @@ impl super::TrapDispatcher {
                     && self.window_uses_custom_def_proc(bus, window_ptr)
                 {
                     let point = (u32::from(pt_v as u16) << 16) | u32::from(pt_h as u16);
-                    let _ = self.arm_find_window_hit(cpu, bus, window_ptr, point, sp + 8, wnd_ptr_ptr);
+                    let fallback =
+                        self.find_window_at_point_skipping(bus, pt_v, pt_h, mbar_h, Some(window_ptr));
+                    let _ = self.arm_find_window_hit(
+                        cpu,
+                        bus,
+                        window_ptr,
+                        point,
+                        sp + 8,
+                        wnd_ptr_ptr,
+                        fallback,
+                    );
                 }
                 Ok(())
             }

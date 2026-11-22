@@ -283,6 +283,18 @@ pub fn get_macroman_glyph(
                 .map(|entry| (&entry.glyph, face.data));
         }
     }
+    // An override face stores no control codes, so one it cannot draw takes
+    // the strike's missing-character glyph when the blob carries it, as
+    // QuickDraw draws it on a Mac.
+    if matches!(mac_code, 0x00..=0x1F | 0x7F) {
+        if let Some(face) = get_override_font_face(font_id, size) {
+            if let Some(glyph) = face.glyphs.get(override_format::MISSING_GLYPH_INDEX) {
+                if glyph.width != 0 || glyph.height != 0 || glyph.advance != 0 {
+                    return Some((glyph, face.data));
+                }
+            }
+        }
+    }
     None
 }
 

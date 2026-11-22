@@ -18,7 +18,8 @@
 //! Glyph order starts with the ASCII printable 0x20..=0x7E entries, then
 //! appends classic menu symbols that live below ASCII in the
 //! System font: Command key (Mac Roman 0x11), checkmark (0x12), and Apple mark
-//! (0x14). Missing glyphs are encoded as zero-sized entries with a positive
+//! (0x14), and optionally the strike's missing-character glyph. Missing
+//! glyphs are encoded as zero-sized entries with a positive
 //! advance for spaces or `0` advance for "not in font".
 
 use std::collections::HashMap;
@@ -37,6 +38,10 @@ pub const COMMAND_SYMBOL_GLYPH_INDEX: usize = ASCII_GLYPH_COUNT as usize;
 pub const CHECKMARK_SYMBOL_GLYPH_INDEX: usize = COMMAND_SYMBOL_GLYPH_INDEX + 1;
 pub const APPLE_SYMBOL_GLYPH_INDEX: usize = CHECKMARK_SYMBOL_GLYPH_INDEX + 1;
 pub const GLYPH_COUNT: u16 = ASCII_GLYPH_COUNT + 3;
+/// A blob may carry one more entry after the menu symbols: the strike's
+/// missing-character glyph, which QuickDraw draws for a code the font lacks.
+/// Blobs written before it have `GLYPH_COUNT` entries and load as before.
+pub const MISSING_GLYPH_INDEX: usize = GLYPH_COUNT as usize;
 
 pub const STYLE_PLAIN: u8 = 0;
 pub const STYLE_BOLD: u8 = 1;
@@ -312,6 +317,26 @@ mod tests {
         assert_eq!(back.glyphs[1].advance, 4);
         assert_eq!(back.glyphs[1].origin_y, -7);
         assert_eq!(back.data, blob.data);
+    }
+
+    #[test]
+    fn a_blob_keeps_its_missing_character_glyph() {
+        let mut blob = sample_blob();
+        let empty = blob.glyphs[0].clone();
+        blob.glyphs = vec![empty; MISSING_GLYPH_INDEX];
+        blob.glyphs.push(Glyph {
+            width: 1,
+            height: 1,
+            advance: 6,
+            origin_x: 1,
+            origin_y: -7,
+            data_offset: 0,
+        });
+        let mut buf = Vec::new();
+        write_blob(&mut buf, &blob).unwrap();
+        let back = read_blob(&buf).unwrap();
+        assert_eq!(back.glyphs.len(), MISSING_GLYPH_INDEX + 1);
+        assert_eq!(back.glyphs[MISSING_GLYPH_INDEX].advance, 6);
     }
 
     #[test]

@@ -808,6 +808,91 @@ fn draw_check_box(
     }
 }
 
+/// A pop-up menu button (popupMenuProc, CDEF 63) as Mac OS 8.5 draws it in
+/// any window, the system-wide Platinum appearance being on as 8.5 ships:
+/// a black frame with its corners cut by 60 grey dots, a white edge inside
+/// it above and to the left of the title and a 191 one below and to the
+/// right, and at the right end a raised box with the two arrows. The face is
+/// left as the window drew it: in Cythera's character window the parchment
+/// shows through the title and the arrows. Measured from 8.5 (SheepShaver,
+/// 256 colours) on the Strategy pop-up, rect (281,84,301,256), in
+/// `work/autoplay/realmac/pair-talk2/saves/talked-mac/screen.png`. `rect` is
+/// the button's part of the control, after any label, and `title` the
+/// selected item, already fitted to the width this leaves it.
+pub(super) fn ppc_draw_platinum_popup(
+    memory: &mut PpcSectionMem,
+    gworlds: &[PpcGWorldRecord],
+    owner: u32,
+    rect: (i16, i16, i16, i16),
+    title: &[u8],
+) -> bool {
+    let mut pen = Pen::new(memory, gworlds, owner);
+    draw_popup_button(&mut pen, rect, title);
+    pen.wrote
+}
+
+/// The width a pop-up button's title may take: from its pen to the
+/// title area's right edge, two pixels clear of it.
+pub(super) fn ppc_platinum_popup_title_width((_, l, _, r): (i16, i16, i16, i16)) -> i16 {
+    (r - 25) - (l + POPUP_TITLE_INSET)
+}
+
+const POPUP_TITLE_INSET: i16 = 6;
+
+fn draw_popup_button(pen: &mut Pen<'_>, (t, l, b, r): (i16, i16, i16, i16), title: &[u8]) {
+    let (bottom, right) = (b - 1, r - 1);
+    // The frame, its corners cut on the diagonal.
+    pen.hline(t, l + 3, right - 3, grey(BLACK));
+    pen.hline(bottom, l + 3, right - 3, grey(BLACK));
+    pen.vline(l, t + 3, bottom - 3, grey(BLACK));
+    pen.vline(right, t + 3, bottom - 3, grey(BLACK));
+    for (h, v) in [(l + 1, t + 1), (right - 1, t + 1), (l + 1, bottom - 1), (right - 1, bottom - 1)] {
+        pen.dot(h, v, grey(BLACK));
+    }
+    for (h, v) in [
+        (l + 2, t),
+        (right - 2, t),
+        (l, t + 2),
+        (right, t + 2),
+        (l, bottom - 2),
+        (right, bottom - 2),
+        (l + 2, bottom),
+        (right - 2, bottom),
+    ] {
+        pen.dot(h, v, grey(60));
+    }
+    // The title's part: white above and to the left, 191 below and at its
+    // right end, which meets the arrow box's shadow in a 203 dot.
+    let divider = right - 21;
+    pen.hline(t + 1, l + 2, divider - 1, grey(WHITE));
+    pen.vline(l + 1, t + 2, bottom - 2, grey(WHITE));
+    pen.vline(divider, t + 2, bottom - 1, grey(191));
+    pen.hline(bottom - 1, l + 2, divider - 1, grey(191));
+    pen.dot(divider + 1, bottom - 1, grey(203));
+    pen.dot(right - 2, t + 1, grey(203));
+    // The arrow box, a column clear of the title's part: white above and to
+    // the left, 191 then 148 below and to the right.
+    let (box_left, box_right) = (divider + 2, right - 1);
+    pen.hline(t + 2, box_left, box_right - 2, grey(WHITE));
+    pen.vline(box_left, t + 3, bottom - 3, grey(WHITE));
+    pen.dot(box_right, t + 2, grey(191));
+    pen.vline(box_right - 1, t + 3, bottom - 3, grey(191));
+    pen.hline(bottom - 2, box_left + 1, box_right - 2, grey(191));
+    pen.vline(box_right, t + 3, bottom - 2, grey(148));
+    pen.dot(box_right - 1, bottom - 2, grey(148));
+    pen.hline(bottom - 1, box_left, box_right - 1, grey(148));
+    // The arrows, an up and a down triangle four rows high, centred on the
+    // box.
+    let centre = right - 11;
+    for row in 0..4 {
+        pen.hline(t + 5 + row, centre - row, centre + row, grey(BLACK));
+        pen.hline(t + 14 - row, centre - row, centre + row, grey(BLACK));
+    }
+    if !title.is_empty() {
+        pen.text((l + POPUP_TITLE_INSET, t + 14), title);
+    }
+}
+
 /// A group box: an embossed frame, a mid grey line with a white one inside
 /// it, whose top runs level with the title's baseline and breaks three
 /// pixels before the title's pen, which is twelve pixels in, and three after

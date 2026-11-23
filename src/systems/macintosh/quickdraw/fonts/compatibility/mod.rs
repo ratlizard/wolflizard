@@ -33,25 +33,43 @@ const GENEVA10_WID_MAX: i16 = 11;
 // between them is from the Character Archetype list (20 November 2026):
 // TListBox::LDEFDraw puts the baseline at (top + bottom + ascent - descent)
 // / 2, and Mac OS 8.5 draws the names a row above where a descent of 5 put
-// them. Its other
-// sizes are unmeasured: TextEdit's baselines alone did not separate ascent
-// from leading, and so do not settle them.
+// them. That split is hhea's ascent and descent (3006 and 1282 of 4096 units)
+// each rounded to the nearest pixel, and the same rule gives TextEdit's line
+// heights on Mac OS 8.5 at every size measured: 10 + 4 = 14 at 14 points,
+// 13 + 6 = 19 at 18, 16 + 7 = 23 at 22 and 18 + 8 = 26 at 24. Cythera's
+// conversation window is Argos 22, and with the line rounded up (17 + 7 = 24)
+// its topics and its reply field sat a row below 8.5's, the field a row taller
+// (pair-talk-shots, 23 November 2026). So the frame is that rounding at every
+// size.
 const ARGOS_CHECKSUM_ADJUSTMENT: u32 = 0x5bfb_fdbb;
-const ARGOS_FRAMES: [(i16, (i16, i16, i16)); 1] = [(18, (13, 6, 0))];
 
 /// The line a game's own outline font has on Mac OS 8.5 at a size, where it
-/// has been measured.
+/// has been measured: Argos's hhea ascent, descent and line gap, each scaled
+/// to `size` and rounded to the nearest pixel.
 pub(super) fn resource_outline_frame(bytes: &[u8], size: i16) -> Option<(i16, i16, i16)> {
     let tables = u16::from_be_bytes(bytes.get(4..6)?.try_into().ok()?) as usize;
-    let head = (0..tables).find_map(|i| {
-        let entry = bytes.get(12 + 16 * i..28 + 16 * i)?;
-        (&entry[..4] == b"head").then(|| u32::from_be_bytes(entry[8..12].try_into().unwrap()) as usize)
-    })?;
+    let table = |tag: &[u8; 4]| {
+        (0..tables).find_map(|i| {
+            let entry = bytes.get(12 + 16 * i..28 + 16 * i)?;
+            (&entry[..4] == tag).then(|| u32::from_be_bytes(entry[8..12].try_into().unwrap()) as usize)
+        })
+    };
+    let head = table(b"head")?;
     let adjustment = u32::from_be_bytes(bytes.get(head + 8..head + 12)?.try_into().ok()?);
-    if adjustment != ARGOS_CHECKSUM_ADJUSTMENT {
+    if adjustment != ARGOS_CHECKSUM_ADJUSTMENT || size <= 0 {
         return None;
     }
-    ARGOS_FRAMES.iter().find(|(s, _)| *s == size).map(|(_, frame)| *frame)
+    let units_per_em = i32::from(u16::from_be_bytes(bytes.get(head + 18..head + 20)?.try_into().ok()?));
+    let hhea = table(b"hhea")?;
+    let field = |at: usize| -> Option<i32> {
+        Some(i32::from(i16::from_be_bytes(bytes.get(hhea + at..hhea + at + 2)?.try_into().ok()?)))
+    };
+    let (ascent, descent, gap) = (field(4)?, -field(6)?, field(8)?);
+    if units_per_em <= 0 {
+        return None;
+    }
+    let scaled = |units: i32| ((2 * units * i32::from(size) + units_per_em) / (2 * units_per_em)) as i16;
+    Some((scaled(ascent), scaled(descent), scaled(gap)))
 }
 
 // Inside Macintosh: Text (1993), p. 4-91 defines FOND.ffWidMax as the
@@ -115,4 +133,42 @@ pub(super) fn bundled_wid_max(font_id: i16, size: i16) -> Option<i16> {
         ((MONACO_MAX_ADVANCE_UNITS * i32::from(size) + MONACO_UNITS_PER_EM / 2)
             / MONACO_UNITS_PER_EM) as i16
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// An sfnt directory with only the head and hhea fields the frame reads,
+    /// set to Argos A Nouveau's: its checkSumAdjustment, 4096 units to the
+    /// em, ascent 3006, descent -1282, no line gap.
+    fn argos_like(adjustment: u32) -> Vec<u8> {
+        let mut bytes = vec![0u8; 12 + 2 * 16 + 54 + 36];
+        bytes[4..6].copy_from_slice(&2u16.to_be_bytes());
+        let (head, hhea) = (44usize, 98usize);
+        for (i, (tag, at)) in [(b"head", head), (b"hhea", hhea)].into_iter().enumerate() {
+            let entry = 12 + 16 * i;
+            bytes[entry..entry + 4].copy_from_slice(tag);
+            bytes[entry + 8..entry + 12].copy_from_slice(&(at as u32).to_be_bytes());
+        }
+        bytes[head + 8..head + 12].copy_from_slice(&adjustment.to_be_bytes());
+        bytes[head + 18..head + 20].copy_from_slice(&4096u16.to_be_bytes());
+        bytes[hhea + 4..hhea + 6].copy_from_slice(&3006i16.to_be_bytes());
+        bytes[hhea + 6..hhea + 8].copy_from_slice(&(-1282i16).to_be_bytes());
+        bytes
+    }
+
+    #[test]
+    fn argos_lines_are_mac_os_8_5s_textedit_line_heights() {
+        // TextEdit's line heights for Argos on Mac OS 8.5: 14, 19, 23 and 26
+        // at 14, 18, 22 and 24 points; 18 points split 13 over 6 (the
+        // Character Archetype list's baselines).
+        let argos = argos_like(ARGOS_CHECKSUM_ADJUSTMENT);
+        assert_eq!(resource_outline_frame(&argos, 18), Some((13, 6, 0)));
+        for (size, line) in [(14, 14), (18, 19), (22, 23), (24, 26)] {
+            let (ascent, descent, leading) = resource_outline_frame(&argos, size).unwrap();
+            assert_eq!(ascent + descent + leading, line, "{size} points");
+        }
+        assert_eq!(resource_outline_frame(&argos_like(0), 22), None, "another font keeps its own line");
+    }
 }

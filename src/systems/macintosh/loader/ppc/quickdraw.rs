@@ -3405,9 +3405,95 @@ pub(crate) fn ppc_draw_text_chars_styled(
     let mut source_advance = 0i32;
     let packed_extra = ppc_port_char_extra_packed(memory, current_gworld);
     let mut nonspaces = 0i32;
+    // Bold alone is smoothed on Mac OS 8.5 as plain text is: the character
+    // window's tab labels, Argos 14 bold, show blends of black into the
+    // parchment on 8.5 (work/autoplay/realmac/equip-1120/equipped.png) where
+    // the fork drew them sharp and heavier. QuickDraw makes bold by drawing
+    // the glyph again a pixel to the right (Inside Macintosh: Text, 3-7).
+    // Each pixel here takes the larger of the glyph's coverage there and a
+    // pixel to its left, blended once: against 8.5 the three labels differ
+    // in 171 pixels this way, 254 with the glyph blended twice, and 332
+    // drawn sharp (22 November 2026).
+    let smooth_bold = style.bold()
+        && !style.italic()
+        && !style.underline()
+        && !style.outline()
+        && !style.shadow()
+        && !style.condensed()
+        && !style.extended()
+        && numerator == denominator
+        && matches!(text_mode & 0x3f, 0 | 1);
+    let mut text_blend: Option<Option<PpcTextBlend>> = None;
 
     for ch in chars {
         let local_h = local_h + ppc_char_extra_pixels(packed_extra, text_size, nonspaces);
+        let smoothed = smooth_bold
+            .then(|| crate::quickdraw::fonts::get_smoothed_glyph(text_font, face.size, ch))
+            .flatten()
+            .filter(|(glyph, data)| crate::quickdraw::fonts::glyph_has_partial_coverage(glyph, data));
+        if let Some((glyph, data)) = smoothed {
+            if text_mode & 0x3f == 0 {
+                ppc_clear_text_cell(
+                    memory,
+                    surface,
+                    current_gworld,
+                    vis_storage.as_deref(),
+                    clip_storage.as_deref(),
+                    local_h + source_advance,
+                    local_v,
+                    style.glyph_advance(i32::from(glyph.advance)),
+                    metrics,
+                    numerator,
+                    denominator,
+                );
+            }
+            let width = usize::from(glyph.width);
+            for row in 0..usize::from(glyph.height) {
+                let at = |col: usize| {
+                    (col < width)
+                        .then(|| data.get(glyph.data_offset + row * width + col).copied())
+                        .flatten()
+                        .unwrap_or(0)
+                };
+                for col in 0..=width {
+                    let coverage = at(col).max(col.checked_sub(1).map_or(0, at));
+                    if coverage == 0 {
+                        continue;
+                    }
+                    let point = (
+                        local_h + source_advance + i32::from(glyph.origin_x) + col as i32,
+                        local_v + i32::from(glyph.origin_y) + row as i32,
+                    );
+                    if coverage == 255 {
+                        let _ = ppc_apply_text_pixel(
+                            memory,
+                            surface,
+                            vis_storage.as_deref(),
+                            clip_storage.as_deref(),
+                            point,
+                            color_pixel,
+                            text_mode,
+                        );
+                    } else if let Some(blend) = text_blend
+                        .get_or_insert_with(|| ppc_text_blend(memory, surface, color, explicit_index))
+                    {
+                        let _ = ppc_blend_text_pixel(
+                            memory,
+                            surface,
+                            vis_storage.as_deref(),
+                            clip_storage.as_deref(),
+                            point,
+                            blend,
+                            coverage,
+                        );
+                    }
+                }
+            }
+            source_advance =
+                source_advance.saturating_add(style.glyph_advance(i32::from(glyph.advance)));
+            nonspaces += i32::from(ch != ' ');
+            continue;
+        }
         let (glyph_hit, synthetic_italic) = if style.italic() {
             if let Some(hit) = get_glyph_italic(text_font, face.size, ch) {
                 (Some(hit), false)

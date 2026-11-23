@@ -3719,9 +3719,12 @@ pub(super) fn ppc_draw_control_inner(
         return true;
     }
     let proc_id = record.map_or(0, |record| record.proc_id);
-    // A window an application built through the Appearance Manager has its
-    // controls drawn in Mac OS 8's look (loader/ppc/platinum.rs).
-    if super::platinum::ppc_window_is_platinum(memory, owner) {
+    // A window an application built through the Appearance Manager, and a
+    // classic dBoxProc window, have their controls drawn in Mac OS 8's look
+    // (loader/ppc/platinum.rs).
+    if super::platinum::ppc_window_is_platinum(memory, owner)
+        || super::platinum::ppc_window_is_classic_dbox(memory, owner)
+    {
         if let Some(drawn) = super::platinum::ppc_draw_platinum_control(
             memory,
             gworlds,

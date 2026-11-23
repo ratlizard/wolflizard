@@ -1576,12 +1576,13 @@ pub(super) fn ppc_window_structure_bounds(
     if proc_id == super::platinum::PPC_PLATINUM_MODAL_DIALOG_PROC {
         return super::platinum::ppc_platinum_modal_structure_bounds(content);
     }
+    if proc_id == 1 {
+        // dBoxProc as Mac OS 8.5 draws it (platinum.rs), not System 7's
+        // double border eight pixels out (Inside Macintosh Volume I, I-273).
+        return super::platinum::ppc_platinum_dbox_structure_bounds(content);
+    }
     let has_title_bar = ppc_window_proc_has_title_bar(proc_id);
-    // dBoxProc's double border reaches eight pixels outside the content
-    // rectangle (Inside Macintosh Volume I, p. I-273); a narrower structure
-    // region lets desktop repaints erase its outer ring.
     let border: i16 = match proc_id {
-        1 => crate::dialog_manager::DIALOG_DBOX_FRAME_MARGIN,
         2 => 1,
         _ => 6,
     };
@@ -2489,7 +2490,7 @@ fn ppc_draw_existing_window_frame_in_open_port(
     } else if proc_id == 1 && super::platinum::ppc_window_is_platinum_modal(memory, window) {
         super::platinum::ppc_draw_platinum_dialog_frame(memory, gworlds, window, height, width);
     } else if proc_id == 1 {
-        ppc_draw_dialog_box_frame(memory, gworlds, window, height, width);
+        super::platinum::ppc_draw_platinum_dbox_frame(memory, gworlds, window, height, width);
     } else if matches!(proc_id, 2 | 3) {
         // plainDBox draws a one-pixel frame just outside the content; the
         // alternate dialog adds its drop shadow. Inside Macintosh Volume I
@@ -3417,74 +3418,6 @@ fn ppc_draw_plain_box_frame(
     }
 }
 
-pub(super) fn ppc_draw_dialog_box_frame(
-    memory: &mut PpcSectionMem,
-    gworlds: &[PpcGWorldRecord],
-    window: u32,
-    height: i16,
-    width: i16,
-) {
-    let palette = ppc_ui_theme(gworlds).provider().palette();
-    // Macintosh Toolbox Essentials (1992), pp. 4-24--4-26: dBoxProc owns a
-    // gray dialog surface and a structure region outside the content rectangle.
-    // Initialize both before the application draws its dialog items.
-    let _ = ppc_paint_rect_bounds(
-        memory,
-        gworlds,
-        window,
-        (0, 0, height, width),
-        ppc_theme_rgb(palette.window_background),
-        None,
-    );
-    let Some((top, left, bottom, right)) = memory
-        .read_u32_be(window + PPC_CWINDOW_CONTENT_RGN_OFFSET)
-        .and_then(|region| ppc_read_rgn_bbox(memory, region))
-    else {
-        return;
-    };
-    let outer_top = top.saturating_sub(8);
-    let outer_left = left.saturating_sub(8);
-    let outer_bottom = bottom.saturating_add(8);
-    let outer_right = right.saturating_add(8);
-    if ppc_draw_themed_dialog_frame(
-        memory,
-        gworlds,
-        (top, left, bottom, right),
-        (outer_top, outer_left, outer_bottom, outer_right),
-        1,
-    ) {
-        return;
-    }
-    let _ = ppc_paint_rect_bounds(
-        memory,
-        gworlds,
-        PPC_MAIN_GWORLD,
-        (outer_top, outer_left, outer_bottom, outer_right),
-        ppc_theme_rgb(palette.window_background),
-        None,
-    );
-    for rect in [
-        (top - 8, left - 8, top - 7, right + 8),
-        (top - 8, left - 8, bottom + 8, left - 7),
-        (top - 8, right + 6, bottom + 8, right + 8),
-        (bottom + 6, left - 8, bottom + 8, right + 8),
-        (top - 5, left - 5, top - 4, right + 5),
-        (top - 4, left - 5, top - 3, right + 4),
-        (top - 5, left - 5, bottom + 5, left - 4),
-        (top - 5, left - 4, bottom + 4, left - 3),
-        (top - 5, right + 3, bottom + 4, right + 4),
-        (bottom + 3, left - 5, bottom + 4, right + 4),
-    ] {
-        let _ = ppc_paint_rect_bounds(
-            memory,
-            gworlds,
-            PPC_MAIN_GWORLD,
-            rect,
-            ppc_theme_rgb(palette.frame_dark),
-            None,
-        );
-    }
-}
 
 pub(super) fn ppc_get_new_cwindow(
     cpu: &PpcCpu,

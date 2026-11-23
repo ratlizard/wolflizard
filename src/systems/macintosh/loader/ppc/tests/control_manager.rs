@@ -5261,20 +5261,23 @@ fn a_check_box_in_an_appearance_dialog_is_drawn_as_mac_os_8_5_draws_it() {
     // Cythera's Preferences window is an Appearance modal dialog (1042)
     // holding classic check boxes. Mac OS 8.5 draws them as a twelve-pixel
     // bevelled box two pixels in, centred on the control's height, whose
-    // tick reaches two pixels past the box. In a classic dialog the same
-    // control keeps the System 7 box, which is what shows the difference is
-    // the window's.
+    // tick reaches two pixels past the box. A classic dBoxProc dialog's
+    // check box is drawn the same way: 8.5's system-wide Platinum look
+    // draws Cythera's 256-colours prompt (DLOG 140) so. A document window's
+    // keeps the System 7 box, which this host has not changed.
     let rect = (10, 10, 30, 120);
-    let (mut platinum, _, black) = window_with_one_control(1042, 1, rect, 1, b"Mute");
     let (x, y) = (12, 14);
-    let black = Some(u16::from(black));
-    assert_eq!(local_pixel(&mut platinum, x, y), black, "box corner");
-    assert_eq!(local_pixel(&mut platinum, x + 11, y + 11), black, "box corner");
-    assert_eq!(local_pixel(&mut platinum, x + 5, y + 8), black, "tick");
-    assert_eq!(local_pixel(&mut platinum, x + 12, y + 1), black, "tick past the box");
+    for window_proc in [1042, 1] {
+        let (mut platinum, _, black) = window_with_one_control(window_proc, 1, rect, 1, b"Mute");
+        let black = Some(u16::from(black));
+        assert_eq!(local_pixel(&mut platinum, x, y), black, "box corner");
+        assert_eq!(local_pixel(&mut platinum, x + 11, y + 11), black, "box corner");
+        assert_eq!(local_pixel(&mut platinum, x + 5, y + 8), black, "tick");
+        assert_eq!(local_pixel(&mut platinum, x + 12, y + 1), black, "tick past the box");
+    }
 
-    let (mut classic, _, _) = window_with_one_control(1, 1, rect, 1, b"Mute");
-    assert_ne!(local_pixel(&mut classic, x + 12, y + 1), black);
+    let (mut classic, _, black) = window_with_one_control(0, 1, rect, 1, b"Mute");
+    assert_ne!(local_pixel(&mut classic, x + 12, y + 1), Some(u16::from(black)));
 }
 
 #[test]
@@ -5327,6 +5330,61 @@ fn platinum_sliders_and_dialog_frames_sit_where_mac_os_8_5_puts_them() {
         ppc_window_structure_bounds(PPC_PLATINUM_MODAL_DIALOG_PROC, (28, 54, 308, 586)),
         (25, 51, 312, 590)
     );
+}
+
+#[test]
+fn a_classic_dialog_box_has_mac_os_8_5s_platinum_frame() {
+    // Measured from Cythera's 256-colours prompt (DLOG 140, dBoxProc) on
+    // Mac OS 8.5 at thousands of colours, content (114, 209)-(237, 590): a
+    // black line six pixels out, a shadow beyond it right and below, 187
+    // inside the line above and to the left, 153 and 85 at three and four
+    // pixels out below and to the right, white between.
+    use super::platinum::*;
+    let content = (114, 209, 237, 590);
+    assert_eq!(ppc_window_structure_bounds(1, content), (108, 203, 244, 597));
+    let mut loaded = load_pef_application_with_config(
+        &synthetic_pef_with_import(b"DrawString"),
+        PpcLoadConfig {
+            screen_depth: 16,
+            ..PpcLoadConfig::default()
+        },
+    )
+    .unwrap();
+    let front =
+        ppc_live_front_buffer_for_gworld(&mut loaded.memory, &loaded.gworlds, PPC_MAIN_GWORLD)
+            .unwrap();
+    assert_eq!(front.depth, 16);
+    let mut pen = Pen::new(&mut loaded.memory, &loaded.gworlds, PPC_MAIN_GWORLD);
+    draw_dbox_frame_around(&mut pen, content);
+    let (t, l, b, r) = content;
+    let grey = |value: u16| {
+        let five = value >> 3;
+        (five << 10) | (five << 5) | five
+    };
+    for ((h, v), expected) in [
+        ((l - 6, t + 20), 0),
+        ((l - 5, t + 20), 187),
+        ((l - 4, t + 20), 255),
+        ((l + 20, t - 6), 0),
+        ((l + 20, t - 5), 187),
+        ((r + 2, t + 20), 255),
+        ((r + 3, t + 20), 153),
+        ((r + 4, t + 20), 85),
+        ((r + 5, t + 20), 0),
+        ((r + 6, t + 20), 0),
+        ((l + 20, b + 3), 153),
+        ((l + 20, b + 4), 85),
+        ((l + 20, b + 5), 0),
+        ((l + 20, b + 6), 0),
+        ((r + 3, t - 4), 187),
+        ((l - 4, b + 3), 187),
+    ] {
+        assert_eq!(
+            ppc_quickdraw_read_pixel(&mut loaded.memory, front, (i32::from(h), i32::from(v))),
+            Some(grey(expected)),
+            "pixel at ({h}, {v})"
+        );
+    }
 }
 
 #[test]

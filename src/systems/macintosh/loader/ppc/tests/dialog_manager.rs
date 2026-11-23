@@ -7332,7 +7332,10 @@ fn dialog_auto_positioning_and_cursor_tracking_dispatch_with_canonical_evaluatio
     assert_eq!(loaded.cpu.gpr[3] as i16, PPC_NO_ERR);
     let centered_bounds =
         ppc_dialog_global_bounds(&mut loaded.memory, &loaded.gworlds, dialog).unwrap();
-    assert_eq!(centered_bounds, (260, 300, 360, 500));
+    // A document window (proc 0) is centred by its structure, the title
+    // bar above and the shadow right and below, so its content sits
+    // lower and a pixel left of the content's own centre.
+    assert_eq!(centered_bounds, (268, 299, 368, 499));
 
     // 1e. Classic position code 0x280A (center main screen) also centers on main screen
     loaded.cpu.gpr[3] = dialog;
@@ -7347,7 +7350,7 @@ fn dialog_auto_positioning_and_cursor_tracking_dispatch_with_canonical_evaluatio
     assert_eq!(loaded.cpu.gpr[3] as i16, PPC_NO_ERR);
     assert_eq!(
         ppc_dialog_global_bounds(&mut loaded.memory, &loaded.gworlds, dialog),
-        Some((260, 300, 360, 500))
+        Some((268, 299, 368, 499))
     );
 
     // 1f. AutoPositionDialog staggering relative to parent window (method 6 / kWindowStaggerParentWindow)
@@ -7363,7 +7366,9 @@ fn dialog_auto_positioning_and_cursor_tracking_dispatch_with_canonical_evaluatio
     assert_eq!(loaded.cpu.gpr[3] as i16, PPC_NO_ERR);
     let staggered_bounds =
         ppc_dialog_global_bounds(&mut loaded.memory, &loaded.gworlds, dialog).unwrap();
-    assert_eq!(staggered_bounds, (128, 178, 228, 378));
+    // The structure is staggered 20 pixels from the parent, and the
+    // content sits below the document window's title bar within it.
+    assert_eq!(staggered_bounds, (139, 171, 239, 371));
 
     // 1g. Classic position code 0xB80A (stagger parent window)
     loaded.cpu.gpr[3] = dialog;
@@ -7378,7 +7383,7 @@ fn dialog_auto_positioning_and_cursor_tracking_dispatch_with_canonical_evaluatio
     assert_eq!(loaded.cpu.gpr[3] as i16, PPC_NO_ERR);
     assert_eq!(
         ppc_dialog_global_bounds(&mut loaded.memory, &loaded.gworlds, dialog),
-        Some((128, 178, 228, 378))
+        Some((139, 171, 239, 371))
     );
 
     // 2. Cursor tracking: SetDialogTracksCursor, GetDialogTracksCursor, IsDialogTracksCursor
@@ -7528,7 +7533,8 @@ fn dialog_auto_positioning_and_cursor_tracking_dispatch_with_canonical_evaluatio
     }
 }
 
-/// Expected bounds under the 68K Dialog Manager rule: auto-position against
+/// Expected bounds under the Dialog Manager rule: auto-position the
+/// structure of a proc-0 window (these tests' DLOG and test window) against
 /// the main screen minus the live MBarHeight.
 fn expected_auto_position(
     loaded: &PpcLoadedApp,
@@ -7543,12 +7549,32 @@ fn expected_auto_position(
     crate::dialog_manager::evaluate_dialog_position_bounds(
         content,
         position,
-        Some(crate::dialog_manager::dialog_dbox_frame_rect(content)),
+        Some(super::dispatch_window::ppc_window_structure_bounds(0, content)),
         None,
         screen.map_or(ppc_main_screen_width(), |record| record.width) as i32,
         screen.map_or(ppc_main_screen_height(), |record| record.height) as i32,
         menu_bar_height,
     )
+}
+
+#[test]
+fn a_dbox_dialog_at_the_alert_position_sits_where_mac_os_8_5_puts_it() {
+    // Cythera's 256-colors prompt, DLOG 140: dBoxProc, 123 by 381, at the
+    // alert position (0x300A). Mac OS 8.5 at 800x600 with a 20-pixel menu
+    // bar puts its content at (114, 209), a fifth of the way down by its
+    // Platinum frame (work/autoplay/realmac/depth16-1122/launch.png).
+    // System 7's frame, eight pixels each way, put it at 116.
+    let content = (40, 40, 163, 421);
+    let placed = crate::dialog_manager::evaluate_dialog_position_bounds(
+        content,
+        0x300A,
+        Some(super::dispatch_window::ppc_window_structure_bounds(1, content)),
+        None,
+        800,
+        600,
+        20,
+    );
+    assert_eq!((placed.0, placed.1), (114, 209));
 }
 
 #[test]

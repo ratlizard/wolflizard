@@ -4052,7 +4052,7 @@ pub(super) fn ppc_draw_control_inner(
                 );
                 ppc_blit_theme_bitmap(memory, gworlds, owner, top, left, &bitmap)
             }
-            1008..=1023 => {
+            1008..=1023 => 'popup: {
                 // The standard pop-up CDEF is resource ID 63, whose proc IDs
                 // occupy 63 << 4 through 63 << 4 | 15. Its contrlMin field is
                 // the MENU resource ID and contrlValue is the one-based item.
@@ -4078,6 +4078,35 @@ pub(super) fn ppc_draw_control_inner(
                     .and_then(|record| record.popup_title_width)
                     .unwrap_or(0)
                     .max(0);
+                // Mac OS 8.5, with its system-wide Platinum appearance on as
+                // it ships, draws every pop-up button in that look, in a
+                // window of the application's own as in a dialog
+                // (loader/ppc/platinum.rs). Under upstream's theme the
+                // drawing below runs unchanged.
+                if ppc_ui_theme(gworlds) == crate::ui_theme::UiThemeId::ClassicSystem7 {
+                    let button = (top, left.saturating_add(title_width), bottom, right);
+                    let selected = memory
+                        .read_u16_be(control + PPC_CONTROL_VALUE_OFFSET)
+                        .unwrap_or(0) as usize;
+                    let menu_id = record.map_or(0, |record| record.popup_menu_id);
+                    let selected_text = ppc_popup_control_selected_text(
+                        memory,
+                        vfs_resources,
+                        current_resource_refnum,
+                        menu_id,
+                        selected,
+                    );
+                    let title = ppc_popup_control_display_title(
+                        &selected_text,
+                        super::platinum::ppc_platinum_popup_title_width(button),
+                        crate::quickdraw::fonts::FONT_CHARCOAL,
+                        12,
+                    );
+                    // The label, if any, is drawn after this match.
+                    break 'popup super::platinum::ppc_draw_platinum_popup(
+                        memory, gworlds, owner, button, &title,
+                    );
+                }
                 let draw_left = draw_left.saturating_add(title_width);
                 let draw_top = draw_top.saturating_add(1);
                 let draw_bottom = draw_bottom.saturating_sub(2);

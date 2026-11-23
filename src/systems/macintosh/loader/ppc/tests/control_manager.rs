@@ -5281,6 +5281,27 @@ fn a_check_box_in_an_appearance_dialog_is_drawn_as_mac_os_8_5_draws_it() {
 }
 
 #[test]
+fn a_pop_up_in_a_document_window_is_drawn_as_mac_os_8_5_draws_it() {
+    // Cythera's character window holds the Strategy pop-up, and Mac OS 8.5
+    // draws it in Platinum though the window is the application's: a black
+    // frame whose corners are cut by a pixel each way, and at the right end
+    // a raised box with an up arrow whose tip is five rows down, eleven
+    // pixels in from the right edge (pair-talk2, 23 November 2026).
+    let rect = (10, 10, 30, 182);
+    let (mut loaded, _, black) = window_with_one_control(0, 1008, rect, 1, b"");
+    let black = Some(u16::from(black));
+    // The helper's contrlMax of 1 is the pop-up's label width, so the
+    // button starts a pixel in.
+    let (t, l, r) = (rect.0 as i32, rect.1 as i32 + 1, rect.3 as i32 - 1);
+    assert_eq!(local_pixel(&mut loaded, l + 3, t), black, "the frame's top");
+    assert_ne!(local_pixel(&mut loaded, l, t), black, "the corner is cut");
+    assert_eq!(local_pixel(&mut loaded, l + 1, t + 1), black, "the cut's diagonal");
+    assert_eq!(local_pixel(&mut loaded, r - 11, t + 5), black, "the up arrow's tip");
+    assert_ne!(local_pixel(&mut loaded, r - 12, t + 5), black, "beside the tip");
+    assert_eq!(local_pixel(&mut loaded, r - 14, t + 8), black, "the up arrow's base");
+}
+
+#[test]
 fn a_default_push_button_in_an_appearance_dialog_has_mac_os_8_5s_ring() {
     // Cythera marks its Save button with SetControlData('dflt'), which this
     // host refused. Mac OS 8.5 then rings the button three pixels out,

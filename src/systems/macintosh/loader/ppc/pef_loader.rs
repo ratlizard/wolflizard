@@ -493,6 +493,10 @@ pub fn load_pef_application_with_config(
     data: &[u8],
     config: PpcLoadConfig,
 ) -> Result<PpcLoadedApp, PpcLoadError> {
+    // Mac OS 8.5's system font from the load on, so what is drawn before the
+    // first run (a menu bar in a test's setup) matches what the run redraws
+    // (loaded_app_execution.rs sets it again on the running thread).
+    crate::quickdraw::fonts::set_system_font_charcoal(true);
     load_pef_application_with_config_and_optional_system_reservation(
         data,
         config,

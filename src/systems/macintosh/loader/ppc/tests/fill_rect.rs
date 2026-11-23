@@ -299,6 +299,10 @@ fn gpu_native_polygon_fills_match_concave_crossed_translated_and_degenerate_shap
 
 #[test]
 fn gpu_native_glyph_writes_preserve_retained_outline_presentation() {
+    // The system font is Charcoal 12 on the PowerPC slice, smoothed as on
+    // Mac OS 8.5, and smoothed text is drawn in software. This test
+    // reads the sharp glyph, so it draws sharp.
+    crate::quickdraw::fonts::set_text_smoothing(None);
     use crate::memory::{MacMemoryBus, MemoryBus};
     let pixels = vec![255; usize::from(ROW_BYTES) * HEIGHT];
     for depth in [8, 16] {
@@ -364,6 +368,10 @@ fn gpu_native_glyph_writes_preserve_retained_outline_presentation() {
 
 #[test]
 fn gpu_native_scaled_copies_preserve_retained_outline_presentation() {
+    // The system font is Charcoal 12 on the PowerPC slice, smoothed as on
+    // Mac OS 8.5, and smoothed text is drawn in software. This test
+    // reads the sharp glyph, so it draws sharp.
+    crate::quickdraw::fonts::set_text_smoothing(None);
     use crate::memory::{MacMemoryBus, MemoryBus};
     let pixels = vec![255; usize::from(ROW_BYTES) * HEIGHT];
     for depth in [8, 16] {
@@ -460,6 +468,10 @@ fn gpu_native_scaled_copies_preserve_retained_outline_presentation() {
 
 #[test]
 fn gpu_native_masked_copies_preserve_retained_outline_presentation() {
+    // The system font is Charcoal 12 on the PowerPC slice, smoothed as on
+    // Mac OS 8.5, and smoothed text is drawn in software. This test
+    // reads the sharp glyph, so it draws sharp.
+    crate::quickdraw::fonts::set_text_smoothing(None);
     use crate::memory::{MacMemoryBus, MemoryBus};
     let pixels = vec![255; usize::from(ROW_BYTES) * HEIGHT];
     for depth in [8, 16] {
@@ -782,6 +794,10 @@ fn gpu_native_deep_masks_clear_outline_detail_with_white_color_masks() {
 
 #[test]
 fn gpu_native_glyph_masks_match_software_text_modes_and_explicit_clips() {
+    // The system font is Charcoal 12 on the PowerPC slice, smoothed as on
+    // Mac OS 8.5, and smoothed text is drawn in software. This test
+    // reads the sharp glyph, so it draws sharp.
+    crate::quickdraw::fonts::set_text_smoothing(None);
     let pixels = initial_pixels();
     for depth in [1, 2, 4, 8, 16] {
         for (vis, clip) in [CLIPS[0], CLIPS[3]] {
@@ -1237,6 +1253,10 @@ fn gpu_native_scaled_text_matches_repeated_transfers_and_fallback() {
 
 #[test]
 fn gpu_native_styled_text_matches_software_transfers_clips_and_fallback() {
+    // The system font is Charcoal 12 on the PowerPC slice, smoothed as on
+    // Mac OS 8.5, and smoothed text is drawn in software. This test
+    // reads the sharp glyph, so it draws sharp.
+    crate::quickdraw::fonts::set_text_smoothing(None);
     let pixels = initial_pixels();
     for depth in [1, 2, 4, 8, 16] {
         for (vis, clip) in [CLIPS[0], CLIPS[3]] {

@@ -59,7 +59,7 @@ use crate::dialog_manager::{
     evaluate_remove_dialog_items_parameters,
     remove_dialog_items_range,
     DIALOG_ALERT_HIT_OFFSET, DIALOG_CANCEL_ITEM_OFFSET, DIALOG_DEFAULT_ITEM_OFFSET,
-    DIALOG_EDIT_FIELD_OFFSET, DIALOG_EDIT_OPEN_OFFSET, DIALOG_ICON_SIZE,
+    DIALOG_RINGS_DEFAULT_OFFSET, DIALOG_EDIT_FIELD_OFFSET, DIALOG_EDIT_OPEN_OFFSET, DIALOG_ICON_SIZE,
     DIALOG_INITIAL_EDIT_FIELD, DIALOG_INITIAL_EDIT_OPEN,
     DIALOG_ITEMS_OFFSET, DIALOG_WINDOW_KIND_OFFSET, DIALOG_ITEM_BUTTON, DIALOG_ITEM_CHECKBOX, DIALOG_ITEM_DISABLED_FLAG,
     DIALOG_ITEM_EDIT_TEXT, DIALOG_ITEM_ICON, DIALOG_ITEM_PICTURE, DIALOG_ITEM_RADIO,
@@ -606,6 +606,11 @@ pub(super) fn dispatch_dialog_import(
                         )
                         .is_some()
                     {
+                        // A default the application names is ringed.
+                        let _ = memory.write_u16_be(
+                            window_list.dialog_private_address(params.dialog_ptr(), DIALOG_RINGS_DEFAULT_OFFSET),
+                            1,
+                        );
                         PPC_NO_ERR
                     } else {
                         PPC_PARAM_ERR
@@ -3377,6 +3382,8 @@ fn ppc_new_alert_dialog(
         let _ = memory.write_u16_be(dialog + DIALOG_DEFAULT_ITEM_OFFSET, init.default_item() as u16);
         let _ = memory.write_u16_be(window_list.dialog_private_address(dialog, DIALOG_ALERT_HIT_OFFSET), init.alert_hit() as u16);
         let _ = memory.write_u16_be(window_list.dialog_private_address(dialog, DIALOG_CANCEL_ITEM_OFFSET), init.cancel_item() as u16);
+        // An alert's default button is ringed by the Dialog Manager.
+        let _ = memory.write_u16_be(window_list.dialog_private_address(dialog, DIALOG_RINGS_DEFAULT_OFFSET), 1);
         let dialog_font = crate::dialog_manager::evaluate_dialog_font(
             memory
                 .read_u16_be(crate::memory::globals::addr::DLG_FONT)
@@ -3774,6 +3781,12 @@ fn ppc_new_dialog(
     let _ = memory.write_u16_be(
         window_list.dialog_private_address(dialog, DIALOG_MODAL_EVENT_MASK_OFFSET),
         DIALOG_DEFAULT_MODAL_EVENT_MASK,
+    );
+    // No ring until the application names a default (an alert sets its own
+    // after this, in ppc_new_alert_dialog).
+    let _ = memory.write_u16_be(
+        window_list.dialog_private_address(dialog, DIALOG_RINGS_DEFAULT_OFFSET),
+        0,
     );
 
     // Macintosh Toolbox Essentials (1992), pp. 6-115--6-118: NewDialog's
@@ -5254,6 +5267,11 @@ fn ppc_draw_dialog_items(
     let default_item = memory
         .read_u16_be(dialog.wrapping_add(DIALOG_DEFAULT_ITEM_OFFSET))
         .unwrap_or(1) as usize;
+    // Only an alert, or a dialog whose default the application named, has
+    // its default button ringed (DIALOG_RINGS_DEFAULT_OFFSET).
+    let rings_default = memory
+        .read_u16_be(window_list.dialog_private_address(dialog, DIALOG_RINGS_DEFAULT_OFFSET))
+        .is_some_and(|flag| flag != 0);
     // Control items are Control Manager controls. DITL controls are created in
     // item order and NewControl prepends each to the window's control list,
     // so DrawControls draws them in reverse item order with the earliest
@@ -5319,7 +5337,7 @@ fn ppc_draw_dialog_items(
                     .is_some_and(|record| {
                         !matches!(crate::control_manager::standard_control_kind(record.proc_id).0, 0 | 1 | 2)
                     });
-                if ppc_ui_theme(gworlds) == UiThemeId::ClassicSystem7 && !application_drawn {
+                if ppc_ui_theme(gworlds) == UiThemeId::ClassicSystem7 && !application_drawn && rings_default {
                     if let Some(outline) = evaluate_dialog_item_default_button_outline(
                         (index + 1) as i16,
                         default_item as i16,

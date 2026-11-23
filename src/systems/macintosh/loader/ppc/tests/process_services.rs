@@ -2574,9 +2574,10 @@ fn ppc_styled_line_break_breaks_at_word_boundary() {
 
     assert_eq!(loaded.cpu.gpr[3], 0); // smBreakWord
     assert_eq!(loaded.memory.read_u32_be(offset_ptr), Some(6));
-    // The fork measures in the port's font, where "HELLO " is 41 pixels
+    // The fork measures in the port's font, the system font, which is
+    // Charcoal on the PowerPC slice as on Mac OS 8.5: "HELLO " is 38 pixels
     // rather than six per character.
-    assert_eq!(loaded.memory.read_u32_be(width_ptr), Some(1 << 16));
+    assert_eq!(loaded.memory.read_u32_be(width_ptr), Some(4 << 16));
 }
 
 #[test]
@@ -2612,8 +2613,8 @@ fn ppc_styled_line_break_overflow_when_entire_run_fits() {
 
     assert_eq!(loaded.cpu.gpr[3], 2); // smBreakOverflow
     assert_eq!(loaded.memory.read_u32_be(offset_ptr), Some(5));
-    // "HELLO" is 37 pixels in the port's font.
-    assert_eq!(loaded.memory.read_u32_be(width_ptr), Some(3 << 16));
+    // "HELLO" is 35 pixels in the port's font, Charcoal 12.
+    assert_eq!(loaded.memory.read_u32_be(width_ptr), Some(5 << 16));
 }
 
 #[test]

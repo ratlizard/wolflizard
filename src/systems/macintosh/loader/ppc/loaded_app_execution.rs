@@ -229,6 +229,10 @@ impl PpcLoadedApp {
         mut process_cfm: Option<&mut PpcCfmState>,
     ) -> PpcHleRunProbe {
         self.assert_cfm_execution_owner(process_cfm.as_deref());
+        // The PowerPC slice stands for Mac OS 8.5, whose system font is
+        // Charcoal. Set here, on the thread that runs and draws the guest
+        // (quickdraw/fonts/mod.rs, set_system_font_charcoal).
+        crate::quickdraw::fonts::set_system_font_charcoal(true);
         let guest_calls = self.toolbox_startup.execution.calls().shared_handle();
         // Wakeup selects and prepares a saved context before any native step.
         guest_calls.resume_ready_task();

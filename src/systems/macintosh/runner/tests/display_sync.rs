@@ -562,6 +562,10 @@ fn ppc_completed_q3_frame_renders_before_host_front_buffer_sync() {
 
 #[test]
 fn ppc_front_buffer_sync_preserves_top_row_detail_and_copies_plain_rows_below() {
+    // The system font is Charcoal 12 on the PowerPC slice, smoothed as on
+    // Mac OS 8.5, and smoothed text is drawn in software, with no outline
+    // detail. This test reads the detail, so it draws sharp.
+    crate::quickdraw::fonts::set_text_smoothing(None);
     let mut ppc_app = crate::loader::ppc::load_pef_application(
         &crate::loader::ppc::tests::synthetic_pef_with_import(b"DrawText"),
     )

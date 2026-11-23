@@ -68,6 +68,13 @@ pub const DIALOG_ITEM_STYLE_HANDLE_OFFSET: u32 = 216;
 /// Copy of the dialog's `dctb`, its window color table (the AuxWinRec
 /// awCTable of a color dialog). Macintosh Toolbox Essentials (1992), p. 6-159.
 pub const DIALOG_COLOR_TABLE_HANDLE_OFFSET: u32 = 220;
+/// Nonzero when the Dialog Manager rings the default button: an alert, or a
+/// dialog whose application named its default with SetDialogDefaultItem.
+/// ModalDialog draws no outline for a dialog that did neither, so the
+/// application draws its own if it wants one (Macintosh Toolbox Essentials
+/// (1992), p. 6-31). Mac OS 8.5 rings nothing in Cythera's 256-colors prompt,
+/// a DLOG whose default the game never names.
+pub const DIALOG_RINGS_DEFAULT_OFFSET: u32 = 224;
 
 /// Default cursor tracking state (false = off per Macintosh Toolbox Essentials, p. 6-166).
 #[allow(dead_code)]

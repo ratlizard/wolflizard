@@ -300,6 +300,10 @@ fn gpu_native_polygon_fills_match_concave_crossed_translated_and_degenerate_shap
 
 #[test]
 fn gpu_native_glyph_writes_preserve_retained_outline_presentation() {
+    // The system font is Charcoal 12 on the PowerPC slice, smoothed as on
+    // Mac OS 8.5, and smoothed text is drawn in software. This test
+    // reads the sharp glyph, so it draws sharp.
+    crate::quickdraw::fonts::set_text_smoothing(None);
     use crate::memory::{MacMemoryBus, MemoryBus};
     let pixels = vec![255; usize::from(ROW_BYTES) * HEIGHT];
     for depth in [8, 16] {
@@ -365,6 +369,10 @@ fn gpu_native_glyph_writes_preserve_retained_outline_presentation() {
 
 #[test]
 fn gpu_native_scaled_copies_preserve_retained_outline_presentation() {
+    // The system font is Charcoal 12 on the PowerPC slice, smoothed as on
+    // Mac OS 8.5, and smoothed text is drawn in software. This test
+    // reads the sharp glyph, so it draws sharp.
+    crate::quickdraw::fonts::set_text_smoothing(None);
     use crate::memory::{MacMemoryBus, MemoryBus};
     let pixels = vec![255; usize::from(ROW_BYTES) * HEIGHT];
     for depth in [8, 16] {
@@ -461,6 +469,10 @@ fn gpu_native_scaled_copies_preserve_retained_outline_presentation() {
 
 #[test]
 fn gpu_native_masked_copies_preserve_retained_outline_presentation() {
+    // The system font is Charcoal 12 on the PowerPC slice, smoothed as on
+    // Mac OS 8.5, and smoothed text is drawn in software. This test
+    // reads the sharp glyph, so it draws sharp.
+    crate::quickdraw::fonts::set_text_smoothing(None);
     use crate::memory::{MacMemoryBus, MemoryBus};
     let pixels = vec![255; usize::from(ROW_BYTES) * HEIGHT];
     for depth in [8, 16] {
@@ -783,6 +795,10 @@ fn gpu_native_deep_masks_clear_outline_detail_with_white_color_masks() {
 
 #[test]
 fn gpu_native_glyph_masks_match_software_text_modes_and_explicit_clips() {
+    // The system font is Charcoal 12 on the PowerPC slice, smoothed as on
+    // Mac OS 8.5, and smoothed text is drawn in software. This test
+    // reads the sharp glyph, so it draws sharp.
+    crate::quickdraw::fonts::set_text_smoothing(None);
     let pixels = initial_pixels();
     for depth in [1, 2, 4, 8, 16] {
         for (vis, clip) in [CLIPS[0], CLIPS[3]] {
@@ -1238,6 +1254,10 @@ fn gpu_native_scaled_text_matches_repeated_transfers_and_fallback() {
 
 #[test]
 fn gpu_native_styled_text_matches_software_transfers_clips_and_fallback() {
+    // The system font is Charcoal 12 on the PowerPC slice, smoothed as on
+    // Mac OS 8.5, and smoothed text is drawn in software. This test
+    // reads the sharp glyph, so it draws sharp.
+    crate::quickdraw::fonts::set_text_smoothing(None);
     let pixels = initial_pixels();
     for depth in [1, 2, 4, 8, 16] {
         for (vis, clip) in [CLIPS[0], CLIPS[3]] {
@@ -2799,6 +2819,10 @@ fn make_rgb_pat_rejects_a_nil_handle_or_color_without_changing_the_record() {
 
 #[test]
 fn indexed_offscreen_text_keeps_outline_presentation_when_copied_to_a_direct_screen() {
+    // The system font is Charcoal 12 on the PowerPC slice, smoothed as on
+    // Mac OS 8.5, and smoothed text is drawn in software, with no outline
+    // detail. This test reads the detail, so it draws sharp.
+    crate::quickdraw::fonts::set_text_smoothing(None);
     // Applications commonly compose a frame, text included, in an 8-bit
     // offscreen GWorld and copy it to a 16-bit screen each frame.
     use crate::memory::{MacMemoryBus, MemoryBus};
@@ -2904,6 +2928,10 @@ fn indexed_offscreen_text_keeps_outline_presentation_when_copied_to_a_direct_scr
 
 #[test]
 fn offscreen_text_detail_survives_unchanged_stores_and_goes_when_erased() {
+    // The system font is Charcoal 12 on the PowerPC slice, smoothed as on
+    // Mac OS 8.5, and smoothed text is drawn in software, with no outline
+    // detail. This test reads the detail, so it draws sharp.
+    crate::quickdraw::fonts::set_text_smoothing(None);
     // A guest blitter that composes a frame reads, masks and writes back
     // every byte of its offscreen buffer, text included. Storing a byte's
     // own value must not cost the text its outline detail; storing the
@@ -3120,6 +3148,10 @@ fn offscreen_text_detail_survives_unchanged_stores_and_goes_when_erased() {
 
 #[test]
 fn import_runner_keeps_text_detail_through_guest_stores_of_unchanged_bytes() {
+    // The system font is Charcoal 12 on the PowerPC slice, smoothed as on
+    // Mac OS 8.5, and smoothed text is drawn in software, with no outline
+    // detail. This test reads the detail, so it draws sharp.
+    crate::quickdraw::fonts::set_text_smoothing(None);
     // Code the import runner executes may write back text bytes it read,
     // keeping their detail. The same stores made outside guest code, as a
     // Toolbox call's drawing, replace it.
@@ -3199,6 +3231,10 @@ fn import_runner_keeps_text_detail_through_guest_stores_of_unchanged_bytes() {
 
 #[test]
 fn a_guest_store_that_erases_copied_text_drops_everything_that_copy_brought() {
+    // The system font is Charcoal 12 on the PowerPC slice, smoothed as on
+    // Mac OS 8.5, and smoothed text is drawn in software, with no outline
+    // detail. This test reads the detail, so it draws sharp.
+    crate::quickdraw::fonts::set_text_smoothing(None);
     // Text copied from one 8-bit offscreen buffer to another is one run in
     // the destination: a guest store that erases it removes all of its
     // detail there, also where the bytes stay the same. A store that changes

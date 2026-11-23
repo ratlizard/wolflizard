@@ -863,6 +863,10 @@ fn native_draw_hilite_and_flash_menu_bar_use_live_shared_menu_colors() {
 // midpoint and the standard definition procedure's patterned fallback.
 #[test]
 fn native_draw_menu_bar_dims_disabled_titles_with_shared_gray_policy() {
+    // Menu text is Charcoal 12 on the PowerPC slice, smoothed as on Mac OS
+    // 8.5. This test reads solid ink at the sharp glyph's pixels, so it
+    // draws sharp.
+    crate::quickdraw::fonts::set_text_smoothing(None);
     let pef = synthetic_pef_with_import(b"DrawMenuBar");
     let mut loaded = load_pef_application(&pef).unwrap();
     install_test_menu(&mut loaded, PPC_DATA_BASE + 0x1000, 128, b"File", b"Open");
@@ -1543,6 +1547,10 @@ fn native_flash_menu_bar_matches_whole_bar_and_title_semantics_at_supported_dept
 
 #[test]
 fn tracked_menu_draws_standard_item_chrome_and_dims_disabled_rows() {
+    // The system font is Charcoal 12 on the PowerPC slice, smoothed as on
+    // Mac OS 8.5, and smoothed text is drawn in software. This test
+    // reads the sharp glyph, so it draws sharp.
+    crate::quickdraw::fonts::set_text_smoothing(None);
     let pef = synthetic_pef_with_import(b"NewMenu");
     let mut loaded = load_pef_application(&pef).unwrap();
     let menu = install_test_menu(
@@ -1795,6 +1803,10 @@ fn tracked_menu_draws_standard_item_chrome_and_dims_disabled_rows() {
 
 #[test]
 fn native_popup_draws_from_the_live_shared_menu_color_table() {
+    // Menu text is Charcoal 12 on the PowerPC slice, smoothed as on Mac OS
+    // 8.5. This test reads solid ink at the sharp glyph's pixels, so it
+    // draws sharp.
+    crate::quickdraw::fonts::set_text_smoothing(None);
     let pef = synthetic_pef_with_import(b"PopUpMenuSelect");
     let mut loaded = load_pef_application(&pef).unwrap();
     let mut free_handle_blocks = loaded.free_handle_blocks();
@@ -3500,6 +3512,10 @@ fn tracked_submenu_aligns_after_a_variable_height_icon_row() {
 
 #[test]
 fn menu_tracking_round_trips_unaligned_popup_boundaries_at_supported_depths() {
+    // Menu text is Charcoal 12 on the PowerPC slice, smoothed as on Mac OS
+    // 8.5. This test reads solid ink at the sharp glyph's pixels, so it
+    // draws sharp.
+    crate::quickdraw::fonts::set_text_smoothing(None);
     let pef = synthetic_pef_with_import(b"NewMenu");
     let mut loaded = load_pef_application(&pef).unwrap();
     install_test_menu(

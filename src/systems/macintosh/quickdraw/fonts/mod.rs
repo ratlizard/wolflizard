@@ -199,8 +199,37 @@ pub fn classic_font_info(font_id: i16, size: i16, style: u8) -> Option<FontMetri
     (bundled_face_in_use(font_id, size) && !drawn_from_guest_strike()).then_some(metrics)
 }
 
+thread_local! {
+    /// The face the system font (0) is drawn in at 12 points on this
+    /// thread: Chicago as System 7 has it, or Charcoal for a guest on the
+    /// PowerPC slice, which stands for Mac OS 8.5.
+    static SYSTEM_FONT_12: std::cell::Cell<i16> = const { std::cell::Cell::new(FONT_CHICAGO) };
+}
+
+/// Draw and measure the system font at 12 points as Mac OS 8.5's Charcoal,
+/// or as Chicago, for the guest on this thread. Mac OS 8.5 ships with
+/// Charcoal as its system font (the Appearance control panel's "Large
+/// System Font"), and the 256-colours prompt's static text and Standard
+/// File's buttons show it there. A guest draws on the thread that runs it,
+/// so the 68K slice and the tests beside a PowerPC guest keep Chicago.
+pub fn set_system_font_charcoal(charcoal: bool) {
+    SYSTEM_FONT_12.with(|font| font.set(if charcoal { FONT_CHARCOAL } else { FONT_CHICAGO }));
+}
+
+/// The family that draws `font_id` at `size`: the system font at 12
+/// points (or 0, which means 12) is the face `set_system_font_charcoal`
+/// chose, and every other request is itself.
+pub fn resolve_system_font(font_id: i16, size: i16) -> i16 {
+    if font_id == FONT_CHICAGO && matches!(size, 0 | 12) {
+        SYSTEM_FONT_12.with(std::cell::Cell::get)
+    } else {
+        font_id
+    }
+}
+
 pub fn get_font_face(font_id: i16, size: i16) -> Option<&'static FontFace> {
     let size = if size == 0 { 12 } else { size };
+    let font_id = resolve_system_font(font_id, size);
     if let Some(face) = get_override_font_face(font_id, size) {
         return Some(face);
     }

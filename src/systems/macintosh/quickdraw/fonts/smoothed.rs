@@ -123,7 +123,7 @@ pub fn get_smoothed_glyph(font_id: i16, size: i16, ch: char) -> Option<(&'static
     if !(' '..='~').contains(&ch) || !text_smoothing().is_some_and(|min| size >= min) {
         return None;
     }
-    let face = face(font_id, size)?;
+    let face = face(super::resolve_system_font(font_id, size), size)?;
     let glyph = face.glyphs.get(ch as usize - 32)?;
     (glyph.width != 0 || glyph.height != 0 || glyph.advance != 0).then_some((glyph, face.data))
 }

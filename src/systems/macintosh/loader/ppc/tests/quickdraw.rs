@@ -49,6 +49,55 @@ fn draw_string_inverted_source_modes_apply_to_ink_and_character_cell() {
 }
 
 #[test]
+fn bold_text_is_smoothed_as_mac_os_8_5_smooths_it() {
+    // Cythera's character window tab labels, Argos 14 bold, are smoothed on
+    // Mac OS 8.5. Charcoal 12, the smoothed face the fork carries, stands in.
+    let mut loaded = load_pef_application(&synthetic_pef_with_import(b"DrawString")).unwrap();
+    let port = *loaded.current_gworld;
+    let front = ppc_live_front_buffer_for_gworld(&mut loaded.memory, &loaded.gworlds, port).unwrap();
+    assert_eq!(front.depth, 8);
+    loaded.quickdraw_fore_color = PpcRgbColor { red: 0, green: 0, blue: 0 };
+    loaded.quickdraw_fore_indices.insert(port, 255);
+    let text = PPC_DATA_BASE + 0x1000;
+    loaded.memory.add_region(text, b"\x02MW".to_vec());
+    let mut levels = Vec::new();
+    for face in [0u32, 1] {
+        for y in 0..32 {
+            for x in 0..64 {
+                assert!(ppc_quickdraw_write_raw_pixel(&mut loaded.memory, front, (x, y), 0));
+            }
+        }
+        for (target, value) in [
+            (PpcImportDispatcherTarget::TextFont, 2002u32),
+            (PpcImportDispatcherTarget::TextSize, 12),
+            (PpcImportDispatcherTarget::TextFace, face),
+            (PpcImportDispatcherTarget::TextMode, 1),
+        ] {
+            loaded.cpu.gpr[3] = value;
+            run_test_import(&mut loaded, target);
+        }
+        loaded.cpu.gpr[3] = 5;
+        loaded.cpu.gpr[4] = 20;
+        run_test_import(&mut loaded, PpcImportDispatcherTarget::MoveTo);
+        loaded.cpu.gpr[3] = text;
+        run_test_import(&mut loaded, PpcImportDispatcherTarget::DrawString);
+        let pixels: Vec<u8> = (0..32)
+            .flat_map(|y| (0..64).map(move |x| (x, y)))
+            .map(|point| ppc_quickdraw_read_pixel(&mut loaded.memory, front, point).unwrap() as u8)
+            .collect();
+        let blended = pixels.iter().filter(|&&p| p != 0 && p != 255).count();
+        let inked = pixels.iter().filter(|&&p| p != 0).count();
+        levels.push((blended, inked));
+    }
+    let [(plain_blended, plain_inked), (bold_blended, bold_inked)] = levels[..] else {
+        unreachable!()
+    };
+    assert!(plain_blended > 0, "plain Charcoal 12 is smoothed");
+    assert!(bold_blended > 0, "bold Charcoal 12 is smoothed too");
+    assert!(bold_inked > plain_inked, "bold covers more pixels than plain");
+}
+
+#[test]
 fn draw_string_src_xor_and_src_bic_use_colour_semantics_on_direct_screens() {
     // Inside Macintosh: Imaging With QuickDraw (1994), pp. 4-34..4-36: in a
     // colour port srcXor inverts the destination where the glyph is set and

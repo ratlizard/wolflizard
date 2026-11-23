@@ -2743,10 +2743,13 @@ fn ppc_dispatch_dialog_compatibility(
             let screen = gworlds.iter().find(|record| record.port == PPC_MAIN_GWORLD);
             let screen_width = screen.map_or(ppc_main_screen_width(), |record| record.width) as i32;
             let screen_height = screen.map_or(ppc_main_screen_height(), |record| record.height) as i32;
+            // Placed by the structure the window's definition draws, as
+            // ppc_position_dialog_bounds places a new dialog.
+            let proc_id = super::platinum::ppc_window_definition_id(memory, params.dialog_ptr());
             let new_bounds = crate::dialog_manager::evaluate_dialog_position_bounds(
                 content_bounds,
                 params.method(),
-                Some(crate::dialog_manager::dialog_dbox_frame_rect(content_bounds)),
+                Some(super::dispatch_window::ppc_window_structure_bounds(proc_id, content_bounds)),
                 parent_structure,
                 screen_width,
                 screen_height,
@@ -3027,20 +3030,25 @@ fn ppc_dialog_auto_position(
     }
 }
 
-/// The dialog's place by a dBox frame. A window with an application WDEF is
+/// The dialog's place by the structure its window definition draws, as
+/// Mac OS 8.5 frames it: a dBoxProc dialog is placed by its Platinum frame,
+/// six pixels above and seven below, not System 7's eight each way, which
+/// put Cythera's 256-colors prompt (an alert position, a fifth of the way
+/// down) two pixels lower than on 8.5. A window with an application WDEF is
 /// placed again by the structure region the WDEF computes
 /// (`ppc_note_dialog_auto_position`).
 fn ppc_position_dialog_bounds(
     memory: &mut PpcSectionMem,
     bounds: (i16, i16, i16, i16),
     position: u16,
+    proc_id: i16,
     gworlds: &[PpcGWorldRecord],
 ) -> (i16, i16, i16, i16) {
     let placement = ppc_dialog_auto_position(memory, position, gworlds);
     crate::dialog_manager::evaluate_dialog_position_bounds(
         bounds,
         position,
-        Some(crate::dialog_manager::dialog_dbox_frame_rect(bounds)),
+        Some(super::dispatch_window::ppc_window_structure_bounds(proc_id, bounds)),
         None,
         placement.screen_width,
         placement.screen_height,
@@ -3304,7 +3312,7 @@ fn ppc_new_alert_dialog(
         *last_mem_error = PPC_MEM_FULL_ERR;
         return 0;
     }
-    let bounds = ppc_position_dialog_bounds(memory, bounds, position, gworlds);
+    let bounds = ppc_position_dialog_bounds(memory, bounds, position, proc_id as u16 as i16, gworlds);
     let scratch = ppc_process_heap_alloc(process_memory_manager, memory, heap_cursor, 9, true);
     let Some(items_slot) = ppc_parameter_area_slot_addr(cpu.gpr[1], PPC_NATIVE_PARAMETER_GPR_COUNT)
     else {
@@ -3468,7 +3476,13 @@ fn ppc_get_new_dialog(
         *last_mem_error = PPC_MEM_FULL_ERR;
         return 0;
     }
-    let bounds = ppc_position_dialog_bounds(memory, template.bounds, template.position, gworlds);
+    let bounds = ppc_position_dialog_bounds(
+        memory,
+        template.bounds,
+        template.position,
+        template.proc_id,
+        gworlds,
+    );
     let scratch_size = 8u32.saturating_add(1 + template.title.len().min(255) as u32);
     let scratch = ppc_process_heap_alloc(
         process_memory_manager,

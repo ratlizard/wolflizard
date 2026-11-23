@@ -61,7 +61,13 @@ fn resolve(
         return (exact, None);
     };
     if surface.front_buffer.depth != 8 {
-        return (exact, None);
+        let grey = |value: u8| u16::from(direct_grey(value)) * 0x0101;
+        let direct = if shade.0 == shade.1 && shade.1 == shade.2 {
+            PpcRgbColor { red: grey(shade.0), green: grey(shade.0), blue: grey(shade.0) }
+        } else {
+            exact
+        };
+        return (direct, None);
     }
     let fallback = TrapDispatcher::standard_mac_8bpp_clut();
     let clut = surface
@@ -79,6 +85,31 @@ fn resolve(
             let [red, green, blue] = clut[index];
             (PpcRgbColor { red, green, blue }, Some(index as u8))
         })
+}
+
+/// The grey Mac OS 8.5 draws on a direct (16- or 32-bit) screen for a shade
+/// measured on its eight-bit screen. Those shades are entries of Cythera's
+/// colour table, the nearest to 8.5's own greys, as the display's gamma
+/// shows them. At thousands of colours 8.5's 256-colours prompt (DLOG 140,
+/// `work/autoplay/realmac/depth16-1122/launch.png`) shows the greys
+/// themselves: a push button's face 221 where the eight-bit screen showed
+/// 227, its bevels 187, 170 and 119 for 203, 191 and 148, its corner dots 34
+/// for 60. A shade not measured both ways takes the value the gamma shows as
+/// it, or the nearest.
+fn direct_grey(shade: u8) -> u8 {
+    match shade {
+        227 => 221,
+        203 => 187,
+        191 => 170,
+        148 => 119,
+        60 => 34,
+        _ => {
+            let gamma = &crate::display::default_display_gamma()[0];
+            (0..=255u8)
+                .min_by_key(|&value| (i16::from(gamma[usize::from(value)]) - i16::from(shade)).abs())
+                .unwrap_or(shade)
+        }
+    }
 }
 
 /// The dialog background the Appearance Manager's theme gives a window
@@ -130,6 +161,82 @@ pub(super) fn ppc_platinum_modal_structure_bounds(
         bottom.saturating_add(4),
         right.saturating_add(4),
     )
+}
+
+/// Whether a window is a classic dBoxProc window (definition ID 1) that the
+/// application's own WDEF does not draw. Mac OS 8.5, with its system-wide
+/// Platinum appearance on as it ships, draws such a window's frame and its
+/// standard controls in that look though the application never asked for
+/// the Appearance Manager, and keeps its white content: Cythera's
+/// 256-colours prompt (DLOG 140) shows it.
+pub(super) fn ppc_window_is_classic_dbox(memory: &mut PpcSectionMem, window: u32) -> bool {
+    window != 0
+        && super::dispatch_defproc::ppc_app_wdef_window_proc_id(window).is_none()
+        && ppc_window_definition_id(memory, window) == 1
+}
+
+/// A classic dBoxProc window's structure on Mac OS 8.5: a black line six
+/// pixels out from the content, and a one-pixel shadow beyond it on the
+/// right and below.
+pub(super) fn ppc_platinum_dbox_structure_bounds(
+    (top, left, bottom, right): (i16, i16, i16, i16),
+) -> (i16, i16, i16, i16) {
+    (
+        top.saturating_sub(6),
+        left.saturating_sub(6),
+        bottom.saturating_add(7),
+        right.saturating_add(7),
+    )
+}
+
+/// A classic dBoxProc window's frame and white content, as Mac OS 8.5 draws
+/// them. Returns false when the window has no content region to draw around.
+pub(super) fn ppc_draw_platinum_dbox_frame(
+    memory: &mut PpcSectionMem,
+    gworlds: &[PpcGWorldRecord],
+    window: u32,
+    height: i16,
+    width: i16,
+) -> bool {
+    Pen::new(memory, gworlds, window).rect((0, 0, height, width), grey(WHITE));
+    let Some(content) = memory
+        .read_u32_be(window + PPC_CWINDOW_CONTENT_RGN_OFFSET)
+        .and_then(|region| ppc_read_rgn_bbox(memory, region))
+    else {
+        return false;
+    };
+    let mut pen = Pen::new(memory, gworlds, PPC_MAIN_GWORLD);
+    draw_dbox_frame_around(&mut pen, content);
+    pen.wrote
+}
+
+/// Mac OS 8.5's frame for a classic dBoxProc window around a content
+/// rectangle (global coordinates, the bottom and right excluded), measured
+/// at thousands of colours from its 256-colours prompt: a black line six
+/// pixels out with a shadow one pixel beyond it on the right and below,
+/// starting two pixels in from the corner; inside the line a light grey
+/// (187) above and to the left; below and to the right two darker lines,
+/// 85 at four pixels out and 153 at three, the light grey taking the two
+/// corners where they meet it; white between them and the content. The
+/// shades are given as the eight-bit screen would show them, and
+/// `direct_grey` turns them back into 187, 153 and 85.
+pub(super) fn draw_dbox_frame_around(pen: &mut Pen<'_>, (t, l, b, r): (i16, i16, i16, i16)) {
+    let (light, mid, dark) = (grey(203), grey(179), grey(119));
+    pen.rect((t - 5, l - 5, b + 5, r + 5), grey(WHITE));
+    pen.hline(t - 6, l - 6, r + 5, grey(BLACK));
+    pen.hline(b + 5, l - 6, r + 5, grey(BLACK));
+    pen.vline(l - 6, t - 6, b + 5, grey(BLACK));
+    pen.vline(r + 5, t - 6, b + 5, grey(BLACK));
+    pen.vline(r + 6, t - 4, b + 6, grey(BLACK));
+    pen.hline(b + 6, l - 4, r + 6, grey(BLACK));
+    pen.hline(t - 5, l - 5, r + 4, light);
+    pen.vline(l - 5, t - 5, b + 4, light);
+    pen.vline(r + 4, t - 4, b + 4, dark);
+    pen.hline(b + 4, l - 4, r + 4, dark);
+    pen.vline(r + 3, t - 3, b + 3, mid);
+    pen.hline(b + 3, l - 3, r + 3, mid);
+    pen.dot(r + 3, t - 4, light);
+    pen.dot(l - 4, b + 3, light);
 }
 
 /// Paints single pixels and lines in one port, with inclusive ends.

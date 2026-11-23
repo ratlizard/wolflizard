@@ -2530,7 +2530,7 @@ fn ppc_zoom_front_promotion_preserves_promoted_window_pixels() {
     // The promoted dialog's top structure edge lies inside both older
     // windows' content rectangles. A back-to-front repaint must leave
     // this edge owned by the promoted window.
-    let promoted_edge = (200, 142);
+    let promoted_edge = (200, 144);
     loaded.set_event_queue(std::iter::empty());
     loaded.cpu.gpr[3] = promoted;
     loaded.cpu.gpr[4] = 4;
@@ -2645,17 +2645,19 @@ fn hle_import_runner_new_cwindow_draws_dbox_structure_region() {
         ppc_quickdraw_surface_color_pixel(&mut loaded.memory, surface, PPC_RGB_BLACK).unwrap();
     let white =
         ppc_quickdraw_surface_color_pixel(&mut loaded.memory, surface, PPC_RGB_WHITE).unwrap();
+    // Mac OS 8.5's dBoxProc (loader/ppc/platinum.rs): a black line six
+    // pixels out from the content, a light grey inside it, then white.
     assert_eq!(
-        ppc_quickdraw_read_pixel(&mut loaded.memory, surface.front_buffer, (92, 92)),
-        Some(black)
-    );
-    assert_ne!(
         ppc_quickdraw_read_pixel(&mut loaded.memory, surface.front_buffer, (94, 94)),
         Some(black)
     );
-    assert_eq!(
+    assert_ne!(
         ppc_quickdraw_read_pixel(&mut loaded.memory, surface.front_buffer, (95, 95)),
         Some(black)
+    );
+    assert_eq!(
+        ppc_quickdraw_read_pixel(&mut loaded.memory, surface.front_buffer, (96, 96)),
+        Some(white)
     );
     assert_eq!(
         ppc_quickdraw_read_pixel(&mut loaded.memory, surface.front_buffer, (150, 150)),
@@ -4013,9 +4015,9 @@ fn paint_behind_nil_preserves_pixels_covered_by_a_visible_window() {
 
 #[test]
 fn paint_behind_nil_keeps_the_dbox_proc_outer_border_ring() {
-    // Inside Macintosh Volume I (1985), p. I-273: dBoxProc's structure
-    // region extends eight pixels outside the content, so a desktop repaint
-    // must not erase the outer ring of its double border (Five Stones PPC).
+    // dBoxProc's structure region reaches its outer line, six pixels outside
+    // the content as Mac OS 8.5 draws it, and the shadow a pixel beyond, so a
+    // desktop repaint must not erase that line (Five Stones PPC).
     let pef = synthetic_pef_with_import(b"PaintBehind");
     let mut loaded = load_pef_application(&pef).unwrap();
     let mut last_mem_error = loaded.last_mem_error();
@@ -4043,11 +4045,11 @@ fn paint_behind_nil_keeps_the_dbox_proc_outer_border_ring() {
     assert_ne!(window, 0);
     assert_eq!(
         ppc_window_structure_bounds(1, (100, 100, 200, 300)),
-        (92, 92, 208, 308)
+        (94, 94, 207, 307)
     );
     let front = ppc_front_buffer_for_gworld(&loaded.gworlds, PPC_MAIN_GWORLD).unwrap();
     let black = Some(u16::from(ppc_rgb_color_to_8bpp_index(PPC_RGB_BLACK)));
-    assert_eq!(ppc_quickdraw_read_pixel(&mut loaded.memory, front, (92, 150)), black);
+    assert_eq!(ppc_quickdraw_read_pixel(&mut loaded.memory, front, (94, 150)), black);
     let clobbered_rgn = ppc_new_rgn(
         &mut loaded.memory,
         test_heap_cursor!(loaded),
@@ -4063,7 +4065,7 @@ fn paint_behind_nil_keeps_the_dbox_proc_outer_border_ring() {
 
     assert_eq!(probe.handled_import_count, 1);
     assert_eq!(probe.unsupported_import_index, None);
-    for point in [(92, 150), (150, 92), (307, 150), (150, 207)] {
+    for point in [(94, 150), (150, 94), (306, 150), (150, 206)] {
         assert_eq!(
             ppc_quickdraw_read_pixel(&mut loaded.memory, front, point),
             black,

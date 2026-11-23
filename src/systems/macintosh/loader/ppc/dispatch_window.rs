@@ -5144,7 +5144,9 @@ pub(super) fn ppc_dispatch_legacy_window(
                 cpu.gpr[4],
             ) {
                 let previous_front = ppc_front_visible_process_window(memory, window_list);
-                ppc_reorder_window(gworlds, window_list, params.window_ptr(), params.behind_window_ptr(), false);
+                let moved = params.window_ptr();
+                let before = window_list.windows();
+                ppc_reorder_window(gworlds, window_list, moved, params.behind_window_ptr(), false);
                 ppc_recalculate_window_vis_regions(
                     process_memory_manager,
                     memory,
@@ -5154,6 +5156,56 @@ pub(super) fn ppc_dispatch_legacy_window(
                     last_mem_error,
                     handles,
                 );
+                // Macintosh Toolbox Essentials (1992), p. 4-91: "If the move
+                // exposes previously obscured windows or parts of windows,
+                // SendBehind redraws the frames as necessary and generates the
+                // appropriate update events", and moves the highlighting to
+                // the new front window. Cythera brings a character window
+                // forward by sending the one in front of it behind, and the
+                // fork redrew nothing: the window's right braid stayed as the
+                // other window had covered it (pair-eat, 23 November 2026).
+                // Sent behind a window that was in front of it, the window
+                // moves forward instead, and what it exposes is itself: the
+                // game's call is SendBehind(character window, the window
+                // above the other character window).
+                let after = window_list.windows();
+                let at = |list: &[u32], window: u32| list.iter().position(|&w| w == window);
+                if let (Some(was), Some(now)) = (at(&before, moved), at(&after, moved)) {
+                    let exposed: Vec<u32> = if now < was {
+                        vec![moved]
+                    } else {
+                        after[..now]
+                            .iter()
+                            .copied()
+                            .filter(|&passed| at(&before, passed).is_some_and(|index| index > was))
+                            .collect()
+                    };
+                    for passed in exposed {
+                        if !ppc_window_is_visible(memory, passed) {
+                            continue;
+                        }
+                        ppc_redraw_visible_window_frame(
+                            memory,
+                            gworlds,
+                            window_list,
+                            passed,
+                            toolbox_startup.host_menu_bar_hidden,
+                        );
+                        if let Some(port_rect) = ppc_read_rect(memory, passed.wrapping_add(16)) {
+                            ppc_invalidate_window_local_rect(memory, passed, port_rect);
+                            ppc_enqueue_window_update_event(event_queue, passed, when, input);
+                        }
+                    }
+                }
+                if ppc_front_visible_process_window(memory, window_list) != previous_front {
+                    ppc_transition_front_window_chrome(
+                        memory,
+                        gworlds,
+                        window_list,
+                        previous_front,
+                        toolbox_startup.host_menu_bar_hidden,
+                    );
+                }
                 if ppc_front_visible_process_window(memory, window_list) != previous_front {
                     let _ = ppc_activate_front_window_palette(
                         memory,
